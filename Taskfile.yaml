@@ -1,0 +1,164 @@
+version: '1'
+
+tasks:
+  # --------------------
+  # Default / discovery
+  # --------------------
+  default:
+    desc: List available tasks
+    cmds:
+    - task --list
+
+  # --------------------
+  # Python / uv tasks
+  # --------------------
+  venv:
+    desc: Create virtual environment
+    cmds:
+    - uv venv --python=$(cat .python-version) --seed --allow-existing
+
+  install:
+    desc: Install dependencies
+    deps: [verify-codeartifact-token]
+    cmds:
+    - uv sync --all-extras
+
+  lint-check-only:
+    desc: Check linting and formatting (no fixes)
+    cmds:
+    - uv run isort --check-only .
+    - uv run ruff check .
+    - uv run ruff format --check .
+    - uv run yamllint .
+
+  lint:
+    desc: Auto-fix linting and formatting issues
+    cmds:
+    - uv run isort .
+    - uv run ruff check --fix .
+    - uv run ruff format .
+    - uv run yamllint .
+
+  setup-local-env:
+    desc: Setup local environment
+    cmds:
+    - task venv
+    - task install
+    - uv run pre-commit install
+
+  clean:
+    desc: Clean cache and temporary files
+    cmds:
+    - rm -rf .mypy_cache .pytest_cache .ruff_cache
+    - find . -regex ".*/__pycache__" -exec rm -rf {} +
+    - uv run pre-commit clean || true
+
+  test:
+    desc: Run tests
+    deps: [install]
+    cmds:
+    - uv run pytest
+
+  lock-check:
+    desc: Verify lock file is up-to-date
+    deps: [verify-codeartifact-token]
+    cmds:
+    - uv lock --locked
+
+  check:
+    desc: run tests and formatting checks
+    deps: [install]
+    cmds:
+    - task lock-check
+    - task lint
+
+  # --------------------
+  # Rust tasks
+  # --------------------
+  rust-toolchain:
+    desc: Ensure Rust toolchain and components (rustfmt, clippy)
+    cmds:
+    - |
+      if ! command -v rustup >/dev/null 2>&1; then
+        echo "rustup is required. Install from https://rustup.rs"; exit 1;
+      fi
+    - rustup show active-toolchain || true
+    - rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+    - rustup component add rustfmt clippy --toolchain stable
+
+  rust-fmt:
+    desc: Format Rust code with rustfmt
+    deps: [rust-toolchain]
+    cmds:
+    - cargo fmt --all
+
+  rust-fmt-check:
+    desc: Check Rust formatting (no changes)
+    deps: [rust-toolchain]
+    cmds:
+    - cargo fmt --all -- --check
+
+  rust-lint:
+    desc: Run Clippy (deny warnings)
+    deps: [rust-toolchain]
+    cmds:
+    - cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  rust-build:
+    desc: Build all Rust workspace targets
+    deps: [rust-toolchain]
+    cmds:
+    - cargo build --workspace --all-targets
+
+  rust-test:
+    desc: Run all Rust tests
+    deps: [rust-toolchain]
+    cmds:
+    - cargo test --workspace --all-targets
+
+  rust-check:
+    desc: Cargo check (type-check only)
+    deps: [rust-toolchain]
+    cmds:
+    - cargo check --workspace --all-targets
+
+  rust-clean:
+    desc: Clean Rust build artifacts
+    cmds:
+    - cargo clean
+
+  rust-verify:
+    desc: Run rustfmt-check, clippy, and tests
+    deps:
+    - rust-fmt-check
+    - rust-lint
+    - rust-test
+
+  # --------------------
+  # PyO3 / maturin helpers
+  # --------------------
+  python-ext-develop:
+    desc: Build & install the PyO3 extension into the venv (maturin develop)
+    deps: [venv, rust-toolchain]
+    cmds:
+    - uv run pip install -U maturin
+    - uv run maturin develop -m bindings/python/Cargo.toml
+
+  python-test-ext:
+    desc: Run Python tests with the Rust extension built
+    deps:
+    - install
+    - python-ext-develop
+    cmds:
+    - uv run pytest
+
+  # --------------------
+  # Meta: verify everything
+  # --------------------
+  verify:
+    desc: Run Python & Rust checks and tests
+    deps:
+    - lock-check
+    - lint-check-only
+    - rust-verify
+    - test

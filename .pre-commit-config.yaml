@@ -1,0 +1,54 @@
+minimum_pre_commit_version: 3.5.0
+
+repos:
+  # ----------------------
+  # Rust: format + clippy
+  # ----------------------
+- repo: local
+  hooks:
+  - id: cargo-fmt
+    name: rustfmt (workspace)
+    entry: cargo fmt --all
+    language: system
+    pass_filenames: false
+    types_or: [rust]
+
+      # Run Clippy on pre-push (no autofix, but catches warnings early)
+  - id: cargo-clippy
+    name: clippy (workspace, -D warnings)
+    entry: bash -lc 'cargo clippy --workspace --all-targets --all-features -- -D warnings'
+    language: system
+    pass_filenames: false
+    types_or: [rust]
+    stages: [pre-push]
+
+  # ----------------------
+  # Python: isort + Ruff
+  # ----------------------
+- repo: https://github.com/pycqa/isort
+  rev: 6.0.1
+  hooks:
+  - id: isort
+    name: isort (autofix)
+    args: [--filter-files]
+
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.12.12
+  hooks:
+  - id: ruff
+    name: ruff (autofix)
+    args: [--fix]
+  - id: ruff-format
+    name: ruff-format
+
+  # ----------------------
+  # Universal niceties
+  # ----------------------
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: end-of-file-fixer
+  - id: trailing-whitespace
+  - id: mixed-line-ending
+  - id: check-merge-conflict
+  - id: check-json
