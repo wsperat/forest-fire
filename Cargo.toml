@@ -6,6 +6,6 @@ members = [
 #   "crates/inference",
 #   "crates/exporters/onnx",
 #   "crates/exporters/compiled",
-  "bindings/python", # PyO3 binding crate (must contain its own Cargo.toml)
+   "bindings/python", # PyO3 binding crate (must contain its own Cargo.toml)
 ]
 resolver = "2"
