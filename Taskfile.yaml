@@ -51,6 +51,7 @@ tasks:
     - rm -rf .mypy_cache .pytest_cache .ruff_cache
     - find . -regex ".*/__pycache__" -exec rm -rf {} +
     - uv run pre-commit clean || true
+    - cargo clean -p forestfire-python
 
   test:
     desc: Run tests

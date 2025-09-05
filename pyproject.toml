@@ -1,4 +1,3 @@
-# pyproject.toml (repo root)
 [project]
 name = "forestfire-workspace"
 version = "0.1.0"
@@ -9,7 +8,7 @@ members = ["bindings/python"]
 
 [dependency-groups]
 dev = [
-    "pytest",
+    "pytest>=8,<9",
     "numpy>=2.1.0",
     "maturin>=1.4,<2"
 ]
