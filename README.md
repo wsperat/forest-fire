@@ -1,4 +1,5 @@
-# ForestFire — fast tree-based ML in Rust with Python bindings
+# ForestFire
+## Fast tree-based learning in Rust
 
 A high-performance library for decision trees and tree ensembles with a Rust core and a clean Python API.
 Designed for speed, correctness, and interoperability with NumPy, pandas, Polars, and Arrow.
