@@ -1,4 +1,4 @@
-version: '1'
+version: '3'
 
 tasks:
   # --------------------
@@ -19,7 +19,6 @@ tasks:
 
   install:
     desc: Install dependencies
-    deps: [verify-codeartifact-token]
     cmds:
     - uv sync --all-extras
 
@@ -61,7 +60,6 @@ tasks:
 
   lock-check:
     desc: Verify lock file is up-to-date
-    deps: [verify-codeartifact-token]
     cmds:
     - uv lock --locked
 
