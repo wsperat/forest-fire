@@ -15,6 +15,7 @@ classifiers = [
 
 [tool.maturin]
 module-name = "forestfire"
+include = ["forestfire.pyi"]
 
 [dependency-groups]
 dev = [
