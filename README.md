@@ -2,7 +2,8 @@
 ## Fast tree-based learning in Rust
 
 A high-performance library for decision trees and tree ensembles with a Rust core and a clean Python API.
-Designed for speed, correctness, and interoperability with NumPy, pandas, Polars, and Arrow.
+Designed for speed, correctness, memory efficiency and interoperability with NumPy, pandas, Polars, and Arrow.
+Designed to make deployment intuitive and easy.
 
 # Why this library?
 
