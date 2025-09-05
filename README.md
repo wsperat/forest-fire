@@ -1,4 +1,5 @@
 # ForestFire
+![ForestFire](docs/forest-fire.jpg)
 ## Fast tree-based learning in Rust
 
 A high-performance library for decision trees and tree ensembles with a Rust core and a clean Python API.
