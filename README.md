@@ -12,6 +12,7 @@ Designed for speed, correctness, and interoperability with NumPy, pandas, Polars
 - Extensible design: A common trait-based core for trees, forests, and boosted ensembles.
 
 # Project layout
+```
 .                              — Workspace root (Rust + Python)
 ├── bindings                   — Language bindings
 │   └── python                 — PyO3-based Python extension (PEP 517 via maturin)
@@ -48,6 +49,7 @@ Designed for speed, correctness, and interoperability with NumPy, pandas, Polars
 │   ├── python                 — Pytests for the Python API
 │   └── rust                   — Rust tests for the mean tree model
 └── uv.lock                    — Lockfile for Python’s uv package manager
+```
 
 # Features
 
