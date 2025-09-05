@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.4,<2"]
+build-backend = "maturin"
+
+[project]
+name = "forestfire"
+version = "0.0.1"
+description = "Forestfire Python bindings (mean-tree baseline)"
+authors = [{ name = "forestfire contributors" }]
+requires-python = ">=3.12"
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+]
+
+[tool.maturin]
+module-name = "forestfire"

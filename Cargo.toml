@@ -1,9 +1,9 @@
 [workspace]
 members = [
 #   Comment out until crates exist
-#   "crates/core",
-#   "crates/data",
-#   "crates/inference",
+  "crates/core",
+  "crates/data",
+  "crates/inference",
 #   "crates/exporters/onnx",
 #   "crates/exporters/compiled",
    "bindings/python", # PyO3 binding crate (must contain its own Cargo.toml)
