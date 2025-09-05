@@ -25,7 +25,7 @@ impl PyTargetMeanTree {
         let y_vec: Vec<f64> = y_view.to_vec();
 
         let ds = DenseDataset::new(x_vec, y_vec)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
 
         let model = TargetMeanTree::train(&ds)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
