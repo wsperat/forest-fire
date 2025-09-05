@@ -13,6 +13,26 @@ Designed to make deployment intuitive and easy.
 - Portable models: Save/load, and export to ONNX for broad runtime support.
 - Extensible design: A common trait-based core for trees, forests, and boosted ensembles.
 
+# Roadmap
+Several of the intended features haven't been implemented yet, so here are the desired functionalities separated according to their implementation priority.
+
+Priorities may shift in the future, and new ones added.
+
+## Immediate Priorities
+- Redesign `train` API to avoid class methods
+- Arrow Backend to `DenseDataset`
+- Exact CART algorithm
+- Splitting criterion
+- Histogram CART algorithm
+- Compiled inference backend (`treelite` / LLVM-style codegen) for inference speedups
+
+## Long term Priorities
+- Random Forest (bagging, feature subsampling)
+- Gradient Boosted Trees (with histogram-based split finding)
+- Out-of-core training via Arrow streaming/memory-mapping
+- Calibrated probabilities, monotonic constraints, categorical split optimizations
+- Sklearn estimator wrappers (get_params, set_params, sklearn compat tests)
+
 # Project layout
 ```
 .                              — Workspace root (Rust + Python)
@@ -159,21 +179,6 @@ Heavy loops release the Python GIL; training & prediction are multi-threaded by 
 # Persistence & interchange
 - Save/Load: JSON via serde for human-readable model storage.
 - ONNX export: Emits TreeEnsembleClassifier / TreeEnsembleRegressor; loadable in ONNX Runtime and many other environments.
-
-# Roadmap
-## Immediate Priorities
-- Backend to `DenseDataset`
-- Exact CART algorithm
-- Splitting criterion
-- Histogram CART algorithm
-- Compiled inference backend (`treelite` / LLVM-style codegen) for inference speedups
-
-## Long term Priorities
-- Random Forest (bagging, feature subsampling)
-- Gradient Boosted Trees (with histogram-based split finding)
-- Out-of-core training via Arrow streaming/memory-mapping
-- Calibrated probabilities, monotonic constraints, categorical split optimizations
-- Sklearn estimator wrappers (get_params, set_params, sklearn compat tests)
 
 # Building & testing
 ## Rust
