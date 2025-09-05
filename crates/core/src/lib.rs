@@ -1,4 +1,4 @@
-pub mod mean_tree;
+pub mod tree;
 
-pub use mean_tree::ModelError;
-pub use mean_tree::TargetMeanTree;
+pub use tree::mean_tree::ModelError;
+pub use tree::mean_tree::TargetMeanTree;
