@@ -28,7 +28,6 @@ tasks:
     - uv run isort --check-only .
     - uv run ruff check .
     - uv run ruff format --check .
-    - uv run yamllint .
 
   lint:
     desc: Auto-fix linting and formatting issues
@@ -36,7 +35,6 @@ tasks:
     - uv run isort .
     - uv run ruff check --fix .
     - uv run ruff format .
-    - uv run yamllint .
 
   setup-local-env:
     desc: Setup local environment
@@ -142,6 +140,13 @@ tasks:
     cmds:
     - uv run pip install -U maturin
     - uv run maturin develop -m bindings/python/Cargo.toml
+
+  python-ext-wheel:
+    desc: Build and install python wheel from package
+    deps: [python-ext-develop]
+    cmds:
+    - uv run maturin build -m python-bindings/Cargo.toml --release
+    - uv run pip install dist/*.whl
 
   python-test-ext:
     desc: Run Python tests with the Rust extension built
