@@ -1,3 +1,4 @@
+use crate::Criterion;
 use forestfire_data::DenseTable;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -52,6 +53,7 @@ impl Error for RegressionTreeError {}
 #[derive(Debug, Clone)]
 pub struct DecisionTreeRegressor {
     algorithm: RegressionTreeAlgorithm,
+    criterion: Criterion,
     structure: RegressionTreeStructure,
 }
 
@@ -111,9 +113,17 @@ struct ObliviousSplitCandidate {
 pub fn train_cart_regressor(
     train_set: &DenseTable,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_cart_regressor_with_criterion(train_set, Criterion::Mean)
+}
+
+pub fn train_cart_regressor_with_criterion(
+    train_set: &DenseTable,
+    criterion: Criterion,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_regressor(
         train_set,
         RegressionTreeAlgorithm::Cart,
+        criterion,
         RegressionTreeOptions::default(),
     )
 }
@@ -121,9 +131,17 @@ pub fn train_cart_regressor(
 pub fn train_oblivious_regressor(
     train_set: &DenseTable,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_oblivious_regressor_with_criterion(train_set, Criterion::Mean)
+}
+
+pub fn train_oblivious_regressor_with_criterion(
+    train_set: &DenseTable,
+    criterion: Criterion,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_regressor(
         train_set,
         RegressionTreeAlgorithm::Oblivious,
+        criterion,
         RegressionTreeOptions::default(),
     )
 }
@@ -131,6 +149,7 @@ pub fn train_oblivious_regressor(
 fn train_regressor(
     train_set: &DenseTable,
     algorithm: RegressionTreeAlgorithm,
+    criterion: Criterion,
     options: RegressionTreeOptions,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     if train_set.n_rows() == 0 {
@@ -145,18 +164,20 @@ fn train_regressor(
             let context = BuildContext {
                 table: train_set,
                 targets: &targets,
+                criterion,
                 options,
             };
             let root = build_node(&context, &mut nodes, &all_rows, 0);
             RegressionTreeStructure::Standard { nodes, root }
         }
         RegressionTreeAlgorithm::Oblivious => {
-            train_oblivious_structure(train_set, &targets, options)
+            train_oblivious_structure(train_set, &targets, criterion, options)
         }
     };
 
     Ok(DecisionTreeRegressor {
         algorithm,
+        criterion,
         structure,
     })
 }
@@ -164,6 +185,10 @@ fn train_regressor(
 impl DecisionTreeRegressor {
     pub fn algorithm(&self) -> RegressionTreeAlgorithm {
         self.algorithm
+    }
+
+    pub fn criterion(&self) -> Criterion {
+        self.criterion
     }
 
     pub fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
@@ -217,6 +242,7 @@ impl DecisionTreeRegressor {
 struct BuildContext<'a> {
     table: &'a DenseTable,
     targets: &'a [f64],
+    criterion: Criterion,
     options: RegressionTreeOptions,
 }
 
@@ -242,7 +268,7 @@ fn build_node(
     rows: &[usize],
     depth: usize,
 ) -> usize {
-    let leaf_value = mean(rows, context.targets);
+    let leaf_value = regression_value(rows, context.targets, context.criterion);
 
     if rows.is_empty()
         || depth >= context.options.max_depth
@@ -259,6 +285,7 @@ fn build_node(
                 context.targets,
                 feature_index,
                 rows,
+                context.criterion,
                 context.options.min_samples_leaf,
             )
         })
@@ -299,11 +326,12 @@ fn build_node(
 fn train_oblivious_structure(
     table: &DenseTable,
     targets: &[f64],
+    criterion: Criterion,
     options: RegressionTreeOptions,
 ) -> RegressionTreeStructure {
     let all_rows: Vec<usize> = (0..table.n_rows()).collect();
     let mut leaves = vec![ObliviousLeafState {
-        value: mean(&all_rows, targets),
+        value: regression_value(&all_rows, targets, criterion),
         rows: all_rows,
     }];
     let mut splits = Vec::new();
@@ -316,6 +344,7 @@ fn train_oblivious_structure(
                     targets,
                     feature_index,
                     &leaves,
+                    criterion,
                     options.min_samples_leaf,
                 )
             })
@@ -337,6 +366,7 @@ fn train_oblivious_structure(
                     leaf,
                     best_split.feature_index,
                     best_split.threshold_bin,
+                    criterion,
                 )
             })
             .collect();
@@ -357,10 +387,11 @@ fn score_split(
     targets: &[f64],
     feature_index: usize,
     rows: &[usize],
+    criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<RegressionSplitCandidate> {
     let feature = table.binned_feature_column(feature_index);
-    let parent_sse = sum_squared_error(rows, targets);
+    let parent_loss = regression_loss(rows, targets, criterion);
 
     rows.iter()
         .map(|row_idx| feature.value(*row_idx))
@@ -376,9 +407,9 @@ fn score_split(
                 return None;
             }
 
-            let score = parent_sse
-                - (sum_squared_error(&left_rows, targets)
-                    + sum_squared_error(&right_rows, targets));
+            let score = parent_loss
+                - (regression_loss(&left_rows, targets, criterion)
+                    + regression_loss(&right_rows, targets, criterion));
 
             Some(RegressionSplitCandidate {
                 feature_index,
@@ -396,6 +427,7 @@ fn score_oblivious_split(
     targets: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
+    criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<ObliviousSplitCandidate> {
     let feature = table.binned_feature_column(feature_index);
@@ -418,9 +450,9 @@ fn score_oblivious_split(
                     return score;
                 }
 
-                score + sum_squared_error(&leaf.rows, targets)
-                    - (sum_squared_error(&left_rows, targets)
-                        + sum_squared_error(&right_rows, targets))
+                score + regression_loss(&leaf.rows, targets, criterion)
+                    - (regression_loss(&left_rows, targets, criterion)
+                        + regression_loss(&right_rows, targets, criterion))
             });
 
             (score > 0.0).then_some(ObliviousSplitCandidate {
@@ -438,6 +470,7 @@ fn split_oblivious_leaf(
     leaf: ObliviousLeafState,
     feature_index: usize,
     threshold_bin: u16,
+    criterion: Criterion,
 ) -> [ObliviousLeafState; 2] {
     let fallback_value = leaf.value;
     let feature = table.binned_feature_column(feature_index);
@@ -451,7 +484,7 @@ fn split_oblivious_leaf(
             value: if left_rows.is_empty() {
                 fallback_value
             } else {
-                mean(&left_rows, targets)
+                regression_value(&left_rows, targets, criterion)
             },
             rows: left_rows,
         },
@@ -459,7 +492,7 @@ fn split_oblivious_leaf(
             value: if right_rows.is_empty() {
                 fallback_value
             } else {
-                mean(&right_rows, targets)
+                regression_value(&right_rows, targets, criterion)
             },
             rows: right_rows,
         },
@@ -474,6 +507,18 @@ fn mean(rows: &[usize], targets: &[f64]) -> f64 {
     }
 }
 
+fn median(rows: &[usize], targets: &[f64]) -> f64 {
+    let mut values: Vec<f64> = rows.iter().map(|row_idx| targets[*row_idx]).collect();
+    values.sort_by(|left, right| left.total_cmp(right));
+
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    }
+}
+
 fn sum_squared_error(rows: &[usize], targets: &[f64]) -> f64 {
     let mean = mean(rows, targets);
     rows.iter()
@@ -482,6 +527,29 @@ fn sum_squared_error(rows: &[usize], targets: &[f64]) -> f64 {
             diff * diff
         })
         .sum()
+}
+
+fn sum_absolute_error(rows: &[usize], targets: &[f64]) -> f64 {
+    let median = median(rows, targets);
+    rows.iter()
+        .map(|row_idx| (targets[*row_idx] - median).abs())
+        .sum()
+}
+
+fn regression_value(rows: &[usize], targets: &[f64], criterion: Criterion) -> f64 {
+    match criterion {
+        Criterion::Mean => mean(rows, targets),
+        Criterion::Median => median(rows, targets),
+        _ => unreachable!("regression criterion only supports mean or median"),
+    }
+}
+
+fn regression_loss(rows: &[usize], targets: &[f64], criterion: Criterion) -> f64 {
+    match criterion {
+        Criterion::Mean => sum_squared_error(rows, targets),
+        Criterion::Median => sum_absolute_error(rows, targets),
+        _ => unreachable!("regression criterion only supports mean or median"),
+    }
 }
 
 fn has_constant_target(rows: &[usize], targets: &[f64]) -> bool {
@@ -544,6 +612,7 @@ mod tests {
         let preds = model.predict_table(&table);
 
         assert_eq!(model.algorithm(), RegressionTreeAlgorithm::Cart);
+        assert_eq!(model.criterion(), Criterion::Mean);
         assert_eq!(preds, table_targets(&table));
     }
 
@@ -554,7 +623,29 @@ mod tests {
         let preds = model.predict_table(&table);
 
         assert_eq!(model.algorithm(), RegressionTreeAlgorithm::Oblivious);
+        assert_eq!(model.criterion(), Criterion::Mean);
         assert_eq!(preds, table_targets(&table));
+    }
+
+    #[test]
+    fn regressors_can_choose_between_mean_and_median() {
+        let table = DenseTable::with_canaries(
+            vec![vec![0.0], vec![0.0], vec![0.0]],
+            vec![0.0, 0.0, 100.0],
+            0,
+        )
+        .unwrap();
+
+        let mean_model = train_cart_regressor_with_criterion(&table, Criterion::Mean).unwrap();
+        let median_model = train_cart_regressor_with_criterion(&table, Criterion::Median).unwrap();
+
+        assert_eq!(mean_model.criterion(), Criterion::Mean);
+        assert_eq!(median_model.criterion(), Criterion::Median);
+        assert_eq!(
+            mean_model.predict_table(&table),
+            vec![100.0 / 3.0, 100.0 / 3.0, 100.0 / 3.0]
+        );
+        assert_eq!(median_model.predict_table(&table), vec![0.0, 0.0, 0.0]);
     }
 
     #[test]

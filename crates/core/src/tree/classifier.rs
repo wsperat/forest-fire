@@ -1,3 +1,4 @@
+use crate::Criterion;
 use forestfire_data::DenseTable;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -52,6 +53,7 @@ impl Error for DecisionTreeError {}
 #[derive(Debug, Clone)]
 pub struct DecisionTreeClassifier {
     algorithm: DecisionTreeAlgorithm,
+    criterion: Criterion,
     class_labels: Vec<f64>,
     structure: TreeStructure,
 }
@@ -109,25 +111,49 @@ enum SplitCandidate {
 }
 
 pub fn train_id3(train_set: &DenseTable) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_id3_with_criterion(train_set, Criterion::Entropy)
+}
+
+pub fn train_id3_with_criterion(
+    train_set: &DenseTable,
+    criterion: Criterion,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::Id3,
+        criterion,
         DecisionTreeOptions::default(),
     )
 }
 
 pub fn train_c45(train_set: &DenseTable) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_c45_with_criterion(train_set, Criterion::Entropy)
+}
+
+pub fn train_c45_with_criterion(
+    train_set: &DenseTable,
+    criterion: Criterion,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::C45,
+        criterion,
         DecisionTreeOptions::default(),
     )
 }
 
 pub fn train_cart(train_set: &DenseTable) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_cart_with_criterion(train_set, Criterion::Gini)
+}
+
+pub fn train_cart_with_criterion(
+    train_set: &DenseTable,
+    criterion: Criterion,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::Cart,
+        criterion,
         DecisionTreeOptions::default(),
     )
 }
@@ -135,9 +161,17 @@ pub fn train_cart(train_set: &DenseTable) -> Result<DecisionTreeClassifier, Deci
 pub fn train_oblivious(
     train_set: &DenseTable,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_oblivious_with_criterion(train_set, Criterion::Gini)
+}
+
+pub fn train_oblivious_with_criterion(
+    train_set: &DenseTable,
+    criterion: Criterion,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::Oblivious,
+        criterion,
         DecisionTreeOptions::default(),
     )
 }
@@ -145,6 +179,7 @@ pub fn train_oblivious(
 fn train_classifier(
     train_set: &DenseTable,
     algorithm: DecisionTreeAlgorithm,
+    criterion: Criterion,
     options: DecisionTreeOptions,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     if train_set.n_rows() == 0 {
@@ -154,7 +189,7 @@ fn train_classifier(
     let (class_labels, class_indices) = encode_class_labels(train_set)?;
     let structure = match algorithm {
         DecisionTreeAlgorithm::Oblivious => {
-            train_oblivious_structure(train_set, &class_indices, &class_labels, options)
+            train_oblivious_structure(train_set, &class_indices, &class_labels, criterion, options)
         }
         _ => {
             let mut nodes = Vec::new();
@@ -164,6 +199,7 @@ fn train_classifier(
                 class_indices: &class_indices,
                 class_labels: &class_labels,
                 algorithm,
+                criterion,
                 options,
             };
             let root = build_node(&context, &mut nodes, &all_rows, 0);
@@ -173,6 +209,7 @@ fn train_classifier(
 
     Ok(DecisionTreeClassifier {
         algorithm,
+        criterion,
         class_labels,
         structure,
     })
@@ -181,6 +218,10 @@ fn train_classifier(
 impl DecisionTreeClassifier {
     pub fn algorithm(&self) -> DecisionTreeAlgorithm {
         self.algorithm
+    }
+
+    pub fn criterion(&self) -> Criterion {
+        self.criterion
     }
 
     pub fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
@@ -305,18 +346,15 @@ fn build_node(
         return push_leaf(nodes, majority_class_index);
     }
 
+    let scoring = SplitScoringContext {
+        table: context.table,
+        class_indices: context.class_indices,
+        num_classes: context.class_labels.len(),
+        criterion: context.criterion,
+        min_samples_leaf: context.options.min_samples_leaf,
+    };
     let best_split = (0..context.table.binned_feature_count())
-        .filter_map(|feature_index| {
-            score_split(
-                context.table,
-                context.class_indices,
-                feature_index,
-                rows,
-                context.class_labels.len(),
-                context.algorithm,
-                context.options.min_samples_leaf,
-            )
-        })
+        .filter_map(|feature_index| score_split(&scoring, feature_index, rows, context.algorithm))
         .max_by(|left, right| split_score(left).total_cmp(&split_score(right)));
 
     match best_split {
@@ -377,7 +415,16 @@ struct BuildContext<'a> {
     class_indices: &'a [usize],
     class_labels: &'a [f64],
     algorithm: DecisionTreeAlgorithm,
+    criterion: Criterion,
     options: DecisionTreeOptions,
+}
+
+struct SplitScoringContext<'a> {
+    table: &'a DenseTable,
+    class_indices: &'a [usize],
+    num_classes: usize,
+    criterion: Criterion,
+    min_samples_leaf: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -390,6 +437,7 @@ fn train_oblivious_structure(
     table: &DenseTable,
     class_indices: &[usize],
     class_labels: &[f64],
+    criterion: Criterion,
     options: DecisionTreeOptions,
 ) -> TreeStructure {
     let all_rows: Vec<usize> = (0..table.n_rows()).collect();
@@ -408,6 +456,7 @@ fn train_oblivious_structure(
                     feature_index,
                     &leaves,
                     class_labels.len(),
+                    criterion,
                     options.min_samples_leaf,
                 )
             })
@@ -460,6 +509,7 @@ fn score_oblivious_split(
     feature_index: usize,
     leaves: &[ObliviousLeafState],
     num_classes: usize,
+    criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<ObliviousSplitCandidate> {
     let feature = table.binned_feature_column(feature_index);
@@ -486,13 +536,14 @@ fn score_oblivious_split(
                 let left_counts = class_counts(&left_rows, class_indices, num_classes);
                 let right_counts = class_counts(&right_rows, class_indices, num_classes);
 
-                let weighted_parent_gini =
-                    leaf.rows.len() as f64 * gini(&parent_counts, leaf.rows.len());
-                let weighted_children_gini = left_rows.len() as f64
-                    * gini(&left_counts, left_rows.len())
-                    + right_rows.len() as f64 * gini(&right_counts, right_rows.len());
+                let weighted_parent_impurity = leaf.rows.len() as f64
+                    * classification_impurity(&parent_counts, leaf.rows.len(), criterion);
+                let weighted_children_impurity = left_rows.len() as f64
+                    * classification_impurity(&left_counts, left_rows.len(), criterion)
+                    + right_rows.len() as f64
+                        * classification_impurity(&right_counts, right_rows.len(), criterion);
 
-                score + (weighted_parent_gini - weighted_children_gini)
+                score + (weighted_parent_impurity - weighted_children_impurity)
             });
 
             (score > 0.0).then_some(ObliviousSplitCandidate {
@@ -542,55 +593,33 @@ fn split_oblivious_leaf(
 }
 
 fn score_split(
-    table: &DenseTable,
-    class_indices: &[usize],
+    context: &SplitScoringContext<'_>,
     feature_index: usize,
     rows: &[usize],
-    num_classes: usize,
     algorithm: DecisionTreeAlgorithm,
-    min_samples_leaf: usize,
 ) -> Option<SplitCandidate> {
     match algorithm {
         DecisionTreeAlgorithm::Id3 => score_multiway_split(
-            table,
-            class_indices,
+            context,
             feature_index,
             rows,
-            num_classes,
             MultiwayMetric::InformationGain,
-            min_samples_leaf,
         ),
-        DecisionTreeAlgorithm::C45 => score_multiway_split(
-            table,
-            class_indices,
-            feature_index,
-            rows,
-            num_classes,
-            MultiwayMetric::GainRatio,
-            min_samples_leaf,
-        ),
-        DecisionTreeAlgorithm::Cart => score_cart_split(
-            table,
-            class_indices,
-            feature_index,
-            rows,
-            num_classes,
-            min_samples_leaf,
-        ),
+        DecisionTreeAlgorithm::C45 => {
+            score_multiway_split(context, feature_index, rows, MultiwayMetric::GainRatio)
+        }
+        DecisionTreeAlgorithm::Cart => score_cart_split(context, feature_index, rows),
         DecisionTreeAlgorithm::Oblivious => None,
     }
 }
 
 fn score_multiway_split(
-    table: &DenseTable,
-    class_indices: &[usize],
+    context: &SplitScoringContext<'_>,
     feature_index: usize,
     rows: &[usize],
-    num_classes: usize,
     metric: MultiwayMetric,
-    min_samples_leaf: usize,
 ) -> Option<SplitCandidate> {
-    let feature = table.binned_feature_column(feature_index);
+    let feature = context.table.binned_feature_column(feature_index);
     let grouped_rows =
         rows.iter()
             .fold(BTreeMap::<u16, Vec<usize>>::new(), |mut groups, row_idx| {
@@ -604,21 +633,22 @@ fn score_multiway_split(
     if grouped_rows.len() <= 1
         || grouped_rows
             .values()
-            .any(|group| group.len() < min_samples_leaf)
+            .any(|group| group.len() < context.min_samples_leaf)
     {
         return None;
     }
 
-    let parent_counts = class_counts(rows, class_indices, num_classes);
-    let parent_entropy = entropy(&parent_counts, rows.len());
-    let weighted_child_entropy = grouped_rows
+    let parent_counts = class_counts(rows, context.class_indices, context.num_classes);
+    let parent_impurity = classification_impurity(&parent_counts, rows.len(), context.criterion);
+    let weighted_child_impurity = grouped_rows
         .values()
         .map(|group_rows| {
-            let counts = class_counts(group_rows, class_indices, num_classes);
-            (group_rows.len() as f64 / rows.len() as f64) * entropy(&counts, group_rows.len())
+            let counts = class_counts(group_rows, context.class_indices, context.num_classes);
+            (group_rows.len() as f64 / rows.len() as f64)
+                * classification_impurity(&counts, group_rows.len(), context.criterion)
         })
         .sum::<f64>();
-    let information_gain = parent_entropy - weighted_child_entropy;
+    let information_gain = parent_impurity - weighted_child_impurity;
 
     let score = match metric {
         MultiwayMetric::InformationGain => information_gain,
@@ -647,16 +677,13 @@ fn score_multiway_split(
 }
 
 fn score_cart_split(
-    table: &DenseTable,
-    class_indices: &[usize],
+    context: &SplitScoringContext<'_>,
     feature_index: usize,
     rows: &[usize],
-    num_classes: usize,
-    min_samples_leaf: usize,
 ) -> Option<SplitCandidate> {
-    let feature = table.binned_feature_column(feature_index);
-    let parent_counts = class_counts(rows, class_indices, num_classes);
-    let parent_gini = gini(&parent_counts, rows.len());
+    let feature = context.table.binned_feature_column(feature_index);
+    let parent_counts = class_counts(rows, context.class_indices, context.num_classes);
+    let parent_impurity = classification_impurity(&parent_counts, rows.len(), context.criterion);
 
     rows.iter()
         .map(|row_idx| feature.value(*row_idx))
@@ -668,20 +695,23 @@ fn score_cart_split(
                 .copied()
                 .partition(|row_idx| feature.value(*row_idx) <= threshold_bin);
 
-            if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
+            if left_rows.len() < context.min_samples_leaf
+                || right_rows.len() < context.min_samples_leaf
+            {
                 return None;
             }
 
-            let left_counts = class_counts(&left_rows, class_indices, num_classes);
-            let right_counts = class_counts(&right_rows, class_indices, num_classes);
-            let weighted_gini = (left_rows.len() as f64 / rows.len() as f64)
-                * gini(&left_counts, left_rows.len())
+            let left_counts = class_counts(&left_rows, context.class_indices, context.num_classes);
+            let right_counts =
+                class_counts(&right_rows, context.class_indices, context.num_classes);
+            let weighted_impurity = (left_rows.len() as f64 / rows.len() as f64)
+                * classification_impurity(&left_counts, left_rows.len(), context.criterion)
                 + (right_rows.len() as f64 / rows.len() as f64)
-                    * gini(&right_counts, right_rows.len());
+                    * classification_impurity(&right_counts, right_rows.len(), context.criterion);
 
             Some(SplitCandidate::Binary {
                 feature_index,
-                score: parent_gini - weighted_gini,
+                score: parent_impurity - weighted_impurity,
                 threshold_bin,
                 left_rows,
                 right_rows,
@@ -737,6 +767,14 @@ fn gini(counts: &[usize], total: usize) -> f64 {
         .sum::<f64>()
 }
 
+fn classification_impurity(counts: &[usize], total: usize, criterion: Criterion) -> f64 {
+    match criterion {
+        Criterion::Entropy => entropy(counts, total),
+        Criterion::Gini => gini(counts, total),
+        _ => unreachable!("classification impurity only supports gini or entropy"),
+    }
+}
+
 fn split_score(candidate: &SplitCandidate) -> f64 {
     match candidate {
         SplitCandidate::Multiway { score, .. } | SplitCandidate::Binary { score, .. } => *score,
@@ -786,6 +824,23 @@ mod tests {
         .unwrap()
     }
 
+    fn criterion_choice_table() -> DenseTable {
+        DenseTable::with_canaries(
+            vec![
+                vec![0.0, 1.0],
+                vec![4.0, 1.0],
+                vec![4.0, 0.0],
+                vec![0.0, 1.0],
+                vec![5.0, 2.0],
+                vec![2.0, 4.0],
+                vec![1.0, 2.0],
+            ],
+            vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap()
+    }
+
     fn canary_target_table() -> DenseTable {
         let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
         let probe = DenseTable::with_canaries(x.clone(), vec![0.0; 8], 1).unwrap();
@@ -809,6 +864,7 @@ mod tests {
         let model = train_id3(&table).unwrap();
 
         assert_eq!(model.algorithm(), DecisionTreeAlgorithm::Id3);
+        assert_eq!(model.criterion(), Criterion::Entropy);
         assert_eq!(model.predict_table(&table), table_targets(&table));
     }
 
@@ -818,6 +874,7 @@ mod tests {
         let model = train_c45(&table).unwrap();
 
         assert_eq!(model.algorithm(), DecisionTreeAlgorithm::C45);
+        assert_eq!(model.criterion(), Criterion::Entropy);
         assert_eq!(model.predict_table(&table), table_targets(&table));
     }
 
@@ -827,6 +884,7 @@ mod tests {
         let model = train_cart(&table).unwrap();
 
         assert_eq!(model.algorithm(), DecisionTreeAlgorithm::Cart);
+        assert_eq!(model.criterion(), Criterion::Gini);
         assert_eq!(model.predict_table(&table), table_targets(&table));
     }
 
@@ -836,7 +894,44 @@ mod tests {
         let model = train_oblivious(&table).unwrap();
 
         assert_eq!(model.algorithm(), DecisionTreeAlgorithm::Oblivious);
+        assert_eq!(model.criterion(), Criterion::Gini);
         assert_eq!(model.predict_table(&table), table_targets(&table));
+    }
+
+    #[test]
+    fn cart_can_choose_between_gini_and_entropy() {
+        let table = criterion_choice_table();
+        let options = DecisionTreeOptions {
+            max_depth: 1,
+            ..DecisionTreeOptions::default()
+        };
+        let gini_model = train_classifier(
+            &table,
+            DecisionTreeAlgorithm::Cart,
+            Criterion::Gini,
+            options,
+        )
+        .unwrap();
+        let entropy_model = train_classifier(
+            &table,
+            DecisionTreeAlgorithm::Cart,
+            Criterion::Entropy,
+            options,
+        )
+        .unwrap();
+
+        let root_feature = |model: &DecisionTreeClassifier| match &model.structure {
+            TreeStructure::Standard { nodes, root } => match &nodes[*root] {
+                TreeNode::BinarySplit { feature_index, .. } => *feature_index,
+                node => panic!("expected binary root split, found {node:?}"),
+            },
+            TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+        };
+
+        assert_eq!(gini_model.criterion(), Criterion::Gini);
+        assert_eq!(entropy_model.criterion(), Criterion::Entropy);
+        assert_eq!(root_feature(&gini_model), 0);
+        assert_eq!(root_feature(&entropy_model), 1);
     }
 
     #[test]

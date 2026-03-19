@@ -15,6 +15,7 @@ def test_train_and_predict_shape_and_value(toy_data):
     m = train(X, y, algorithm="dt", tree_type="target_mean")
     assert m.algorithm == "dt"
     assert m.task == "regression"
+    assert m.criterion == "mean"
     assert m.tree_type == "target_mean"
     assert m.mean_ == pytest.approx(14.0, abs=1e-12)
 
@@ -55,6 +56,7 @@ def test_train_cart_classifier():
 
     assert model.algorithm == "dt"
     assert model.task == "classification"
+    assert model.criterion == "gini"
     assert model.tree_type == "cart"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -70,6 +72,7 @@ def test_train_id3_classifier():
 
     assert model.algorithm == "dt"
     assert model.task == "classification"
+    assert model.criterion == "entropy"
     assert model.tree_type == "id3"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -85,6 +88,7 @@ def test_train_c45_classifier():
 
     assert model.algorithm == "dt"
     assert model.task == "classification"
+    assert model.criterion == "entropy"
     assert model.tree_type == "c45"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -100,6 +104,7 @@ def test_train_oblivious_classifier():
 
     assert model.algorithm == "dt"
     assert model.task == "classification"
+    assert model.criterion == "gini"
     assert model.tree_type == "oblivious"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -113,6 +118,7 @@ def test_train_cart_regressor():
 
     assert model.algorithm == "dt"
     assert model.task == "regression"
+    assert model.criterion == "mean"
     assert model.tree_type == "cart"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -128,9 +134,40 @@ def test_train_oblivious_regressor():
 
     assert model.algorithm == "dt"
     assert model.task == "regression"
+    assert model.criterion == "mean"
     assert model.tree_type == "oblivious"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
+
+
+def test_train_target_mean_can_use_median_criterion():
+    X = np.zeros((3, 1))
+    y = np.array([0.0, 0.0, 100.0])
+
+    model = train(X, y, criterion="median")
+
+    assert model.task == "regression"
+    assert model.criterion == "median"
+    assert model.tree_type == "target_mean"
+    assert model.mean_ == 0.0
+    assert np.array_equal(model.predict(X), np.array([0.0, 0.0, 0.0]))
+
+
+def test_train_cart_regressor_can_use_median_criterion():
+    X = np.zeros((3, 1))
+    y = np.array([0.0, 0.0, 100.0])
+
+    mean_model = train(
+        X, y, task="regression", tree_type="cart", criterion="mean", canaries=0
+    )
+    median_model = train(
+        X, y, task="regression", tree_type="cart", criterion="median", canaries=0
+    )
+
+    assert mean_model.criterion == "mean"
+    assert median_model.criterion == "median"
+    assert np.allclose(mean_model.predict(X), np.array([100.0 / 3.0] * 3))
+    assert np.array_equal(median_model.predict(X), np.array([0.0, 0.0, 0.0]))
 
 
 def test_train_rejects_unknown_algorithm():
@@ -149,20 +186,29 @@ def test_train_rejects_unknown_task():
         train(X, y, task="ranking")
 
 
+def test_train_rejects_unknown_criterion():
+    X = np.zeros((2, 1))
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Unsupported criterion"):
+        train(X, y, criterion="mae")
+
+
 @pytest.mark.parametrize(
-    ("task", "tree_type"),
+    ("task", "tree_type", "criterion"),
     [
-        ("regression", "id3"),
-        ("regression", "c45"),
-        ("classification", "target_mean"),
+        ("regression", "id3", "auto"),
+        ("regression", "c45", "auto"),
+        ("classification", "target_mean", "auto"),
+        ("classification", "cart", "mean"),
     ],
 )
-def test_train_rejects_unsupported_task_tree_type_pairs(task, tree_type):
+def test_train_rejects_unsupported_task_tree_type_pairs(task, tree_type, criterion):
     X = np.array([[0.0], [1.0], [2.0]])
     y = np.array([0.0, 1.0, 2.0])
 
     with pytest.raises(ValueError, match="Unsupported training configuration"):
-        train(X, y, task=task, tree_type=tree_type)
+        train(X, y, task=task, tree_type=tree_type, criterion=criterion)
 
 
 def test_train_accepts_canaries_hyperparameter():

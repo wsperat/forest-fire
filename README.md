@@ -9,7 +9,7 @@ The current implementation focuses on a unified `train` interface, Arrow-backed 
 
 - Performance-first: Rust + Rayon for parallel training/prediction; cache-friendly data layouts.
 - Arrow-backed storage: `DenseTable` stores feature columns in Arrow arrays and pre-bins numeric features into 512 bins.
-- Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., task=..., tree_type=...)` entrypoint.
+- Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., task=..., tree_type=..., criterion=...)` entrypoint.
 - Automatic growth stopping: shuffled canary variables are generated during table construction and halt growth when selected.
 - Extensible design: a common dispatcher for tree learners behind one training interface.
 
@@ -84,6 +84,12 @@ Priorities may shift in the future, and new ones added.
 - Supported tasks:
     - `regression`
     - `classification`
+- Supported criteria:
+    - `gini`
+    - `entropy`
+    - `mean`
+    - `median`
+    - `auto` (resolved from task and tree type)
 - Automatic canary-based growth stopping with `canaries=2` by default
 - NumPy input support in Python
 
@@ -124,6 +130,7 @@ clf = train(
     algorithm="dt",
     task="classification",
     tree_type="cart",
+    criterion="gini",
     canaries=2,
 )
 pred = clf.predict(X)            # -> NumPy array [n_samples]
@@ -137,6 +144,10 @@ The current task/tree support is:
 - `task="regression"` with `tree_type="target_mean" | "cart" | "oblivious"`
 - `task="classification"` with `tree_type="id3" | "c45" | "cart" | "oblivious"`
 
+The current criterion support is:
+- classification trees: `criterion="gini" | "entropy"` and `auto`
+- regression models: `criterion="mean" | "median"` and `auto`
+
 Training materializes an Arrow-backed `DenseTable`, pre-bins numerical columns into 512 rank bins, and appends shuffled canary copies of the binned columns.
 
 If a split chooses a canary variable, growth stops automatically at that node. For oblivious trees, selecting a canary stops the whole tree-growth loop.
@@ -144,7 +155,7 @@ If a split chooses a canary variable, growth stops automatically at that node. F
 # Quickstart (Rust)
 ```rust
 use anyhow::Result;
-use forestfire_core::{train, Task, TrainAlgorithm, TrainConfig, TreeType};
+use forestfire_core::{train, Criterion, Task, TrainAlgorithm, TrainConfig, TreeType};
 use forestfire_data::DenseTable;
 
 fn main() -> Result<()> {
@@ -160,6 +171,7 @@ fn main() -> Result<()> {
         algorithm: TrainAlgorithm::Dt,
         task: Task::Classification,
         tree_type: TreeType::Cart,
+        criterion: Criterion::Gini,
     };
     let model = train(&table, config)?;
     let preds = model.predict_table(&table);

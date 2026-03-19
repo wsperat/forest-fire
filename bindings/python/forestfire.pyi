@@ -10,12 +10,14 @@ def train(
     algorithm: str = "dt",
     task: str = "regression",
     tree_type: str = "target_mean",
+    criterion: str = "auto",
     canaries: int = 2,
 ) -> "Model": ...
 
 class Model:
     algorithm: str
     task: str
+    criterion: str
     tree_type: str
     mean_: float | None
 

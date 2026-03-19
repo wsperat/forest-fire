@@ -28,6 +28,15 @@ pub enum TrainAlgorithm {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Criterion {
+    Auto,
+    Gini,
+    Entropy,
+    Mean,
+    Median,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {
     Regression,
     Classification,
@@ -47,6 +56,7 @@ pub struct TrainConfig {
     pub algorithm: TrainAlgorithm,
     pub task: Task,
     pub tree_type: TreeType,
+    pub criterion: Criterion,
 }
 
 impl Default for TrainConfig {
@@ -55,6 +65,7 @@ impl Default for TrainConfig {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Regression,
             tree_type: TreeType::TargetMean,
+            criterion: Criterion::Auto,
         }
     }
 }
@@ -71,7 +82,11 @@ pub enum TrainError {
     Mean(ModelError),
     DecisionTree(DecisionTreeError),
     RegressionTree(RegressionTreeError),
-    UnsupportedConfiguration { task: Task, tree_type: TreeType },
+    UnsupportedConfiguration {
+        task: Task,
+        tree_type: TreeType,
+        criterion: Criterion,
+    },
 }
 
 impl Display for TrainError {
@@ -80,10 +95,14 @@ impl Display for TrainError {
             TrainError::Mean(err) => err.fmt(f),
             TrainError::DecisionTree(err) => err.fmt(f),
             TrainError::RegressionTree(err) => err.fmt(f),
-            TrainError::UnsupportedConfiguration { task, tree_type } => write!(
+            TrainError::UnsupportedConfiguration {
+                task,
+                tree_type,
+                criterion,
+            } => write!(
                 f,
-                "Unsupported training configuration: task={:?}, tree_type={:?}.",
-                task, tree_type
+                "Unsupported training configuration: task={:?}, tree_type={:?}, criterion={:?}.",
+                task, tree_type, criterion
             ),
         }
     }
@@ -92,38 +111,103 @@ impl Display for TrainError {
 impl Error for TrainError {}
 
 pub fn train(train_set: &DenseTable, config: TrainConfig) -> Result<Model, TrainError> {
-    match (config.algorithm, config.task, config.tree_type) {
-        (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean) => {
-            train_target_mean(train_set)
+    let criterion = resolve_criterion(config.task, config.tree_type, config.criterion)?;
+
+    match (config.algorithm, config.task, config.tree_type, criterion) {
+        (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Mean)
+        | (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Median) => {
+            tree::mean_tree::train_target_mean_with_criterion(train_set, criterion)
                 .map(Model::TargetMean)
                 .map_err(TrainError::Mean)
         }
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3) => train_id3(train_set)
-            .map(Model::DecisionTreeClassifier)
-            .map_err(TrainError::DecisionTree),
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::C45) => train_c45(train_set)
-            .map(Model::DecisionTreeClassifier)
-            .map_err(TrainError::DecisionTree),
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart) => train_cart(train_set)
-            .map(Model::DecisionTreeClassifier)
-            .map_err(TrainError::DecisionTree),
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious) => {
-            train_oblivious(train_set)
+        (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Gini)
+        | (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Entropy) => {
+            tree::classifier::train_id3_with_criterion(train_set, criterion)
                 .map(Model::DecisionTreeClassifier)
                 .map_err(TrainError::DecisionTree)
         }
-        (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart) => train_cart_regressor(train_set)
-            .map(Model::DecisionTreeRegressor)
-            .map_err(TrainError::RegressionTree),
-        (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious) => {
-            train_oblivious_regressor(train_set)
+        (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Gini)
+        | (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Entropy) => {
+            tree::classifier::train_c45_with_criterion(train_set, criterion)
+                .map(Model::DecisionTreeClassifier)
+                .map_err(TrainError::DecisionTree)
+        }
+        (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Gini)
+        | (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Entropy) => {
+            tree::classifier::train_cart_with_criterion(train_set, criterion)
+                .map(Model::DecisionTreeClassifier)
+                .map_err(TrainError::DecisionTree)
+        }
+        (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Gini)
+        | (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Entropy) => {
+            tree::classifier::train_oblivious_with_criterion(train_set, criterion)
+                .map(Model::DecisionTreeClassifier)
+                .map_err(TrainError::DecisionTree)
+        }
+        (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Mean)
+        | (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Median) => {
+            tree::regressor::train_cart_regressor_with_criterion(train_set, criterion)
                 .map(Model::DecisionTreeRegressor)
                 .map_err(TrainError::RegressionTree)
         }
-        (TrainAlgorithm::Dt, task, tree_type) => {
-            Err(TrainError::UnsupportedConfiguration { task, tree_type })
+        (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Mean)
+        | (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Median) => {
+            tree::regressor::train_oblivious_regressor_with_criterion(train_set, criterion)
+                .map(Model::DecisionTreeRegressor)
+                .map_err(TrainError::RegressionTree)
+        }
+        (TrainAlgorithm::Dt, task, tree_type, criterion) => {
+            Err(TrainError::UnsupportedConfiguration {
+                task,
+                tree_type,
+                criterion,
+            })
         }
     }
+}
+
+fn resolve_criterion(
+    task: Task,
+    tree_type: TreeType,
+    criterion: Criterion,
+) -> Result<Criterion, TrainError> {
+    let resolved = match (task, tree_type, criterion) {
+        (Task::Regression, TreeType::TargetMean, Criterion::Auto) => Criterion::Mean,
+        (Task::Regression, TreeType::TargetMean, Criterion::Mean | Criterion::Median) => criterion,
+        (Task::Regression, TreeType::Cart | TreeType::Oblivious, Criterion::Auto) => {
+            Criterion::Mean
+        }
+        (
+            Task::Regression,
+            TreeType::Cart | TreeType::Oblivious,
+            Criterion::Mean | Criterion::Median,
+        ) => criterion,
+        (Task::Classification, TreeType::Id3 | TreeType::C45, Criterion::Auto) => {
+            Criterion::Entropy
+        }
+        (
+            Task::Classification,
+            TreeType::Id3 | TreeType::C45,
+            Criterion::Gini | Criterion::Entropy,
+        ) => criterion,
+        (Task::Classification, TreeType::Cart | TreeType::Oblivious, Criterion::Auto) => {
+            Criterion::Gini
+        }
+        (
+            Task::Classification,
+            TreeType::Cart | TreeType::Oblivious,
+            Criterion::Gini | Criterion::Entropy,
+        ) => criterion,
+        (task, tree_type, criterion) => {
+            return Err(TrainError::UnsupportedConfiguration {
+                task,
+                tree_type,
+                criterion,
+            });
+        }
+    };
+
+    Ok(resolved)
 }
 
 impl Model {
@@ -147,6 +231,14 @@ impl Model {
         match self {
             Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => Task::Regression,
             Model::DecisionTreeClassifier(_) => Task::Classification,
+        }
+    }
+
+    pub fn criterion(&self) -> Criterion {
+        match self {
+            Model::TargetMean(model) => model.criterion(),
+            Model::DecisionTreeClassifier(model) => model.criterion(),
+            Model::DecisionTreeRegressor(model) => model.criterion(),
         }
     }
 
@@ -199,6 +291,7 @@ mod tests {
                 algorithm: TrainAlgorithm::Dt,
                 task: Task::Regression,
                 tree_type: TreeType::Cart,
+                criterion: Criterion::Mean,
             },
         )
         .unwrap();
@@ -206,6 +299,7 @@ mod tests {
         assert!(matches!(model, Model::DecisionTreeRegressor(_)));
         assert_eq!(model.task(), Task::Regression);
         assert_eq!(model.tree_type(), TreeType::Cart);
+        assert_eq!(model.criterion(), Criterion::Mean);
     }
 
     #[test]
@@ -218,6 +312,7 @@ mod tests {
                 algorithm: TrainAlgorithm::Dt,
                 task: Task::Regression,
                 tree_type: TreeType::Id3,
+                criterion: Criterion::Mean,
             },
         )
         .unwrap_err();
@@ -227,6 +322,7 @@ mod tests {
             TrainError::UnsupportedConfiguration {
                 task: Task::Regression,
                 tree_type: TreeType::Id3,
+                criterion: Criterion::Mean,
             }
         ));
     }

@@ -1,4 +1,6 @@
-use forestfire_core::{Model, Task, TrainAlgorithm, TrainConfig, TreeType, train as train_model};
+use forestfire_core::{
+    Criterion, Model, Task, TrainAlgorithm, TrainConfig, TreeType, train as train_model,
+};
 use forestfire_data::DenseTable;
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{Bound, prelude::*};
@@ -67,6 +69,20 @@ fn parse_task(task: &str) -> PyResult<Task> {
     }
 }
 
+fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
+    match criterion {
+        "auto" => Ok(Criterion::Auto),
+        "gini" => Ok(Criterion::Gini),
+        "entropy" => Ok(Criterion::Entropy),
+        "mean" => Ok(Criterion::Mean),
+        "median" => Ok(Criterion::Median),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported criterion '{}'. Expected one of: auto, gini, entropy, mean, median",
+            criterion
+        ))),
+    }
+}
+
 fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
@@ -77,6 +93,16 @@ fn task_name(task: Task) -> &'static str {
     match task {
         Task::Regression => "regression",
         Task::Classification => "classification",
+    }
+}
+
+fn criterion_name(criterion: Criterion) -> &'static str {
+    match criterion {
+        Criterion::Auto => "auto",
+        Criterion::Gini => "gini",
+        Criterion::Entropy => "entropy",
+        Criterion::Mean => "mean",
+        Criterion::Median => "median",
     }
 }
 
@@ -91,13 +117,14 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y, algorithm="dt", task="regression", tree_type="target_mean", canaries=2))]
+#[pyo3(signature = (x, y, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2))]
 fn train(
     x: PyReadonlyArray2<f64>,
     y: PyReadonlyArray1<f64>,
     algorithm: &str,
     task: &str,
     tree_type: &str,
+    criterion: &str,
     canaries: usize,
 ) -> PyResult<PyModel> {
     let table = build_table(x, y, canaries)?;
@@ -105,6 +132,7 @@ fn train(
         algorithm: parse_algorithm(algorithm)?,
         task: parse_task(task)?,
         tree_type: parse_tree_type(tree_type)?,
+        criterion: parse_criterion(criterion)?,
     };
     let model = train_model(&table, config)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
@@ -132,6 +160,11 @@ impl PyModel {
     #[getter]
     fn task(&self) -> &'static str {
         task_name(self.inner.task())
+    }
+
+    #[getter]
+    fn criterion(&self) -> &'static str {
+        criterion_name(self.inner.criterion())
     }
 
     #[getter]
