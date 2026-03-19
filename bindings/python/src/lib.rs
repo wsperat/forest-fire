@@ -2,7 +2,7 @@ use forestfire_core::{
     Criterion, Model, Task, TrainAlgorithm, TrainConfig, TreeType, train as train_model,
 };
 use forestfire_data::{Table, TableAccess, TableKind};
-use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::types::PyDict;
 use pyo3::{Bound, prelude::*};
 
@@ -81,6 +81,21 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
             .collect());
     }
 
+    if x.hasattr("toarray")? {
+        let as_array = x.call_method0("toarray")?;
+        return extract_matrix(&as_array);
+    }
+
+    if x.hasattr("todense")? {
+        let as_dense = x.call_method0("todense")?;
+        return extract_matrix(&as_dense);
+    }
+
+    if x.hasattr("__array__")? {
+        let as_array = x.call_method0("__array__")?;
+        return extract_matrix(&as_array);
+    }
+
     if x.hasattr("to_numpy")? {
         let as_numpy = x.call_method0("to_numpy")?;
         return extract_matrix(&as_numpy);
@@ -139,12 +154,51 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
         return Ok(array.as_array().to_vec());
     }
 
+    if let Ok(array) = y.extract::<PyReadonlyArray2<'_, f64>>() {
+        let shape = array.shape();
+        if shape[0] == 1 || shape[1] == 1 {
+            return Ok(array.as_array().iter().copied().collect());
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Target arrays must be one-dimensional or have a single row/column.",
+        ));
+    }
+
     if let Ok(array) = y.extract::<PyReadonlyArray1<'_, bool>>() {
         return Ok(array
             .as_array()
             .iter()
             .map(|value| f64::from(u8::from(*value)))
             .collect());
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray2<'_, bool>>() {
+        let shape = array.shape();
+        if shape[0] == 1 || shape[1] == 1 {
+            return Ok(array
+                .as_array()
+                .iter()
+                .map(|value| f64::from(u8::from(*value)))
+                .collect());
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Target arrays must be one-dimensional or have a single row/column.",
+        ));
+    }
+
+    if y.hasattr("toarray")? {
+        let as_array = y.call_method0("toarray")?;
+        return extract_vector(&as_array);
+    }
+
+    if y.hasattr("todense")? {
+        let as_dense = y.call_method0("todense")?;
+        return extract_vector(&as_dense);
+    }
+
+    if y.hasattr("__array__")? {
+        let as_array = y.call_method0("__array__")?;
+        return extract_vector(&as_array);
     }
 
     if y.hasattr("to_numpy")? {

@@ -445,3 +445,28 @@ def test_table_accepts_pyarrow_tables_if_installed():
     assert table.kind == "sparse"
     model = train(table, task="classification", tree_type="cart")
     assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
+
+
+def test_table_accepts_scipy_sparse_matrices_if_installed():
+    scipy_sparse = pytest.importorskip("scipy.sparse")
+
+    X = scipy_sparse.csr_matrix([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0, 1.0])
+
+    table = Table(X, y, canaries=0)
+
+    assert table.kind == "sparse"
+    model = train(table, task="classification", tree_type="cart")
+    assert np.array_equal(model.predict(X), y)
+
+
+def test_train_accepts_scipy_dense_matrix_like_inputs_if_installed():
+    scipy_sparse = pytest.importorskip("scipy.sparse")
+
+    X = scipy_sparse.csr_matrix([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]).todense()
+    y = scipy_sparse.csr_matrix([[0.0], [1.0], [1.0]]).todense()
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    assert model.task == "classification"
+    assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
