@@ -1,14 +1,40 @@
 # bindings/python/forestfire.pyi
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from numpy.typing import NDArray
 
-class TargetMeanTree:
-    mean_: float
+class Table:
+    kind: str
+    n_rows: int
+    n_features: int
+    canaries: int
 
-    @classmethod
-    def fit(
-        cls, x: NDArray[np.float64], y: NDArray[np.float64]
-    ) -> "TargetMeanTree": ...
-    def predict(self, x: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def __init__(
+        self,
+        x: Any,
+        y: Any | None = None,
+        canaries: int = 2,
+    ) -> None: ...
+
+def train(
+    x: Table | Any,
+    y: Any | None = None,
+    algorithm: str = "dt",
+    task: str = "regression",
+    tree_type: str = "target_mean",
+    criterion: str = "auto",
+    canaries: int = 2,
+    physical_cores: int | None = None,
+) -> "Model": ...
+
+class Model:
+    algorithm: str
+    task: str
+    criterion: str
+    tree_type: str
+    mean_: float | None
+
+    def predict(self, x: Table | Any) -> NDArray[np.float64]: ...

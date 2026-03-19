@@ -1,13 +1,13 @@
-use forestfire_data::DenseDataset;
+use forestfire_data::TableAccess;
 
 /// Common interface for regression models.
 pub trait Regressor {
     /// Predict for `n_rows` rows (feature-agnostic).
     fn predict_rows(&self, n_rows: usize) -> Vec<f64>;
 
-    /// Predict for a dataset; default delegates to `predict_rows`.
-    fn predict_dataset(&self, ds: &DenseDataset) -> Vec<f64> {
-        self.predict_rows(ds.n_samples())
+    /// Predict for a table; default delegates to `predict_rows`.
+    fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        self.predict_rows(table.n_rows())
     }
 }
 
@@ -18,31 +18,86 @@ impl Regressor for forestfire_core::TargetMeanTree {
         forestfire_core::TargetMeanTree::predict_many(self, n_rows)
     }
 
-    fn predict_dataset(&self, ds: &DenseDataset) -> Vec<f64> {
-        forestfire_core::TargetMeanTree::predict_dataset(self, ds)
+    fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        forestfire_core::TargetMeanTree::predict_table(self, table)
+    }
+}
+
+impl Regressor for forestfire_core::DecisionTreeRegressor {
+    fn predict_rows(&self, _n_rows: usize) -> Vec<f64> {
+        unreachable!("regression trees require feature data for prediction")
+    }
+
+    fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        forestfire_core::DecisionTreeRegressor::predict_table(self, table)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forestfire_core::TargetMeanTree;
+    use forestfire_core::{Model, TargetMeanTree, TrainConfig, TreeType, train};
 
     #[test]
     fn trait_predictions_match_inherent_methods() {
-        let ds = forestfire_data::DenseDataset::new(
+        let table = forestfire_data::DenseTable::new(
             vec![vec![0.0], vec![1.0], vec![2.0]],
             vec![2.0, 4.0, 6.0],
         )
         .unwrap();
 
-        let m = TargetMeanTree::train(&ds).unwrap();
+        let m = train(
+            &table,
+            TrainConfig {
+                tree_type: TreeType::TargetMean,
+                ..TrainConfig::default()
+            },
+        )
+        .unwrap();
+        let Model::TargetMean(m) = m else {
+            panic!("expected target mean model");
+        };
         // trait path
-        let via_trait = <TargetMeanTree as Regressor>::predict_dataset(&m, &ds);
+        let via_trait = <TargetMeanTree as Regressor>::predict_table(&m, &table);
         // inherent path
-        let via_inherent = m.predict_dataset(&ds);
+        let via_inherent = m.predict_table(&table);
 
         assert_eq!(via_trait, via_inherent);
         assert!(via_trait.iter().all(|&p| (p - m.mean).abs() < 1e-12));
+    }
+
+    #[test]
+    fn regression_tree_trait_predictions_match_inherent_methods() {
+        let table = forestfire_data::DenseTable::with_canaries(
+            vec![
+                vec![0.0],
+                vec![1.0],
+                vec![2.0],
+                vec![3.0],
+                vec![4.0],
+                vec![5.0],
+            ],
+            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0],
+            0,
+        )
+        .unwrap();
+
+        let m = train(
+            &table,
+            TrainConfig {
+                tree_type: TreeType::Cart,
+                ..TrainConfig::default()
+            },
+        )
+        .unwrap();
+        let Model::DecisionTreeRegressor(m) = m else {
+            panic!("expected decision tree regressor");
+        };
+        let via_trait =
+            <forestfire_core::DecisionTreeRegressor as Regressor>::predict_table(&m, &table);
+        let via_inherent = m.predict_table(&table);
+
+        assert_eq!(via_trait, via_inherent);
+        assert_eq!(via_trait, vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0]);
     }
 }

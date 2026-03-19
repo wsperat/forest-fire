@@ -3,16 +3,23 @@ members = [
   "crates/core",
   "crates/data",
   "crates/inference",
-#   "crates/exporters/onnx",
-#   "crates/exporters/compiled",
-   "bindings/python", # PyO3 binding crate (must contain its own Cargo.toml)
+# "crates/exporters/onnx",
+# "crates/exporters/compiled",
+  "bindings/python", # PyO3 binding crate (must contain its own Cargo.toml)
 ]
 
 default-members = [
   "crates/core",
   "crates/data",
   "crates/inference",
-#   "crates/exporters/onnx",
-#   "crates/exporters/compiled",
+# "crates/exporters/onnx",
+# "crates/exporters/compiled",
 ]
+
 resolver = "2"
+
+[workspace.dependencies]
+arrow = { version = "54.2.1", features = ["ipc"] }
+num_cpus = "1.17.0"
+rand = "0.8.5"
+rayon = "1.10.0"

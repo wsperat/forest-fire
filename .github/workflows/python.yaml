@@ -1,38 +1,69 @@
-name: Python Lint (ruff)
-
+---
+name: Python Verify
 on:
   push:
   pull_request:
   workflow_dispatch:
-
 jobs:
-  ruff:
+  python-verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-
+          python-version-file: .python-version
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - name: Install uv
         run: |
           python -m pip install --upgrade pip
           pip install uv
-
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Show versions
         run: |
           python --version
-          uvx ruff --version
-
+          uv --version
+          cargo --version
+      - name: Sync Python dependencies
+        run: uv sync --all-extras
+      - name: Lock file check
+        run: uv lock --locked
+      - name: isort (check only)
+        run: >-
+          uv run isort --check-only
+          bindings/python/forestfire.pyi
+          examples/python/mean_tree.py
+          tests/python/test_mean_tree.py
       - name: Ruff lint
-        run: |
-          # Emits GitHub-friendly annotations on PRs
-          uvx ruff check --output-format=github .
-
+        run: >-
+          uv run ruff check --output-format=github
+          bindings/python
+          examples/python
+          tests/python
       - name: Ruff formatting (check only)
-        run: |
-          # Fails if formatting changes would be made
-          uvx ruff format --check .
+        run: >-
+          uv run ruff format --check
+          bindings/python/forestfire.pyi
+          examples/python/mean_tree.py
+          tests/python/test_mean_tree.py
+      - name: yamllint
+        run: >-
+          uv run yamllint
+          Taskfile.yaml
+          .pre-commit-config.yaml
+          .github/workflows
+      - name: mypy
+        run: >-
+          uv run --with mypy mypy . --check-untyped-defs --strict
+          --config-file pyproject.toml
+      - name: Build Python extension
+        run: uv run maturin develop -m bindings/python/Cargo.toml
+      - name: pytest
+        run: uv run pytest -q tests/python/test_mean_tree.py

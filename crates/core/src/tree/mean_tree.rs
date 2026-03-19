@@ -1,50 +1,61 @@
-use forestfire_data::DenseDataset;
+use crate::Criterion;
+use forestfire_data::TableAccess;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 /// The simplest possible "tree":
-/// it stores only the global mean of y and predicts that for every row.
+/// it stores only one global target statistic and predicts that for every row.
 #[derive(Debug, Clone, Copy)]
 pub struct TargetMeanTree {
     pub mean: f64,
+    criterion: Criterion,
 }
 
 #[derive(Debug)]
 pub enum ModelError {
     EmptyTarget,
-    MismatchedLengths { x: usize, y: usize },
 }
 
 impl Display for ModelError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ModelError::EmptyTarget => write!(f, "Cannot train on an empty target vector."),
-            ModelError::MismatchedLengths { x, y } => write!(
-                f,
-                "Mismatched lengths: X has {} rows while y has {} values.",
-                x, y
-            ),
         }
     }
 }
+
 impl Error for ModelError {}
 
+pub fn train_target_mean(train_set: &dyn TableAccess) -> Result<TargetMeanTree, ModelError> {
+    train_target_mean_with_criterion(train_set, Criterion::Mean)
+}
+
+pub fn train_target_mean_with_criterion(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+) -> Result<TargetMeanTree, ModelError> {
+    if train_set.n_rows() == 0 {
+        return Err(ModelError::EmptyTarget);
+    }
+
+    let targets: Vec<f64> = (0..train_set.n_rows())
+        .map(|row_idx| train_set.target_value(row_idx))
+        .collect();
+    let prediction = match criterion {
+        Criterion::Mean => targets.iter().sum::<f64>() / train_set.n_rows() as f64,
+        Criterion::Median => median(&targets),
+        _ => unreachable!("target statistic only supports mean or median"),
+    };
+
+    Ok(TargetMeanTree {
+        mean: prediction,
+        criterion,
+    })
+}
+
 impl TargetMeanTree {
-    /// Train from a DenseDataset (uses y only).
-    pub fn train(ds: &DenseDataset) -> Result<Self, ModelError> {
-        if ds.n_samples() == 0 {
-            return Err(ModelError::EmptyTarget);
-        }
-        if ds.x.len() != ds.y.len() {
-            return Err(ModelError::MismatchedLengths {
-                x: ds.x.len(),
-                y: ds.y.len(),
-            });
-        }
-        let sum: f64 = ds.y.iter().copied().sum();
-        Ok(Self {
-            mean: sum / ds.y.len() as f64,
-        })
+    pub fn criterion(&self) -> Criterion {
+        self.criterion
     }
 
     /// Predict the constant mean for `n` samples.
@@ -52,30 +63,63 @@ impl TargetMeanTree {
         vec![self.mean; n]
     }
 
-    /// Convenience: predict for a dataset (ignores features).
-    pub fn predict_dataset(&self, ds: &DenseDataset) -> Vec<f64> {
-        self.predict_many(ds.n_samples())
+    /// Convenience: predict for a table (ignores features).
+    pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        self.predict_many(table.n_rows())
+    }
+}
+
+fn median(values: &[f64]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| left.total_cmp(right));
+
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forestfire_data::DenseDataset;
+    use forestfire_data::DenseTable;
 
     #[test]
     fn trains_and_predicts_mean() {
         let x = vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0]];
         let y = vec![10.0, 12.0, 14.0, 20.0];
-        let ds = DenseDataset::new(x, y).unwrap();
+        let table = DenseTable::new(x, y).unwrap();
 
-        let model = TargetMeanTree::train(&ds).unwrap();
+        let model = train_target_mean(&table).unwrap();
         assert!((model.mean - 14.0).abs() < 1e-12);
+        assert_eq!(model.criterion(), Criterion::Mean);
 
-        let preds = model.predict_dataset(&ds);
+        let preds = model.predict_table(&table);
         assert_eq!(preds.len(), 4);
-        for p in preds {
-            assert!((p - 14.0).abs() < 1e-12);
+        for pred in preds {
+            assert!((pred - 14.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn trains_and_predicts_median() {
+        let table =
+            DenseTable::new(vec![vec![0.0], vec![0.0], vec![0.0]], vec![1.0, 2.0, 100.0]).unwrap();
+
+        let model = train_target_mean_with_criterion(&table, Criterion::Median).unwrap();
+
+        assert_eq!(model.criterion(), Criterion::Median);
+        assert_eq!(model.mean, 2.0);
+        assert_eq!(model.predict_table(&table), vec![2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn rejects_empty_training_table() {
+        let table = DenseTable::new(Vec::new(), Vec::new()).unwrap();
+
+        let err = train_target_mean(&table).unwrap_err();
+        assert!(matches!(err, ModelError::EmptyTarget));
     }
 }

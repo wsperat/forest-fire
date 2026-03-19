@@ -1,168 +1,135 @@
+---
 version: '3'
-
+env:
+  UV_CACHE_DIR: '{{.ROOT_DIR}}/.cache/uv'
 tasks:
-  # --------------------
-  # Default / discovery
-  # --------------------
   default:
     desc: List available tasks
-    cmds:
-    - task --list
-
-  # --------------------
-  # Python / uv tasks
-  # --------------------
+    cmds: [task --list]
   venv:
     desc: Create virtual environment
-    cmds:
-    - uv venv --python=$(cat .python-version) --seed --allow-existing
-
+    cmds: [uv venv --python=$(cat .python-version) --allow-existing]
   install:
     desc: Install dependencies
-    cmds:
-    - uv sync --all-extras
-
+    cmds: [uv sync --all-extras]
   lint-check-only:
     desc: Check linting and formatting (no fixes)
     cmds:
-    - uv run isort --check-only .
-    - uv run ruff check .
-    - uv run ruff format --check .
-
+      - >-
+        uv run isort --check-only
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - >-
+        uv run ruff check
+        bindings/python
+        examples/python
+        tests/python
+      - >-
+        uv run ruff format --check
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   lint:
     desc: Auto-fix linting and formatting issues
     cmds:
-    - uv run isort .
-    - uv run ruff check --fix .
-    - uv run ruff format .
-
+      - >-
+        uv run isort
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - >-
+        uv run ruff check --fix
+        bindings/python
+        examples/python
+        tests/python
+      - >-
+        uv run ruff format
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - uv run yamlfix Taskfile.yaml .pre-commit-config.yaml .github/workflows
+      - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
+  mypy:
+    desc: Run static type checks with mypy
+    deps: [install]
+    cmds:
+      - >-
+        uv run mypy . --check-untyped-defs --strict
+        --config-file pyproject.toml
   setup-local-env:
     desc: Setup local environment
-    cmds:
-    - task venv
-    - task install
-    - uv run pre-commit install
-
+    cmds: [task venv, task install, uv run pre-commit install]
   clean:
     desc: Clean cache and temporary files
     cmds:
-    - rm -rf .mypy_cache .pytest_cache .ruff_cache
-    - find . -regex ".*/__pycache__" -exec rm -rf {} +
-    - uv run pre-commit clean || true
-    - cargo clean -p forestfire-python
-
+      - rm -rf .mypy_cache .pytest_cache .ruff_cache
+      - find . -regex ".*/__pycache__" -exec rm -rf {} +
+      - uv run pre-commit clean
+      - cargo clean -p forestfire-python
   test:
-    desc: Run tests
-    deps: [install]
-    cmds:
-    - uv run pytest
-
+    desc: Run Python tests
+    deps: [python-ext-develop]
+    cmds: [uv run pytest]
   lock-check:
     desc: Verify lock file is up-to-date
-    cmds:
-    - uv lock --locked
-
+    cmds: [uv lock --locked]
   check:
-    desc: run tests and formatting checks
+    desc: Run Python checks and tests
     deps: [install]
-    cmds:
-    - task lock-check
-    - task lint
-
-  # --------------------
-  # Rust tasks
-  # --------------------
+    cmds: [task lock-check, task lint-check-only, task mypy, task test]
   rust-toolchain:
-    desc: Ensure Rust toolchain and components (rustfmt, clippy)
+    desc: Ensure Rust formatting and lint tools are available
     cmds:
-    - |
-      if ! command -v rustup >/dev/null 2>&1; then
-        echo "rustup is required. Install from https://rustup.rs"; exit 1;
-      fi
-    - rustup show active-toolchain || true
-    - rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-    - rustup component add rustfmt clippy --toolchain stable
-
+      - |
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "cargo is required. Install Rust from https://rustup.rs"; exit 1;
+        fi
+      - cargo fmt --version >/dev/null
+      - cargo clippy --version >/dev/null
   rust-fmt:
     desc: Format Rust code with rustfmt
     deps: [rust-toolchain]
-    cmds:
-    - cargo fmt --all
-
+    cmds: [cargo fmt --all]
   rust-fmt-check:
     desc: Check Rust formatting (no changes)
     deps: [rust-toolchain]
-    cmds:
-    - cargo fmt --all -- --check
-
+    cmds: [cargo fmt --all -- --check]
   rust-lint:
     desc: Run Clippy (deny warnings)
     deps: [rust-toolchain]
     cmds:
-    - cargo clippy --workspace --all-targets --all-features -- -D warnings
-
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
   rust-build:
     desc: Build all Rust workspace targets
     deps: [rust-toolchain]
-    cmds:
-    - cargo build --workspace --all-targets
-
+    cmds: [cargo build --workspace --all-targets]
   rust-test:
     desc: Run all Rust tests
     deps: [rust-toolchain]
-    cmds:
-    - cargo test --workspace --all-targets
-
+    cmds: [cargo test --workspace --all-targets]
   rust-check:
     desc: Cargo check (type-check only)
     deps: [rust-toolchain]
-    cmds:
-    - cargo check --workspace --all-targets
-
+    cmds: [cargo check --workspace --all-targets]
   rust-clean:
     desc: Clean Rust build artifacts
-    cmds:
-    - cargo clean
-
+    cmds: [cargo clean]
   rust-verify:
     desc: Run rustfmt-check, clippy, and tests
-    deps:
-    - rust-fmt-check
-    - rust-lint
-    - rust-test
-
-  # --------------------
-  # PyO3 / maturin helpers
-  # --------------------
+    cmds: [task rust-fmt-check, task rust-lint, task rust-test]
   python-ext-develop:
-    desc: Build & install the PyO3 extension into the venv (maturin develop)
-    deps: [venv, rust-toolchain]
-    cmds:
-    - uv run pip install -U maturin
-    - uv run maturin develop -m bindings/python/Cargo.toml
-
+    desc: Build and install the PyO3 extension into the venv
+    deps: [install, rust-toolchain]
+    cmds: [uv run maturin develop -m bindings/python/Cargo.toml]
   python-ext-wheel:
-    desc: Build and install python wheel from package
-    deps: [python-ext-develop]
-    cmds:
-    - uv run maturin build -m python-bindings/Cargo.toml --release
-    - uv run pip install dist/*.whl
-
+    desc: Build a wheel for the Python extension
+    deps: [install, rust-toolchain]
+    cmds: [uv run maturin build -m bindings/python/Cargo.toml --release]
   python-test-ext:
     desc: Run Python tests with the Rust extension built
-    deps:
-    - install
-    - python-ext-develop
-    cmds:
-    - uv run pytest
-
-  # --------------------
-  # Meta: verify everything
-  # --------------------
+    cmds: [task test]
   verify:
-    desc: Run Python & Rust checks and tests
-    deps:
-    - lock-check
-    - lint-check-only
-    - rust-verify
-    - test
+    desc: Run Python and Rust checks and tests
+    cmds: [task check, task rust-verify]
