@@ -1,4 +1,4 @@
-use forestfire_data::DenseTable;
+use forestfire_data::TableAccess;
 
 /// Common interface for regression models.
 pub trait Regressor {
@@ -6,7 +6,7 @@ pub trait Regressor {
     fn predict_rows(&self, n_rows: usize) -> Vec<f64>;
 
     /// Predict for a table; default delegates to `predict_rows`.
-    fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+    fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         self.predict_rows(table.n_rows())
     }
 }
@@ -18,7 +18,7 @@ impl Regressor for forestfire_core::TargetMeanTree {
         forestfire_core::TargetMeanTree::predict_many(self, n_rows)
     }
 
-    fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+    fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         forestfire_core::TargetMeanTree::predict_table(self, table)
     }
 }
@@ -28,7 +28,7 @@ impl Regressor for forestfire_core::DecisionTreeRegressor {
         unreachable!("regression trees require feature data for prediction")
     }
 
-    fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+    fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         forestfire_core::DecisionTreeRegressor::predict_table(self, table)
     }
 }

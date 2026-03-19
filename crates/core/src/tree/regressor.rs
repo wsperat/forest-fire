@@ -1,5 +1,5 @@
 use crate::{Criterion, Parallelism};
-use forestfire_data::DenseTable;
+use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -112,13 +112,13 @@ struct ObliviousSplitCandidate {
 }
 
 pub fn train_cart_regressor(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_cart_regressor_with_criterion(train_set, Criterion::Mean)
 }
 
 pub fn train_cart_regressor_with_criterion(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_cart_regressor_with_criterion_and_parallelism(
@@ -129,7 +129,7 @@ pub fn train_cart_regressor_with_criterion(
 }
 
 pub(crate) fn train_cart_regressor_with_criterion_and_parallelism(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
@@ -143,13 +143,13 @@ pub(crate) fn train_cart_regressor_with_criterion_and_parallelism(
 }
 
 pub fn train_oblivious_regressor(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_oblivious_regressor_with_criterion(train_set, Criterion::Mean)
 }
 
 pub fn train_oblivious_regressor_with_criterion(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_oblivious_regressor_with_criterion_and_parallelism(
@@ -160,7 +160,7 @@ pub fn train_oblivious_regressor_with_criterion(
 }
 
 pub(crate) fn train_oblivious_regressor_with_criterion_and_parallelism(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
@@ -174,7 +174,7 @@ pub(crate) fn train_oblivious_regressor_with_criterion_and_parallelism(
 }
 
 fn train_regressor(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     algorithm: RegressionTreeAlgorithm,
     criterion: Criterion,
     parallelism: Parallelism,
@@ -220,13 +220,13 @@ impl DecisionTreeRegressor {
         self.criterion
     }
 
-    pub fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+    pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         (0..table.n_rows())
             .map(|row_idx| self.predict_row(table, row_idx))
             .collect()
     }
 
-    fn predict_row(&self, table: &DenseTable, row_idx: usize) -> f64 {
+    fn predict_row(&self, table: &dyn TableAccess, row_idx: usize) -> f64 {
         match &self.structure {
             RegressionTreeStructure::Standard { nodes, root } => {
                 let mut node_index = *root;
@@ -267,17 +267,17 @@ impl DecisionTreeRegressor {
 }
 
 struct BuildContext<'a> {
-    table: &'a DenseTable,
+    table: &'a dyn TableAccess,
     targets: &'a [f64],
     criterion: Criterion,
     parallelism: Parallelism,
     options: RegressionTreeOptions,
 }
 
-fn finite_targets(train_set: &DenseTable) -> Result<Vec<f64>, RegressionTreeError> {
+fn finite_targets(train_set: &dyn TableAccess) -> Result<Vec<f64>, RegressionTreeError> {
     (0..train_set.n_rows())
         .map(|row_idx| {
-            let value = train_set.target().value(row_idx);
+            let value = train_set.target_value(row_idx);
             if value.is_finite() {
                 Ok(value)
             } else {
@@ -368,7 +368,7 @@ fn build_node(
 }
 
 fn train_oblivious_structure(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     targets: &[f64],
     criterion: Criterion,
     parallelism: Parallelism,
@@ -444,7 +444,7 @@ fn train_oblivious_structure(
 }
 
 fn score_split(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     targets: &[f64],
     feature_index: usize,
     rows: &[usize],
@@ -493,7 +493,7 @@ fn score_split(
 }
 
 fn score_oblivious_split(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     targets: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -545,7 +545,7 @@ fn score_oblivious_split(
 }
 
 fn split_oblivious_leaf(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     targets: &[f64],
     leaf: ObliviousLeafState,
     feature_index: usize,
@@ -632,7 +632,7 @@ fn regression_loss(rows: &[usize], targets: &[f64], criterion: Criterion) -> f64
 }
 
 fn score_binary_split(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     targets: &[f64],
     feature_index: usize,
     rows: &[usize],
@@ -665,7 +665,7 @@ fn score_binary_split(
 }
 
 fn score_binary_oblivious_split(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     targets: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -715,6 +715,7 @@ fn push_node(nodes: &mut Vec<RegressionNode>, node: RegressionNode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forestfire_data::DenseTable;
 
     fn quadratic_table() -> DenseTable {
         DenseTable::with_canaries(
@@ -823,9 +824,9 @@ mod tests {
         assert_ne!(preds, table_targets(&table));
     }
 
-    fn table_targets(table: &DenseTable) -> Vec<f64> {
+    fn table_targets(table: &dyn TableAccess) -> Vec<f64> {
         (0..table.n_rows())
-            .map(|row_idx| table.target().value(row_idx))
+            .map(|row_idx| table.target_value(row_idx))
             .collect()
     }
 }

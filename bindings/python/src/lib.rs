@@ -1,8 +1,9 @@
 use forestfire_core::{
     Criterion, Model, Task, TrainAlgorithm, TrainConfig, TreeType, train as train_model,
 };
-use forestfire_data::DenseTable;
-use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use forestfire_data::{Table, TableAccess, TableKind};
+use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+use pyo3::types::PyDict;
 use pyo3::{Bound, prelude::*};
 
 #[pyclass(name = "Model")]
@@ -10,28 +11,163 @@ struct PyModel {
     inner: Model,
 }
 
-fn build_table(
-    x: PyReadonlyArray2<f64>,
-    y: PyReadonlyArray1<f64>,
+#[pyclass(name = "Table")]
+#[derive(Clone)]
+struct PyTable {
+    inner: Table,
+}
+
+fn table_kind_name(kind: TableKind) -> &'static str {
+    match kind {
+        TableKind::Dense => "dense",
+        TableKind::Sparse => "sparse",
+    }
+}
+
+fn build_training_table(
+    x: &Bound<PyAny>,
+    y: Option<&Bound<PyAny>>,
     canaries: usize,
-) -> PyResult<DenseTable> {
-    let x_view = x.as_array();
-    let y_view = y.as_array();
+) -> PyResult<Table> {
+    if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        if y.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "y must be omitted when x is already a Table.",
+            ));
+        }
+        return Ok(table.inner.clone());
+    }
 
-    let x_vec: Vec<Vec<f64>> = x_view.rows().into_iter().map(|row| row.to_vec()).collect();
-    let y_vec: Vec<f64> = y_view.to_vec();
+    let y = y.ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "y is required unless x is already a Table.",
+        )
+    })?;
+    let x_rows = extract_matrix(x)?;
+    let y_values = extract_vector(y)?;
 
-    DenseTable::with_canaries(x_vec, y_vec, canaries)
+    Table::with_canaries(x_rows, y_values, canaries)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
-fn build_feature_table(x: PyReadonlyArray2<f64>) -> PyResult<DenseTable> {
-    let x_view = x.as_array();
-    let x_vec: Vec<Vec<f64>> = x_view.rows().into_iter().map(|row| row.to_vec()).collect();
-    let y_vec = vec![0.0; x.shape()[0]];
+fn build_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
+    if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        return Ok(table.inner.clone());
+    }
 
-    DenseTable::with_canaries(x_vec, y_vec, 0)
+    let x_rows = extract_matrix(x)?;
+    let y_values = vec![0.0; x_rows.len()];
+
+    Table::with_canaries(x_rows, y_values, 0)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
+    if let Ok(array) = x.extract::<PyReadonlyArray2<'_, f64>>() {
+        let view = array.as_array();
+        return Ok(view.rows().into_iter().map(|row| row.to_vec()).collect());
+    }
+
+    if let Ok(array) = x.extract::<PyReadonlyArray2<'_, bool>>() {
+        let view = array.as_array();
+        return Ok(view
+            .rows()
+            .into_iter()
+            .map(|row| {
+                row.iter()
+                    .map(|value| f64::from(u8::from(*value)))
+                    .collect()
+            })
+            .collect());
+    }
+
+    if x.hasattr("to_numpy")? {
+        let as_numpy = x.call_method0("to_numpy")?;
+        return extract_matrix(&as_numpy);
+    }
+
+    if x.hasattr("to_pydict")? {
+        let columns = x.call_method0("to_pydict")?;
+        return extract_matrix_from_columns(&columns);
+    }
+
+    if x.hasattr("to_pylist")? {
+        let rows = x.call_method0("to_pylist")?;
+        return extract_matrix_from_rows(&rows);
+    }
+
+    extract_matrix_from_rows(x)
+}
+
+fn extract_matrix_from_columns(columns: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
+    let columns = columns.cast::<PyDict>()?;
+    let column_values: Vec<Vec<f64>> = columns
+        .iter()
+        .map(|(_name, values)| extract_vector(&values))
+        .collect::<PyResult<_>>()?;
+
+    let n_rows = column_values.first().map_or(0, Vec::len);
+    if column_values.iter().any(|column| column.len() != n_rows) {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Column-oriented input must contain equally sized columns.",
+        ));
+    }
+
+    Ok((0..n_rows)
+        .map(|row_idx| {
+            column_values
+                .iter()
+                .map(|column| column[row_idx])
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+fn extract_matrix_from_rows(rows: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
+    rows.try_iter()?
+        .map(|row| {
+            let row = row?;
+            row.try_iter()?
+                .map(|value| value.and_then(|value| extract_scalar(&value)))
+                .collect::<PyResult<Vec<_>>>()
+        })
+        .collect()
+}
+
+fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
+    if let Ok(array) = y.extract::<PyReadonlyArray1<'_, f64>>() {
+        return Ok(array.as_array().to_vec());
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray1<'_, bool>>() {
+        return Ok(array
+            .as_array()
+            .iter()
+            .map(|value| f64::from(u8::from(*value)))
+            .collect());
+    }
+
+    if y.hasattr("to_numpy")? {
+        let as_numpy = y.call_method0("to_numpy")?;
+        return extract_vector(&as_numpy);
+    }
+
+    if y.hasattr("to_pylist")? {
+        let as_list = y.call_method0("to_pylist")?;
+        return extract_vector(&as_list);
+    }
+
+    y.try_iter()?
+        .map(|value| value.and_then(|value| extract_scalar(&value)))
+        .collect()
+}
+
+fn extract_scalar(value: &Bound<PyAny>) -> PyResult<f64> {
+    if let Ok(value) = value.extract::<bool>() {
+        return Ok(f64::from(u8::from(value)));
+    }
+
+    value.extract::<f64>()
 }
 
 fn parse_algorithm(algorithm: &str) -> PyResult<TrainAlgorithm> {
@@ -117,11 +253,11 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, physical_cores=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, physical_cores=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
-    x: PyReadonlyArray2<f64>,
-    y: PyReadonlyArray1<f64>,
+    x: &Bound<PyAny>,
+    y: Option<&Bound<PyAny>>,
     algorithm: &str,
     task: &str,
     tree_type: &str,
@@ -129,7 +265,7 @@ fn train(
     canaries: usize,
     physical_cores: Option<usize>,
 ) -> PyResult<PyModel> {
-    let table = build_table(x, y, canaries)?;
+    let table = build_training_table(x, y, canaries)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
         task: parse_task(task)?,
@@ -148,7 +284,7 @@ impl PyModel {
     fn predict<'py>(
         &self,
         py: Python<'py>,
-        x: PyReadonlyArray2<f64>,
+        x: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let table = build_feature_table(x)?;
         let preds = self.inner.predict_table(&table);
@@ -181,10 +317,46 @@ impl PyModel {
     }
 }
 
+#[pymethods]
+impl PyTable {
+    #[new]
+    #[pyo3(signature = (x, y=None, canaries=2))]
+    fn new(x: &Bound<PyAny>, y: Option<&Bound<PyAny>>, canaries: usize) -> PyResult<Self> {
+        let inner = if let Some(y) = y {
+            build_training_table(x, Some(y), canaries)?
+        } else {
+            build_feature_table(x)?
+        };
+
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        table_kind_name(self.inner.kind())
+    }
+
+    #[getter]
+    fn n_rows(&self) -> usize {
+        self.inner.n_rows()
+    }
+
+    #[getter]
+    fn n_features(&self) -> usize {
+        self.inner.n_features()
+    }
+
+    #[getter]
+    fn canaries(&self) -> usize {
+        self.inner.canaries()
+    }
+}
+
 #[pymodule]
 fn forestfire(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyModel>()?;
+    m.add_class::<PyTable>()?;
     m.add_function(wrap_pyfunction!(train, m)?)?;
-    m.add("__all__", vec!["Model", "train"])?;
+    m.add("__all__", vec!["Model", "Table", "train"])?;
     Ok(())
 }

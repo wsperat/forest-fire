@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from forestfire import train
+from forestfire import Table, train
 
 
 @pytest.fixture
@@ -49,6 +49,39 @@ def test_train_defaults_match_documented_regression_baseline(toy_data):
     assert model.criterion == "mean"
 
 
+def test_table_builds_sparse_layout_for_binary_data():
+    X = np.array([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0, 1.0])
+
+    table = Table(X, y, canaries=1)
+
+    assert table.kind == "sparse"
+    assert table.n_rows == 3
+    assert table.n_features == 2
+    assert table.canaries == 1
+
+
+def test_table_builds_dense_layout_for_mixed_data():
+    X = np.array([[0.0, 1.5], [1.0, 0.0], [1.0, 2.0]])
+    y = np.array([0.0, 1.0, 1.0])
+
+    table = Table(X, y, canaries=1)
+
+    assert table.kind == "dense"
+    assert table.n_rows == 3
+    assert table.n_features == 2
+
+
+def test_train_accepts_prebuilt_table(and_data):
+    X, y = and_data
+    table = Table(X, y, canaries=0)
+
+    model = train(table, task="classification", tree_type="cart")
+
+    assert model.algorithm == "dt"
+    assert np.array_equal(model.predict(table), y)
+
+
 @pytest.mark.parametrize(
     "y, expected",
     [
@@ -83,6 +116,16 @@ def test_train_cart_classifier(and_data):
     assert model.tree_type == "cart"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
+
+
+def test_predict_accepts_feature_only_table(and_data):
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    feature_table = Table(X)
+
+    assert feature_table.kind == "sparse"
+    assert np.array_equal(model.predict(feature_table), y)
 
 
 def test_train_id3_classifier(and_data):
@@ -237,6 +280,14 @@ def test_train_rejects_unknown_algorithm():
         train(X, y, algorithm="rf")
 
 
+def test_train_rejects_y_when_x_is_already_a_table(and_data):
+    X, y = and_data
+    table = Table(X, y, canaries=0)
+
+    with pytest.raises(ValueError, match="y must be omitted"):
+        train(table, y)
+
+
 def test_train_rejects_unknown_task():
     X = np.zeros((2, 1))
     y = np.array([0.0, 1.0])
@@ -344,3 +395,53 @@ def test_predict_generalizes_on_binary_feature_rows(and_data):
     new_rows = np.array([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0]])
 
     assert np.array_equal(model.predict(new_rows), np.array([0.0, 1.0, 0.0]))
+
+
+def test_table_accepts_plain_python_lists():
+    X = [[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]
+    y = [0.0, 1.0, 1.0]
+
+    table = Table(X, y, canaries=0)
+
+    assert table.kind == "sparse"
+    model = train(table, task="classification", tree_type="cart")
+    assert np.array_equal(model.predict(X), np.array(y))
+
+
+def test_table_accepts_pandas_dataframes_if_installed():
+    pd = pytest.importorskip("pandas")
+
+    X = pd.DataFrame({"a": [0.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0]})
+    y = pd.Series([0.0, 1.0, 1.0])
+
+    table = Table(X, y, canaries=0)
+
+    assert table.kind == "sparse"
+    model = train(table, task="classification", tree_type="cart")
+    assert np.array_equal(model.predict(X), y.to_numpy())
+
+
+def test_table_accepts_polars_dataframes_if_installed():
+    pl = pytest.importorskip("polars")
+
+    X = pl.DataFrame({"a": [0.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0]})
+    y = pl.Series("y", [0.0, 1.0, 1.0])
+
+    table = Table(X, y, canaries=0)
+
+    assert table.kind == "sparse"
+    model = train(table, task="classification", tree_type="cart")
+    assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
+
+
+def test_table_accepts_pyarrow_tables_if_installed():
+    pa = pytest.importorskip("pyarrow")
+
+    X = pa.table({"a": [0.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0]})
+    y = pa.array([0.0, 1.0, 1.0])
+
+    table = Table(X, y, canaries=0)
+
+    assert table.kind == "sparse"
+    model = train(table, task="classification", tree_type="cart")
+    assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))

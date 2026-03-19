@@ -1,4 +1,4 @@
-use forestfire_data::DenseTable;
+use forestfire_data::TableAccess;
 use rayon::ThreadPoolBuilder;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -144,7 +144,7 @@ impl Parallelism {
     }
 }
 
-pub fn train(train_set: &DenseTable, config: TrainConfig) -> Result<Model, TrainError> {
+pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
     let criterion = resolve_criterion(config.task, config.tree_type, config.criterion)?;
     let parallelism = resolve_parallelism(config.physical_cores)?;
 
@@ -304,7 +304,7 @@ where
 }
 
 impl Model {
-    pub fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+    pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         match self {
             Model::TargetMean(model) => model.predict_table(table),
             Model::DecisionTreeClassifier(model) => model.predict_table(table),
@@ -362,6 +362,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forestfire_data::DenseTable;
 
     #[test]
     fn unified_train_dispatches_regression_cart() {

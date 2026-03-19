@@ -1,5 +1,5 @@
 use crate::{Criterion, Parallelism};
-use forestfire_data::DenseTable;
+use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -111,19 +111,19 @@ enum SplitCandidate {
     },
 }
 
-pub fn train_id3(train_set: &DenseTable) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+pub fn train_id3(train_set: &dyn TableAccess) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_id3_with_criterion(train_set, Criterion::Entropy)
 }
 
 pub fn train_id3_with_criterion(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_id3_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
 }
 
 pub(crate) fn train_id3_with_criterion_and_parallelism(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
@@ -136,19 +136,19 @@ pub(crate) fn train_id3_with_criterion_and_parallelism(
     )
 }
 
-pub fn train_c45(train_set: &DenseTable) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+pub fn train_c45(train_set: &dyn TableAccess) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_c45_with_criterion(train_set, Criterion::Entropy)
 }
 
 pub fn train_c45_with_criterion(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_c45_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
 }
 
 pub(crate) fn train_c45_with_criterion_and_parallelism(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
@@ -161,19 +161,21 @@ pub(crate) fn train_c45_with_criterion_and_parallelism(
     )
 }
 
-pub fn train_cart(train_set: &DenseTable) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+pub fn train_cart(
+    train_set: &dyn TableAccess,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_cart_with_criterion(train_set, Criterion::Gini)
 }
 
 pub fn train_cart_with_criterion(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_cart_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
 }
 
 pub(crate) fn train_cart_with_criterion_and_parallelism(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
@@ -187,20 +189,20 @@ pub(crate) fn train_cart_with_criterion_and_parallelism(
 }
 
 pub fn train_oblivious(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_oblivious_with_criterion(train_set, Criterion::Gini)
 }
 
 pub fn train_oblivious_with_criterion(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_oblivious_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
 }
 
 pub(crate) fn train_oblivious_with_criterion_and_parallelism(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
@@ -214,7 +216,7 @@ pub(crate) fn train_oblivious_with_criterion_and_parallelism(
 }
 
 fn train_classifier(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     algorithm: DecisionTreeAlgorithm,
     criterion: Criterion,
     parallelism: Parallelism,
@@ -268,13 +270,13 @@ impl DecisionTreeClassifier {
         self.criterion
     }
 
-    pub fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+    pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         (0..table.n_rows())
             .map(|row_idx| self.predict_row(table, row_idx))
             .collect()
     }
 
-    fn predict_row(&self, table: &DenseTable, row_idx: usize) -> f64 {
+    fn predict_row(&self, table: &dyn TableAccess, row_idx: usize) -> f64 {
         match &self.structure {
             TreeStructure::Standard { nodes, root } => {
                 let mut node_index = *root;
@@ -329,11 +331,11 @@ impl DecisionTreeClassifier {
 }
 
 fn encode_class_labels(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
 ) -> Result<(Vec<f64>, Vec<usize>), DecisionTreeError> {
     let targets: Vec<f64> = (0..train_set.n_rows())
         .map(|row_idx| {
-            let value = train_set.target().value(row_idx);
+            let value = train_set.target_value(row_idx);
             if value.is_finite() {
                 Ok(value)
             } else {
@@ -464,7 +466,7 @@ fn build_node(
 }
 
 struct BuildContext<'a> {
-    table: &'a DenseTable,
+    table: &'a dyn TableAccess,
     class_indices: &'a [usize],
     class_labels: &'a [f64],
     algorithm: DecisionTreeAlgorithm,
@@ -474,7 +476,7 @@ struct BuildContext<'a> {
 }
 
 struct SplitScoringContext<'a> {
-    table: &'a DenseTable,
+    table: &'a dyn TableAccess,
     class_indices: &'a [usize],
     num_classes: usize,
     criterion: Criterion,
@@ -488,7 +490,7 @@ struct ObliviousLeafState {
 }
 
 fn train_oblivious_structure(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     class_indices: &[usize],
     class_labels: &[f64],
     criterion: Criterion,
@@ -576,7 +578,7 @@ struct ObliviousSplitCandidate {
 }
 
 fn score_oblivious_split(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     class_indices: &[usize],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -639,7 +641,7 @@ fn score_oblivious_split(
 }
 
 fn split_oblivious_leaf(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     class_indices: &[usize],
     num_classes: usize,
     leaf: ObliviousLeafState,
@@ -852,7 +854,7 @@ fn score_binary_cart_split(
 }
 
 fn score_binary_oblivious_split(
-    table: &DenseTable,
+    table: &dyn TableAccess,
     class_indices: &[usize],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -978,6 +980,7 @@ enum MultiwayMetric {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forestfire_data::DenseTable;
 
     fn and_table() -> DenseTable {
         DenseTable::new(
@@ -1141,9 +1144,9 @@ mod tests {
         assert_ne!(preds, table_targets(&table));
     }
 
-    fn table_targets(table: &DenseTable) -> Vec<f64> {
+    fn table_targets(table: &dyn TableAccess) -> Vec<f64> {
         (0..table.n_rows())
-            .map(|row_idx| table.target().value(row_idx))
+            .map(|row_idx| table.target_value(row_idx))
             .collect()
     }
 }

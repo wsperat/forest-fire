@@ -1,5 +1,5 @@
 use crate::Criterion;
-use forestfire_data::DenseTable;
+use forestfire_data::TableAccess;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -26,12 +26,12 @@ impl Display for ModelError {
 
 impl Error for ModelError {}
 
-pub fn train_target_mean(train_set: &DenseTable) -> Result<TargetMeanTree, ModelError> {
+pub fn train_target_mean(train_set: &dyn TableAccess) -> Result<TargetMeanTree, ModelError> {
     train_target_mean_with_criterion(train_set, Criterion::Mean)
 }
 
 pub fn train_target_mean_with_criterion(
-    train_set: &DenseTable,
+    train_set: &dyn TableAccess,
     criterion: Criterion,
 ) -> Result<TargetMeanTree, ModelError> {
     if train_set.n_rows() == 0 {
@@ -39,7 +39,7 @@ pub fn train_target_mean_with_criterion(
     }
 
     let targets: Vec<f64> = (0..train_set.n_rows())
-        .map(|row_idx| train_set.target().value(row_idx))
+        .map(|row_idx| train_set.target_value(row_idx))
         .collect();
     let prediction = match criterion {
         Criterion::Mean => targets.iter().sum::<f64>() / train_set.n_rows() as f64,
@@ -64,7 +64,7 @@ impl TargetMeanTree {
     }
 
     /// Convenience: predict for a table (ignores features).
-    pub fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+    pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         self.predict_many(table.n_rows())
     }
 }
