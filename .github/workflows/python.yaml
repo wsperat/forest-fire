@@ -36,14 +36,29 @@ jobs:
       - name: Lock file check
         run: uv lock --locked
       - name: isort (check only)
-        run: uvx isort --check-only .
+        run: >-
+          uv run isort --check-only
+          bindings/python/forestfire.pyi
+          examples/python/mean_tree.py
+          tests/python/test_mean_tree.py
       - name: Ruff lint
-        run: |
-          uvx ruff check --output-format=github .
+        run: >-
+          uv run ruff check --output-format=github
+          bindings/python
+          examples/python
+          tests/python
       - name: Ruff formatting (check only)
-        run: uvx ruff format --check .
+        run: >-
+          uv run ruff format --check
+          bindings/python/forestfire.pyi
+          examples/python/mean_tree.py
+          tests/python/test_mean_tree.py
       - name: yamllint
-        run: uvx yamllint .
+        run: >-
+          uv run yamllint
+          Taskfile.yaml
+          .pre-commit-config.yaml
+          .github/workflows
       - name: mypy
         run: >-
           uv run --with mypy mypy . --check-untyped-defs --strict
