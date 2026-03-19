@@ -460,6 +460,16 @@ def test_table_accepts_scipy_sparse_matrices_if_installed():
     assert np.array_equal(model.predict(X), y)
 
 
+def test_table_rejects_non_binary_scipy_sparse_matrices_if_installed():
+    scipy_sparse = pytest.importorskip("scipy.sparse")
+
+    X = scipy_sparse.csr_matrix([[0.0, 2.0], [1.0, 0.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="binary sparse inputs"):
+        Table(X, y, canaries=0)
+
+
 def test_train_accepts_scipy_dense_matrix_like_inputs_if_installed():
     scipy_sparse = pytest.importorskip("scipy.sparse")
 

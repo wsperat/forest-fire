@@ -3,12 +3,12 @@
 ## Fast tree-based learning in Rust
 
 A tree-learning library with a Rust core and a Python API.
-The current implementation focuses on a unified `train` interface, Arrow-backed dense tables, and a small set of tree learners.
+The current implementation focuses on a unified `train` interface, automatic dense-vs-sparse table selection, and a small set of tree learners.
 
 # Why this library?
 
 - Performance-first: Rust + Rayon for parallel training/prediction; cache-friendly data layouts.
-- Arrow-backed storage: `DenseTable` stores feature columns in Arrow arrays and pre-bins numeric features into 512 bins.
+- Adaptive storage: `Table` chooses between Arrow-backed `DenseTable` storage and binary `SparseTable` storage.
 - Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., task=..., tree_type=..., criterion=..., physical_cores=...)` entrypoint.
 - Automatic growth stopping: shuffled canary variables are generated during table construction and halt growth when selected.
 - Parallel training: standard trees parallelize feature scoring per node, and oblivious trees parallelize feature scoring per level.
@@ -75,7 +75,9 @@ Priorities may shift in the future, and new ones added.
 # Features
 
 - Unified `train` interface in Rust and Python
+- `Table` auto-selection between `DenseTable` and `SparseTable`
 - Arrow-backed `DenseTable` with binary-column compaction and 512-bin numeric feature binning
+- Binary `SparseTable` specialized for truly sparse `0/1` feature matrices
 - Supported tree types behind `algorithm="dt"`:
     - `target_mean`
     - `id3`
@@ -93,7 +95,7 @@ Priorities may shift in the future, and new ones added.
     - `auto` (resolved from task and tree type)
 - User-controlled training parallelism via `physical_cores`
 - Automatic canary-based growth stopping with `canaries=2` by default
-- NumPy input support in Python
+- NumPy, pandas, polars, pyarrow, and SciPy input support in Python
 
 # Installation
 ## Prerequisites
@@ -121,29 +123,29 @@ Use the Rust core crate directly in your Cargo project
 ```python
 import numpy as np
 
-from forestfire import train
+from forestfire import Table, train
 
 X = np.array([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]])
 y = np.array([0.0, 0.0, 0.0, 1.0])
 
+table = Table(X, y, canaries=2)  # -> "sparse" here because every feature is binary
+
 clf = train(
-    X,
-    y,
+    table,
     algorithm="dt",
     task="classification",
     tree_type="cart",
     criterion="gini",
-    canaries=2,
     physical_cores=4,
 )
-pred = clf.predict(X)            # -> NumPy array [n_samples]
+pred = clf.predict(table)        # -> NumPy array [n_samples]
 ```
 
 # Train Interface
 
 `train(X, y, algorithm=..., task=..., tree_type=..., criterion=..., canaries=..., physical_cores=...)`
 
-NumPy arrays are accepted directly for `train(X, y, ...)`.
+NumPy arrays are accepted directly for `train(X, y, ...)`, but Python callers can also build a `Table` explicitly and pass that into both `train(...)` and `predict(...)`.
 
 ## Parameter rationale
 
@@ -256,18 +258,25 @@ Why parallelism is chosen per tree type:
 
 ## Data rationale
 
-Training first materializes an Arrow-backed `DenseTable`.
+Training first materializes a `Table`, which then resolves to either `DenseTable` or `SparseTable`.
+
+Why `Table` exists:
+- learners need a validated, reusable training view
+- the Python and Rust APIs should feed the same internal representation
+- dense numeric data and sparse binary data want different memory layouts, but the learners should not need different public APIs
+
+### `DenseTable`
 
 Why `DenseTable` exists:
-- learners need a validated, columnar, reusable training view
-- the Python and Rust APIs should feed the same internal representation
+- mixed numeric/binary tabular data benefits from feature-wise column scans
+- Arrow arrays are a natural fit for dense columnar access
 - repeated split scoring benefits from a layout designed for scans rather than row-by-row iteration
 
 Why Arrow-backed columns:
 - columnar arrays are cache-friendly for feature-wise scoring
 - Arrow gives compact primitive storage and a clear path to future interop work
 
-Why binary columns are stored as booleans:
+Why binary columns are stored as booleans in `DenseTable`:
 - `0/1` and `false/true` features are common in tabular data
 - bit-packed boolean storage cuts memory relative to generic float storage
 - learners can skip threshold search and use a direct false/true split path
@@ -280,6 +289,30 @@ Why numeric features are pre-binned into 512 bins:
 Why binning is rank-based:
 - it is stable under monotonic rescaling of the input
 - it keeps the representation focused on ordering, which is what tree splits mostly care about
+
+### `SparseTable`
+
+When `SparseTable` is used:
+- every feature column is binary
+- the input is sparse enough that storing the locations of the `1`s is preferable to storing a full dense boolean matrix
+- SciPy sparse matrices map naturally onto this representation
+
+How `SparseTable` works internally:
+- each feature column stores the row indices where the value is `1`
+- missing row indices implicitly mean the value is `0`
+- canary columns are generated by shuffling those binary occupancies and rebuilding the row-index lists
+- there is no threshold search because sparse features are always binary splits
+
+Why that layout is useful:
+- memory scales with the number of positive entries rather than `n_rows * n_features`
+- binary split evaluation only needs membership checks on the stored `1` positions
+- SciPy sparse inputs can be converted by reading shape plus nonzero coordinates, without first materializing a dense matrix
+
+How the trees use `SparseTable`:
+- the public learners operate through a shared `TableAccess` interface
+- standard trees (`id3`, `c45`, `cart`) still score one feature at a time, but sparse binary features go directly through the binary split path
+- oblivious trees still score one feature per depth, and sparse columns participate exactly like dense binary columns
+- from the learner’s perspective, `SparseTable` changes storage and access costs, not the split semantics
 
 Why canaries are attached to the table instead of generated inside each learner:
 - every learner should see the same stopping reference distribution
@@ -296,7 +329,7 @@ Current task/tree support:
 ```rust
 use anyhow::Result;
 use forestfire_core::{train, Criterion, Task, TrainAlgorithm, TrainConfig, TreeType};
-use forestfire_data::DenseTable;
+use forestfire_data::Table;
 
 fn main() -> Result<()> {
     let x = vec![
@@ -306,7 +339,7 @@ fn main() -> Result<()> {
         vec![1.0, 1.0],
     ];
     let y = vec![0.0, 0.0, 0.0, 1.0];
-    let table = DenseTable::new(x, y)?;
+    let table = Table::new(x, y)?;
     let config = TrainConfig {
         algorithm: TrainAlgorithm::Dt,
         task: Task::Classification,
@@ -325,13 +358,14 @@ fn main() -> Result<()> {
 # Design notes
 - Unified train surface: users should not need a different top-level entrypoint for every learner family.
 - String API, enum core: Python gets ergonomic strings; Rust keeps typed dispatch and exhaustive validation.
-- Arrow everywhere: the core stores features in Arrow arrays for columnar, cache-friendly scans.
-- `DenseTable` holds feature columns and target data separately so training and inference logic can stay focused on model behavior.
+- Shared table abstraction: the learners operate against a common table interface instead of caring whether the backing data is dense or sparse.
+- Arrow where it helps: `DenseTable` stores feature columns in Arrow arrays for columnar, cache-friendly scans.
+- Sparse binary features use row-index lists in `SparseTable`, so memory scales with the number of positive entries instead of the full dense shape.
 - Tree learners consume the pre-binned representation rather than re-sorting features during fitting.
-- Binary features receive a dedicated compact representation because they are common and structurally simpler to split on.
+- Binary features receive dedicated storage and a direct split path because they are common and structurally simpler to split on.
 - Canary columns are synthetic shuffled copies of the binned features and act as a built-in stopping signal.
 - Automatic growth stopping is preferred over pruning because it keeps the stopping rule inside the split search itself.
-- The current Python API is NumPy-first because that gives the smallest dependency surface while the core learning design stabilizes.
+- The current Python API accepts raw arrays/dataframes/sparse matrices or explicit `Table` objects, depending on how much control the caller wants over preprocessing.
 
 # Building & testing
 ## Rust
@@ -382,7 +416,7 @@ See CONTRIBUTING.md (or open an issue if you don’t see one yet).
 # FAQ
 
 ## Q: Do I need pandas or Polars?
-No. The current Python binding accepts NumPy arrays directly.
+No. The Python binding accepts NumPy arrays directly, but it can also ingest pandas, Polars, pyarrow, and SciPy inputs.
 
 ## Q: Are predictions deterministic?
 Yes. Binning and canary generation are deterministic for the same inputs and parameters.

@@ -52,13 +52,24 @@ pub struct DenseTable {
 /// Arrow-backed sparse table specialized for binary feature matrices.
 #[derive(Debug, Clone)]
 pub struct SparseTable {
-    feature_columns: Vec<BooleanArray>,
-    binned_feature_columns: Vec<BooleanArray>,
+    feature_columns: Vec<SparseBinaryColumn>,
+    binned_feature_columns: Vec<SparseBinaryColumn>,
     binned_column_kinds: Vec<BinnedColumnKind>,
     target: Float64Array,
     n_rows: usize,
     n_features: usize,
     canaries: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SparseBinaryColumn {
+    row_indices: Vec<usize>,
+}
+
+impl SparseBinaryColumn {
+    fn value(&self, row_index: usize) -> bool {
+        self.row_indices.binary_search(&row_index).is_ok()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -328,12 +339,12 @@ impl SparseTable {
         n_features: usize,
         canaries: usize,
     ) -> Self {
-        let feature_columns: Vec<BooleanArray> = columns
+        let feature_columns: Vec<SparseBinaryColumn> = columns
             .iter()
-            .map(|column| BooleanArray::from(to_binary_values(column)))
+            .map(|column| sparse_binary_column_from_values(column))
             .collect();
 
-        let canary_columns: Vec<(BinnedColumnKind, BooleanArray)> = (0..canaries)
+        let canary_columns: Vec<(BinnedColumnKind, SparseBinaryColumn)> = (0..canaries)
             .flat_map(|copy_index| {
                 feature_columns
                     .iter()
@@ -344,7 +355,7 @@ impl SparseTable {
                                 source_index,
                                 copy_index,
                             },
-                            shuffle_boolean_array(column, copy_index, source_index),
+                            shuffle_sparse_binary_column(column, n_rows, copy_index, source_index),
                         )
                     })
             })
@@ -365,6 +376,74 @@ impl SparseTable {
             n_features,
             canaries,
         }
+    }
+
+    pub fn from_sparse_binary_columns(
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+        y: Vec<f64>,
+        canaries: usize,
+    ) -> Result<Self, DenseTableError> {
+        if n_rows != y.len() {
+            return Err(DenseTableError::MismatchedLengths {
+                x: n_rows,
+                y: y.len(),
+            });
+        }
+        if n_features != columns.len() {
+            return Err(DenseTableError::RaggedRows {
+                row: columns.len(),
+                expected: n_features,
+                actual: columns.len(),
+            });
+        }
+
+        let feature_columns = columns
+            .into_iter()
+            .enumerate()
+            .map(|(column_idx, mut row_indices)| {
+                row_indices.sort_unstable();
+                row_indices.dedup();
+                if row_indices.iter().any(|row_idx| *row_idx >= n_rows) {
+                    return Err(DenseTableError::NonBinaryColumn { column: column_idx });
+                }
+                Ok(SparseBinaryColumn { row_indices })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let canary_columns: Vec<(BinnedColumnKind, SparseBinaryColumn)> = (0..canaries)
+            .flat_map(|copy_index| {
+                feature_columns
+                    .iter()
+                    .enumerate()
+                    .map(move |(source_index, column)| {
+                        (
+                            BinnedColumnKind::Canary {
+                                source_index,
+                                copy_index,
+                            },
+                            shuffle_sparse_binary_column(column, n_rows, copy_index, source_index),
+                        )
+                    })
+            })
+            .collect();
+
+        let (binned_column_kinds, binned_feature_columns): (Vec<_>, Vec<_>) = (0..n_features)
+            .map(|source_index| BinnedColumnKind::Real { source_index })
+            .zip(feature_columns.iter().cloned())
+            .chain(canary_columns)
+            .unzip();
+
+        Ok(Self {
+            feature_columns,
+            binned_feature_columns,
+            binned_column_kinds,
+            target: Float64Array::from(y),
+            n_rows,
+            n_features,
+            canaries,
+        })
     }
 
     #[inline]
@@ -727,6 +806,18 @@ fn to_binary_values(values: &[f64]) -> Vec<bool> {
         .collect()
 }
 
+fn sparse_binary_column_from_values(values: &[f64]) -> SparseBinaryColumn {
+    SparseBinaryColumn {
+        row_indices: values
+            .iter()
+            .enumerate()
+            .filter_map(|(row_idx, value)| {
+                (value.total_cmp(&1.0) == Ordering::Equal).then_some(row_idx)
+            })
+            .collect(),
+    }
+}
+
 fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
     if values.is_empty() {
         return Vec::new();
@@ -807,6 +898,26 @@ fn shuffle_boolean_array(
         .collect::<Vec<_>>();
     shuffle_values(&mut shuffled, copy_index, source_index);
     BooleanArray::from(shuffled)
+}
+
+fn shuffle_sparse_binary_column(
+    values: &SparseBinaryColumn,
+    n_rows: usize,
+    copy_index: usize,
+    source_index: usize,
+) -> SparseBinaryColumn {
+    let mut dense = vec![false; n_rows];
+    for row_idx in &values.row_indices {
+        dense[*row_idx] = true;
+    }
+    shuffle_values(&mut dense, copy_index, source_index);
+    SparseBinaryColumn {
+        row_indices: dense
+            .into_iter()
+            .enumerate()
+            .filter_map(|(row_idx, value)| value.then_some(row_idx))
+            .collect(),
+    }
 }
 
 fn shuffle_values<T>(values: &mut [T], copy_index: usize, source_index: usize) {

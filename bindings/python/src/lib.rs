@@ -43,6 +43,9 @@ fn build_training_table(
             "y is required unless x is already a Table.",
         )
     })?;
+    if is_scipy_sparse_matrix(x)? {
+        return build_sparse_training_table(x, y, canaries);
+    }
     let x_rows = extract_matrix(x)?;
     let y_values = extract_vector(y)?;
 
@@ -55,11 +58,137 @@ fn build_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
         return Ok(table.inner.clone());
     }
 
+    if is_scipy_sparse_matrix(x)? {
+        return build_sparse_feature_table(x);
+    }
+
     let x_rows = extract_matrix(x)?;
     let y_values = vec![0.0; x_rows.len()];
 
     Table::with_canaries(x_rows, y_values, 0)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+fn is_scipy_sparse_matrix(x: &Bound<PyAny>) -> PyResult<bool> {
+    Ok(x.hasattr("getnnz")? && x.hasattr("nonzero")?)
+}
+
+fn build_sparse_training_table(
+    x: &Bound<PyAny>,
+    y: &Bound<PyAny>,
+    canaries: usize,
+) -> PyResult<Table> {
+    let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
+    let y_values = extract_vector(y)?;
+    let table = forestfire_data::SparseTable::from_sparse_binary_columns(
+        n_rows, n_features, columns, y_values, canaries,
+    )
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    Ok(Table::Sparse(table))
+}
+
+fn build_sparse_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
+    let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
+    let table = forestfire_data::SparseTable::from_sparse_binary_columns(
+        n_rows,
+        n_features,
+        columns,
+        vec![0.0; n_rows],
+        0,
+    )
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    Ok(Table::Sparse(table))
+}
+
+fn extract_sparse_binary_columns(x: &Bound<PyAny>) -> PyResult<(usize, usize, Vec<Vec<usize>>)> {
+    let shape_any = x.getattr("shape")?;
+    let shape: Vec<usize> = shape_any.extract()?;
+    if shape.len() != 2 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Sparse inputs must be two-dimensional.",
+        ));
+    }
+    let n_rows = shape[0];
+    let n_features = shape[1];
+
+    let data = x.getattr("data")?;
+    let values = extract_vector(&data)?;
+    if values
+        .iter()
+        .any(|value| value.total_cmp(&1.0) != std::cmp::Ordering::Equal)
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "SparseTable requires binary sparse inputs with stored values equal to 1.",
+        ));
+    }
+
+    let nonzero = x.call_method0("nonzero")?;
+    let (row_indices_any, col_indices_any): (Bound<'_, PyAny>, Bound<'_, PyAny>) =
+        nonzero.extract()?;
+    let row_indices: Vec<usize> = extract_index_vector(&row_indices_any)?;
+    let col_indices: Vec<usize> = extract_index_vector(&col_indices_any)?;
+
+    if row_indices.len() != col_indices.len() || row_indices.len() != values.len() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Sparse input metadata is inconsistent.",
+        ));
+    }
+
+    let mut columns = vec![Vec::new(); n_features];
+    for (row_idx, col_idx) in row_indices.into_iter().zip(col_indices.into_iter()) {
+        if row_idx >= n_rows || col_idx >= n_features {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Sparse input indices are out of bounds.",
+            ));
+        }
+        columns[col_idx].push(row_idx);
+    }
+
+    Ok((n_rows, n_features, columns))
+}
+
+fn extract_index_vector(values: &Bound<PyAny>) -> PyResult<Vec<usize>> {
+    if let Ok(array) = values.extract::<PyReadonlyArray1<'_, i64>>() {
+        return array
+            .as_array()
+            .iter()
+            .map(|value| {
+                usize::try_from(*value).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Sparse indices must be non-negative.",
+                    )
+                })
+            })
+            .collect();
+    }
+
+    if let Ok(array) = values.extract::<PyReadonlyArray1<'_, i32>>() {
+        return array
+            .as_array()
+            .iter()
+            .map(|value| {
+                usize::try_from(*value).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Sparse indices must be non-negative.",
+                    )
+                })
+            })
+            .collect();
+    }
+
+    values
+        .try_iter()?
+        .map(|value| {
+            value.and_then(|value| {
+                let value = value.extract::<i64>()?;
+                usize::try_from(value).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Sparse indices must be non-negative.",
+                    )
+                })
+            })
+        })
+        .collect()
 }
 
 fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
