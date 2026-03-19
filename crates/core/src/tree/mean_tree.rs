@@ -24,7 +24,7 @@ impl Display for ModelError {
 
 impl Error for ModelError {}
 
-pub fn train(train_set: &DenseTable) -> Result<TargetMeanTree, ModelError> {
+pub fn train_target_mean(train_set: &DenseTable) -> Result<TargetMeanTree, ModelError> {
     if train_set.n_rows() == 0 {
         return Err(ModelError::EmptyTarget);
     }
@@ -61,7 +61,7 @@ mod tests {
         let y = vec![10.0, 12.0, 14.0, 20.0];
         let table = DenseTable::new(x, y).unwrap();
 
-        let model = train(&table).unwrap();
+        let model = train_target_mean(&table).unwrap();
         assert!((model.mean - 14.0).abs() < 1e-12);
 
         let preds = model.predict_table(&table);
@@ -75,7 +75,7 @@ mod tests {
     fn rejects_empty_training_table() {
         let table = DenseTable::new(Vec::new(), Vec::new()).unwrap();
 
-        let err = train(&table).unwrap_err();
+        let err = train_target_mean(&table).unwrap_err();
         assert!(matches!(err, ModelError::EmptyTarget));
     }
 }

@@ -1,4 +1,4 @@
-use forestfire_core::train;
+use forestfire_core::{Model, TrainConfig, TreeType, train};
 use forestfire_data::DenseTable;
 
 #[test]
@@ -7,7 +7,17 @@ fn mean_tree_smoke() {
     let y = vec![2.0, 4.0, 6.0];
     let table = DenseTable::new(x, y).unwrap();
 
-    let m = train(&table).unwrap();
+    let m = train(
+        &table,
+        TrainConfig {
+            tree_type: TreeType::TargetMean,
+            ..TrainConfig::default()
+        },
+    )
+    .unwrap();
+    let Model::TargetMean(m) = m else {
+        panic!("expected target mean model");
+    };
     assert!((m.mean - 4.0).abs() < 1e-12);
 
     let preds = m.predict_table(&table);

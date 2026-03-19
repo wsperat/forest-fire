@@ -26,8 +26,7 @@ impl Regressor for forestfire_core::TargetMeanTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forestfire_core::TargetMeanTree;
-    use forestfire_core::train;
+    use forestfire_core::{Model, TargetMeanTree, TrainConfig, TreeType, train};
 
     #[test]
     fn trait_predictions_match_inherent_methods() {
@@ -37,7 +36,17 @@ mod tests {
         )
         .unwrap();
 
-        let m = train(&table).unwrap();
+        let m = train(
+            &table,
+            TrainConfig {
+                tree_type: TreeType::TargetMean,
+                ..TrainConfig::default()
+            },
+        )
+        .unwrap();
+        let Model::TargetMean(m) = m else {
+            panic!("expected target mean model");
+        };
         // trait path
         let via_trait = <TargetMeanTree as Regressor>::predict_table(&m, &table);
         // inherent path

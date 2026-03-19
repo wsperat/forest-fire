@@ -1,4 +1,5 @@
 use arrow::array::{Float64Array, UInt16Array};
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -128,16 +129,44 @@ fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
     let mut ranked_values: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
     ranked_values.sort_by(|left, right| left.1.total_cmp(&right.1));
 
+    let unique_value_count = ranked_values
+        .iter()
+        .map(|(_row_idx, value)| *value)
+        .fold(Vec::<f64>::new(), |mut unique_values, value| {
+            let is_new_value = unique_values
+                .last()
+                .is_none_or(|last_value| last_value.total_cmp(&value) != Ordering::Equal);
+            if is_new_value {
+                unique_values.push(value);
+            }
+            unique_values
+        })
+        .len();
+
     let mut bins = vec![0u16; values.len()];
     let max_bin = (NUMERIC_BINS - 1) as u16;
+    let mut unique_rank = 0usize;
+    let mut start = 0usize;
 
-    for (rank, (row_idx, _value)) in ranked_values.into_iter().enumerate() {
-        let bin = if values.len() == 1 {
+    while start < ranked_values.len() {
+        let current_value = ranked_values[start].1;
+        let end = ranked_values[start..]
+            .iter()
+            .position(|(_row_idx, value)| value.total_cmp(&current_value) != Ordering::Equal)
+            .map_or(ranked_values.len(), |offset| start + offset);
+
+        let bin = if unique_value_count == 1 {
             0
         } else {
-            ((rank * usize::from(max_bin)) / (values.len() - 1)) as u16
+            ((unique_rank * usize::from(max_bin)) / (unique_value_count - 1)) as u16
         };
-        bins[row_idx] = bin;
+
+        for (row_idx, _value) in &ranked_values[start..end] {
+            bins[*row_idx] = bin;
+        }
+
+        unique_rank += 1;
+        start = end;
     }
 
     bins
@@ -180,6 +209,20 @@ mod tests {
                 .len(),
             512
         );
+    }
+
+    #[test]
+    fn keeps_equal_values_in_the_same_bin() {
+        let table = DenseTable::new(
+            vec![vec![0.0], vec![0.0], vec![1.0], vec![1.0], vec![2.0]],
+            vec![0.0; 5],
+        )
+        .unwrap();
+        let bins = table.binned_feature_column(0);
+
+        assert_eq!(bins.value(0), bins.value(1));
+        assert_eq!(bins.value(2), bins.value(3));
+        assert!(bins.value(1) < bins.value(2));
     }
 
     #[test]
