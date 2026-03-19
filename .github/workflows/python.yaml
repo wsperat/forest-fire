@@ -46,7 +46,7 @@ jobs:
         run: uvx yamllint .
       - name: mypy
         run: >-
-          uvx mypy . --check-untyped-defs --strict
+          uv run --with mypy mypy . --check-untyped-defs --strict
           --config-file pyproject.toml
       - name: Build Python extension
         run: uv run maturin develop -m bindings/python/Cargo.toml
