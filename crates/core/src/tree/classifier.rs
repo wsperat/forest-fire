@@ -853,11 +853,13 @@ mod tests {
     #[test]
     fn stops_standard_tree_growth_when_a_canary_wins() {
         let table = canary_target_table();
-        let model = train_id3(&table).unwrap();
-        let preds = model.predict_table(&table);
+        for trainer in [train_id3, train_c45, train_cart] {
+            let model = trainer(&table).unwrap();
+            let preds = model.predict_table(&table);
 
-        assert!(preds.iter().all(|pred| *pred == preds[0]));
-        assert_ne!(preds, table_targets(&table));
+            assert!(preds.iter().all(|pred| *pred == preds[0]));
+            assert_ne!(preds, table_targets(&table));
+        }
     }
 
     #[test]

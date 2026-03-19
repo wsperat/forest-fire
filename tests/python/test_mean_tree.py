@@ -56,6 +56,30 @@ def test_train_cart_classifier():
     assert np.array_equal(model.predict(X), y)
 
 
+def test_train_id3_classifier():
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 0.0, 0.0, 1.0])
+
+    model = train(X, y, algorithm="dt", tree_type="id3", canaries=0)
+
+    assert model.algorithm == "dt"
+    assert model.tree_type == "id3"
+    assert model.mean_ is None
+    assert np.array_equal(model.predict(X), y)
+
+
+def test_train_c45_classifier():
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 0.0, 0.0, 1.0])
+
+    model = train(X, y, algorithm="dt", tree_type="c45", canaries=0)
+
+    assert model.algorithm == "dt"
+    assert model.tree_type == "c45"
+    assert model.mean_ is None
+    assert np.array_equal(model.predict(X), y)
+
+
 def test_train_oblivious_classifier():
     X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 0.0, 0.0, 1.0])

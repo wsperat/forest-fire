@@ -2,17 +2,16 @@
 ![ForestFire](docs/forest-fire.jpg)
 ## Fast tree-based learning in Rust
 
-A high-performance library for decision trees and tree ensembles with a Rust core and a clean Python API.
-Designed for speed, correctness, memory efficiency and interoperability with NumPy, pandas, Polars, and Arrow.
-Designed to make deployment intuitive and easy.
+A tree-learning library with a Rust core and a Python API.
+The current implementation focuses on a unified `train` interface, Arrow-backed dense tables, and a small set of tree learners.
 
 # Why this library?
 
 - Performance-first: Rust + Rayon for parallel training/prediction; cache-friendly data layouts.
-- Zero-copy I/O: Uses Apache Arrow internally so Python <-> Rust data can flow without copies.
-- Friendly Python API: native, lightgbm-like interface and `fit`, `predict`, `predict_proba` with scikit-learn-like wrappers.
-- Portable models: Save/load, and export to ONNX for broad runtime support.
-- Extensible design: A common trait-based core for trees, forests, and boosted ensembles.
+- Arrow-backed storage: `DenseTable` stores feature columns in Arrow arrays and pre-bins numeric features into 512 bins.
+- Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., tree_type=...)` entrypoint.
+- Automatic growth stopping: shuffled canary variables are generated during table construction and halt growth when selected.
+- Extensible design: a common dispatcher for tree learners behind one training interface.
 
 # Roadmap
 Several of the intended features haven't been implemented yet, so here are the desired functionalities separated according to their implementation priority.
@@ -20,10 +19,8 @@ Several of the intended features haven't been implemented yet, so here are the d
 Priorities may shift in the future, and new ones added.
 
 ## Immediate Priorities
-- Generalize the `train` interface with parameters, validation sets, and callbacks
-- DenseTable-backed histogram split finding
-- Exact CART algorithm
-- Splitting criterion
+- Generalize the `train` interface with validation sets and callbacks
+- Exact regression trees and additional criteria
 - Histogram CART algorithm
 - Compiled inference backend (`treelite` / LLVM-style codegen) for inference speedups
 
@@ -76,16 +73,16 @@ Priorities may shift in the future, and new ones added.
 
 # Features
 
-- CART decision trees (classification & regression)
-    - Gini / Entropy (cls), MSE / MAE (reg), max depth, min samples, etc.
-    - Missing values & categorical support (Arrow DictionaryArray)
-- Batch prediction (multi-threaded), predict_proba for classifiers
-- Model persistence (serde JSON) and ONNX export (TreeEnsemble*)
-- Interoperability:
-    - Accepts NumPy, pandas, Polars, PyArrow inputs
-    - Returns NumPy arrays (predictions), Arrow tables where appropriate
-- Performance knobs: multi-threading, optional histogram splitters (planned)
-- Compiled inference (planned): treelite/LLVM-style codegen backend
+- Unified `train` interface in Rust and Python
+- Arrow-backed `DenseTable` with 512-bin numeric feature binning
+- Supported tree types behind `algorithm="dt"`:
+    - `target_mean`
+    - `id3`
+    - `c45`
+    - `cart`
+    - `oblivious`
+- Automatic canary-based growth stopping with `canaries=2` by default
+- NumPy input support in Python
 
 # Installation
 ## Prerequisites
@@ -94,12 +91,9 @@ Rust (stable, latest) and Cargo
 
 Python >= 3.12
 
-Recommended Python deps (installed automatically by wheels or when building from source):
+Required Python deps:
 
 - numpy>=1.26
-- pyarrow>=12
-- pandas>=2.0 (optional)
-- polars>=1.0 (optional)
 
 ### Option A — from source with maturin
 Build & install the Python package in editable/dev mode
@@ -114,60 +108,57 @@ Use the Rust core crate directly in your Cargo project
 
 # Quickstart (Python)
 ```python
-# Build a simple dense table. Features are binned into 512 buckets when the
-# table is constructed, but the baseline model still predicts the target mean.
 import numpy as np
 
 from forestfire import train
 
 X = np.array([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]])
-y = np.array([0,1,1,0])
+y = np.array([0.0, 0.0, 0.0, 1.0])
 
-clf = train(X, y)
-pred  = clf.predict(X)           # -> NumPy array [n_samples]
+clf = train(X, y, algorithm="dt", tree_type="cart", canaries=2)
+pred = clf.predict(X)            # -> NumPy array [n_samples]
 ```
 
 # Data interop tips
 
-NumPy arrays are accepted directly for `train(X, y)`.
+NumPy arrays are accepted directly for `train(X, y, ...)`.
 
-Training materializes an Arrow-backed `DenseTable` and pre-bins numerical columns into 512 rank bins.
+Training materializes an Arrow-backed `DenseTable`, pre-bins numerical columns into 512 rank bins, and appends shuffled canary copies of the binned columns.
+
+If a split chooses a canary variable, growth stops automatically at that node. For oblivious trees, selecting a canary stops the whole tree-growth loop.
 
 # Quickstart (Rust)
 ```rust
 use anyhow::Result;
-use forestfire_core::train;
+use forestfire_core::{train, TrainAlgorithm, TrainConfig, TreeType};
 use forestfire_data::DenseTable;
 
 fn main() -> Result<()> {
-    // Build a dense table. Numerical features are pre-binned into 512 buckets.
-    let x = vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0]];
-    let y = vec![10.0, 12.0, 14.0, 20.0];
-    let table = DenseTable::new(x, y)?;           // validates shapes and bins features
-
-    // Train the "target mean" tree using a free train interface.
-    let model = train(&table)?;                   // error if empty target
-
-    // Predict a constant for every row in the table (mean of y).
-    let preds = model.predict_table(&table);      // -> Vec<f64> of length n_samples
-    println!("{preds:?}");                        // [14.0, 14.0, 14.0, 14.0]
+    let x = vec![
+        vec![0.0, 0.0],
+        vec![0.0, 1.0],
+        vec![1.0, 0.0],
+        vec![1.0, 1.0],
+    ];
+    let y = vec![0.0, 0.0, 0.0, 1.0];
+    let table = DenseTable::new(x, y)?;
+    let config = TrainConfig {
+        algorithm: TrainAlgorithm::Dt,
+        tree_type: TreeType::Cart,
+    };
+    let model = train(&table, config)?;
+    let preds = model.predict_table(&table);
+    println!("{preds:?}");
     Ok(())
 }
 ```
 
-Heavy loops release the Python GIL; training & prediction are multi-threaded by default.
-
 # Design notes
 - Arrow everywhere: The core stores features in Arrow arrays for columnar, cache-friendly scans.
-- Numerical and categorical features (Arrow DictionaryArray) supported.
-- Missing values tracked via Arrow validity bitmaps.
-- Traits & reuse: Predictor/Trainable traits unify trees/ensembles. Split finding logic is shared.
-- Memory: Node arrays and compact types (e.g., f32 thresholds) keep models lean; future array-based layout optimizes cache locality further.
-- Parallelism: Feature-wise split evaluation and tree/forest training are parallelized with Rayon.
-
-# Persistence & interchange
-- Save/Load: JSON via serde for human-readable model storage.
-- ONNX export: Emits TreeEnsembleClassifier / TreeEnsembleRegressor; loadable in ONNX Runtime and many other environments.
+- `DenseTable` holds feature columns and target data separately.
+- Tree learners consume the pre-binned representation rather than re-sorting features during fitting.
+- Canary columns are synthetic shuffled copies of the binned features and act as a built-in stopping signal.
+- The current Python API is NumPy-first.
 
 # Building & testing
 ## Rust
@@ -218,10 +209,10 @@ See CONTRIBUTING.md (or open an issue if you don’t see one yet).
 # FAQ
 
 ## Q: Do I need pandas or Polars?
-No. You can pass NumPy arrays directly. pandas/Polars/pyarrow are supported for zero-copy convenience.
+No. The current Python binding accepts NumPy arrays directly.
 
 ## Q: Are predictions deterministic?
-Yes for single trees given the same inputs/params. For randomized procedures (e.g., forests), set `random_state`.
+Yes. Binning and canary generation are deterministic for the same inputs and parameters.
 
 ## Q: How big can my data be?
 As large as your machine’s memory (for now). Out-of-core/streaming training is on the roadmap.
