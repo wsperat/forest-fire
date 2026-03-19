@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from forestfire import TargetMeanTree
+from forestfire import train
 
 
 @pytest.fixture
@@ -10,9 +10,9 @@ def toy_data():
     return X, y
 
 
-def test_fit_and_predict_shape_and_value(toy_data):
+def test_train_and_predict_shape_and_value(toy_data):
     X, y = toy_data
-    m = TargetMeanTree.fit(X, y)
+    m = train(X, y)
     assert m.mean_ == pytest.approx(14.0, abs=1e-12)
 
     preds = m.predict(X)
@@ -30,13 +30,13 @@ def test_fit_and_predict_shape_and_value(toy_data):
 )
 def test_mean_is_computed_correctly(y, expected):
     X = np.zeros((y.shape[0], 2))
-    m = TargetMeanTree.fit(X, y)
+    m = train(X, y)
     assert m.mean_ == pytest.approx(expected, abs=1e-12)
     assert np.allclose(m.predict(X), expected)
 
 
-def test_fit_raises_on_mismatched_lengths():
+def test_train_raises_on_mismatched_lengths():
     X = np.zeros((3, 1))
     y = np.ones(2)
     with pytest.raises(ValueError):
-        TargetMeanTree.fit(X, y)
+        train(X, y)

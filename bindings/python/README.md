@@ -1,6 +1,6 @@
 # forestfire 🌲🔥 (python)
 
-Baseline bindings exposing a constant-mean "tree".
+Baseline bindings exposing a free `train(X, y)` interface for a constant-mean "tree".
 
 ## Build & install (dev)
 ```bash

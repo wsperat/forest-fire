@@ -1,13 +1,13 @@
-use forestfire_data::DenseDataset;
+use forestfire_data::DenseTable;
 
 /// Common interface for regression models.
 pub trait Regressor {
     /// Predict for `n_rows` rows (feature-agnostic).
     fn predict_rows(&self, n_rows: usize) -> Vec<f64>;
 
-    /// Predict for a dataset; default delegates to `predict_rows`.
-    fn predict_dataset(&self, ds: &DenseDataset) -> Vec<f64> {
-        self.predict_rows(ds.n_samples())
+    /// Predict for a table; default delegates to `predict_rows`.
+    fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+        self.predict_rows(table.n_rows())
     }
 }
 
@@ -18,8 +18,8 @@ impl Regressor for forestfire_core::TargetMeanTree {
         forestfire_core::TargetMeanTree::predict_many(self, n_rows)
     }
 
-    fn predict_dataset(&self, ds: &DenseDataset) -> Vec<f64> {
-        forestfire_core::TargetMeanTree::predict_dataset(self, ds)
+    fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+        forestfire_core::TargetMeanTree::predict_table(self, table)
     }
 }
 
@@ -27,20 +27,21 @@ impl Regressor for forestfire_core::TargetMeanTree {
 mod tests {
     use super::*;
     use forestfire_core::TargetMeanTree;
+    use forestfire_core::train;
 
     #[test]
     fn trait_predictions_match_inherent_methods() {
-        let ds = forestfire_data::DenseDataset::new(
+        let table = forestfire_data::DenseTable::new(
             vec![vec![0.0], vec![1.0], vec![2.0]],
             vec![2.0, 4.0, 6.0],
         )
         .unwrap();
 
-        let m = TargetMeanTree::train(&ds).unwrap();
+        let m = train(&table).unwrap();
         // trait path
-        let via_trait = <TargetMeanTree as Regressor>::predict_dataset(&m, &ds);
+        let via_trait = <TargetMeanTree as Regressor>::predict_table(&m, &table);
         // inherent path
-        let via_inherent = m.predict_dataset(&ds);
+        let via_inherent = m.predict_table(&table);
 
         assert_eq!(via_trait, via_inherent);
         assert!(via_trait.iter().all(|&p| (p - m.mean).abs() < 1e-12));

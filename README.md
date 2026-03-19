@@ -20,8 +20,8 @@ Several of the intended features haven't been implemented yet, so here are the d
 Priorities may shift in the future, and new ones added.
 
 ## Immediate Priorities
-- Redesign `train` API to avoid class methods
-- Arrow Backend to `DenseDataset`
+- Generalize the `train` interface with parameters, validation sets, and callbacks
+- DenseTable-backed histogram split finding
 - Exact CART algorithm
 - Splitting criterion
 - Histogram CART algorithm
@@ -53,7 +53,7 @@ Priorities may shift in the future, and new ones added.
 │   │   └── src
 │   │       ├── lib.rs         — Core crate root
 │   │       └── tree           — Tree model implementations
-│   ├── data                   — Arrow-backed data access & dataset abstractions
+│   ├── data                   — Arrow-backed dense table & preprocessing abstractions
 │   ├── exporters              — Model export backends
 │   │   ├── compiled           — (Planned) codegen/compiled inference target
 │   │   └── onnx               — (Planned) ONNX-ML TreeEnsemble exporter implementation
@@ -114,55 +114,43 @@ Use the Rust core crate directly in your Cargo project
 
 # Quickstart (Python)
 ```python
-# Build a simple dense dataset. Features are currently ignored by the model,
-# but must match the number of target values.
+# Build a simple dense table. Features are binned into 512 buckets when the
+# table is constructed, but the baseline model still predicts the target mean.
 import numpy as np
-import pandas as pd
 
-from forestfire import TargetMeanTree
+from forestfire import train
 
-X = pd.DataFrame({"x1": [0,1,1,0], "x2": [1,1,0,0]})
+X = np.array([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]])
 y = np.array([0,1,1,0])
 
-clf = TargetMeanTree.fit(X, y)   # accepts pandas/NumPy/Polars/PyArrow
+clf = train(X, y)
 pred  = clf.predict(X)           # -> NumPy array [n_samples]
-
-# Persistence & ONNX export, still not implemented
-clf.save("tree.onnx")
-loaded = TargetMeanTree.load("tree.onnx")
 ```
 
 # Data interop tips
 
-pandas -> Arrow zero-copy happens under the hood (via Arrow C Data Interface).
+NumPy arrays are accepted directly for `train(X, y)`.
 
-Polars DataFrame is supported (via pyo3-polars); you can also pass `df.to_arrow()` directly.
-
-Using NumPy? We accept ndarray for X and y, converting efficiently.
+Training materializes an Arrow-backed `DenseTable` and pre-bins numerical columns into 512 rank bins.
 
 # Quickstart (Rust)
 ```rust
 use anyhow::Result;
-use forestfire_data::DenseDataset;
-use forestfire_core::tree::TargetMeanTree;
+use forestfire_core::train;
+use forestfire_data::DenseTable;
 
 fn main() -> Result<()> {
-    // Build a simple dense dataset. Features are currently ignored by the model,
-    // but must match the number of target values.
+    // Build a dense table. Numerical features are pre-binned into 512 buckets.
     let x = vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0]];
     let y = vec![10.0, 12.0, 14.0, 20.0];
-    let ds = DenseDataset::new(x, y)?;            // validates shapes
+    let table = DenseTable::new(x, y)?;           // validates shapes and bins features
 
-    // Train the "target mean" tree: stores global mean(y) and predicts it.
-    let model = TargetMeanTree::train(&ds)?;      // error if empty/mismatched lengths
+    // Train the "target mean" tree using a free train interface.
+    let model = train(&table)?;                   // error if empty target
 
-    // Predict a constant for every row in the dataset (mean of y).
-    let preds = model.predict_dataset(&ds);       // -> Vec<f64> of length n_samples
+    // Predict a constant for every row in the table (mean of y).
+    let preds = model.predict_table(&table);      // -> Vec<f64> of length n_samples
     println!("{preds:?}");                        // [14.0, 14.0, 14.0, 14.0]
-
-    // Persistence & ONNX export, still not implemented
-    model.save("tree.onnx")
-    let loaded = TargetMeanTree.load("tree.onnx")
     Ok(())
 }
 ```

@@ -1,4 +1,4 @@
-use forestfire_data::DenseDataset;
+use forestfire_data::DenseTable;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -12,70 +12,70 @@ pub struct TargetMeanTree {
 #[derive(Debug)]
 pub enum ModelError {
     EmptyTarget,
-    MismatchedLengths { x: usize, y: usize },
 }
 
 impl Display for ModelError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ModelError::EmptyTarget => write!(f, "Cannot train on an empty target vector."),
-            ModelError::MismatchedLengths { x, y } => write!(
-                f,
-                "Mismatched lengths: X has {} rows while y has {} values.",
-                x, y
-            ),
         }
     }
 }
+
 impl Error for ModelError {}
 
-impl TargetMeanTree {
-    /// Train from a DenseDataset (uses y only).
-    pub fn train(ds: &DenseDataset) -> Result<Self, ModelError> {
-        if ds.n_samples() == 0 {
-            return Err(ModelError::EmptyTarget);
-        }
-        if ds.x.len() != ds.y.len() {
-            return Err(ModelError::MismatchedLengths {
-                x: ds.x.len(),
-                y: ds.y.len(),
-            });
-        }
-        let sum: f64 = ds.y.iter().copied().sum();
-        Ok(Self {
-            mean: sum / ds.y.len() as f64,
-        })
+pub fn train(train_set: &DenseTable) -> Result<TargetMeanTree, ModelError> {
+    if train_set.n_rows() == 0 {
+        return Err(ModelError::EmptyTarget);
     }
 
+    let sum: f64 = (0..train_set.n_rows())
+        .map(|row_idx| train_set.target().value(row_idx))
+        .sum();
+
+    Ok(TargetMeanTree {
+        mean: sum / train_set.n_rows() as f64,
+    })
+}
+
+impl TargetMeanTree {
     /// Predict the constant mean for `n` samples.
     pub fn predict_many(&self, n: usize) -> Vec<f64> {
         vec![self.mean; n]
     }
 
-    /// Convenience: predict for a dataset (ignores features).
-    pub fn predict_dataset(&self, ds: &DenseDataset) -> Vec<f64> {
-        self.predict_many(ds.n_samples())
+    /// Convenience: predict for a table (ignores features).
+    pub fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+        self.predict_many(table.n_rows())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forestfire_data::DenseDataset;
+    use forestfire_data::DenseTable;
 
     #[test]
     fn trains_and_predicts_mean() {
         let x = vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0]];
         let y = vec![10.0, 12.0, 14.0, 20.0];
-        let ds = DenseDataset::new(x, y).unwrap();
+        let table = DenseTable::new(x, y).unwrap();
 
-        let model = TargetMeanTree::train(&ds).unwrap();
+        let model = train(&table).unwrap();
         assert!((model.mean - 14.0).abs() < 1e-12);
 
-        let preds = model.predict_dataset(&ds);
+        let preds = model.predict_table(&table);
         assert_eq!(preds.len(), 4);
-        for p in preds {
-            assert!((p - 14.0).abs() < 1e-12);
+        for pred in preds {
+            assert!((pred - 14.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn rejects_empty_training_table() {
+        let table = DenseTable::new(Vec::new(), Vec::new()).unwrap();
+
+        let err = train(&table).unwrap_err();
+        assert!(matches!(err, ModelError::EmptyTarget));
     }
 }

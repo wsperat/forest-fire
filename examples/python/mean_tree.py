@@ -1,6 +1,6 @@
 # examples/python/quickstart_mean_tree.py
 import numpy as np
-from forestfire import TargetMeanTree
+from forestfire import train
 
 
 def main() -> None:
@@ -11,7 +11,7 @@ def main() -> None:
     X = rng.normal(size=(n, d))
     y = np.array([10.0, 12.0, 14.0, 20.0, 8.0, 13.0, 9.0, 11.0], dtype=float)
 
-    model = TargetMeanTree.fit(X, y)
+    model = train(X, y)
     preds = model.predict(X)
 
     mse = float(np.mean((preds - y) ** 2))
