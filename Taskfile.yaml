@@ -15,57 +15,58 @@ tasks:
   lint-check-only:
     desc: Check linting and formatting (no fixes)
     cmds:
-      - uv run isort --check-only .
-      - uv run ruff check .
-      - uv run ruff format --check .
-      - |
-        if command -v yamllint >/dev/null 2>&1; then
-          yamllint .
-        else
-          echo "yamllint is not installed; skipping YAML lint"
-        fi
+      - >-
+        uv run isort --check-only
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - >-
+        uv run ruff check
+        bindings/python
+        examples/python
+        tests/python
+      - >-
+        uv run ruff format --check
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   lint:
     desc: Auto-fix linting and formatting issues
     cmds:
-      - uv run isort .
-      - uv run ruff check --fix .
-      - uv run ruff format .
-      - |
-        if command -v yamllint >/dev/null 2>&1; then
-          yamllint .
-        else
-          echo "yamllint is not installed; skipping YAML lint"
-        fi
+      - >-
+        uv run isort
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - >-
+        uv run ruff check --fix
+        bindings/python
+        examples/python
+        tests/python
+      - >-
+        uv run ruff format
+        bindings/python/forestfire.pyi
+        examples/python/mean_tree.py
+        tests/python/test_mean_tree.py
+      - uv run yamlfix Taskfile.yaml .pre-commit-config.yaml .github/workflows
+      - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   mypy:
     desc: Run static type checks with mypy
     deps: [install]
     cmds:
-      - |
-        if command -v mypy >/dev/null 2>&1; then
-          mypy . --check-untyped-defs --strict --config-file pyproject.toml
-        else
-          echo "mypy is not installed; skipping type checks"
-        fi
+      - >-
+        uv run mypy . --check-untyped-defs --strict
+        --config-file pyproject.toml
   setup-local-env:
     desc: Setup local environment
-    cmds:
-      - task venv
-      - task install
-      - |
-        if command -v pre-commit >/dev/null 2>&1; then
-          pre-commit install
-        else
-          echo "pre-commit is not installed; skipping hook installation"
-        fi
+    cmds: [task venv, task install, uv run pre-commit install]
   clean:
     desc: Clean cache and temporary files
     cmds:
       - rm -rf .mypy_cache .pytest_cache .ruff_cache
       - find . -regex ".*/__pycache__" -exec rm -rf {} +
-      - |
-        if command -v pre-commit >/dev/null 2>&1; then
-          pre-commit clean || true
-        fi
+      - uv run pre-commit clean
       - cargo clean -p forestfire-python
   test:
     desc: Run Python tests
