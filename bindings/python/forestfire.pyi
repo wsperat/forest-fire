@@ -9,6 +9,7 @@ def train(
     y: NDArray[np.float64],
     algorithm: str = "dt",
     tree_type: str = "target_mean",
+    canaries: int = 2,
 ) -> "Model": ...
 
 class Model:

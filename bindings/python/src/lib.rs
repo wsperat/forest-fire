@@ -8,14 +8,18 @@ struct PyModel {
     inner: Model,
 }
 
-fn build_table(x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<DenseTable> {
+fn build_table(
+    x: PyReadonlyArray2<f64>,
+    y: PyReadonlyArray1<f64>,
+    canaries: usize,
+) -> PyResult<DenseTable> {
     let x_view = x.as_array();
     let y_view = y.as_array();
 
     let x_vec: Vec<Vec<f64>> = x_view.rows().into_iter().map(|row| row.to_vec()).collect();
     let y_vec: Vec<f64> = y_view.to_vec();
 
-    DenseTable::new(x_vec, y_vec)
+    DenseTable::with_canaries(x_vec, y_vec, canaries)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
@@ -24,7 +28,7 @@ fn build_feature_table(x: PyReadonlyArray2<f64>) -> PyResult<DenseTable> {
     let x_vec: Vec<Vec<f64>> = x_view.rows().into_iter().map(|row| row.to_vec()).collect();
     let y_vec = vec![0.0; x.shape()[0]];
 
-    DenseTable::new(x_vec, y_vec)
+    DenseTable::with_canaries(x_vec, y_vec, 0)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
@@ -44,8 +48,9 @@ fn parse_tree_type(tree_type: &str) -> PyResult<TreeType> {
         "id3" => Ok(TreeType::Id3),
         "c45" => Ok(TreeType::C45),
         "cart" => Ok(TreeType::Cart),
+        "oblivious" => Ok(TreeType::Oblivious),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported tree_type '{}'. Expected one of: target_mean, id3, c45, cart",
+            "Unsupported tree_type '{}'. Expected one of: target_mean, id3, c45, cart, oblivious",
             tree_type
         ))),
     }
@@ -63,18 +68,20 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
         TreeType::Id3 => "id3",
         TreeType::C45 => "c45",
         TreeType::Cart => "cart",
+        TreeType::Oblivious => "oblivious",
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y, algorithm="dt", tree_type="target_mean"))]
+#[pyo3(signature = (x, y, algorithm="dt", tree_type="target_mean", canaries=2))]
 fn train(
     x: PyReadonlyArray2<f64>,
     y: PyReadonlyArray1<f64>,
     algorithm: &str,
     tree_type: &str,
+    canaries: usize,
 ) -> PyResult<PyModel> {
-    let table = build_table(x, y)?;
+    let table = build_table(x, y, canaries)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
         tree_type: parse_tree_type(tree_type)?,

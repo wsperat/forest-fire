@@ -20,3 +20,4 @@ resolver = "2"
 
 [workspace.dependencies]
 arrow = { version = "54.2.1", features = ["ipc"] }
+rand = "0.8.5"

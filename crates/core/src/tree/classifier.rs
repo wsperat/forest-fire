@@ -8,6 +8,7 @@ pub enum DecisionTreeAlgorithm {
     Id3,
     C45,
     Cart,
+    Oblivious,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,8 +53,25 @@ impl Error for DecisionTreeError {}
 pub struct DecisionTreeClassifier {
     algorithm: DecisionTreeAlgorithm,
     class_labels: Vec<f64>,
-    nodes: Vec<TreeNode>,
-    root: usize,
+    structure: TreeStructure,
+}
+
+#[derive(Debug, Clone)]
+enum TreeStructure {
+    Standard {
+        nodes: Vec<TreeNode>,
+        root: usize,
+    },
+    Oblivious {
+        splits: Vec<ObliviousSplit>,
+        leaf_class_indices: Vec<usize>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ObliviousSplit {
+    feature_index: usize,
+    threshold_bin: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +132,16 @@ pub fn train_cart(train_set: &DenseTable) -> Result<DecisionTreeClassifier, Deci
     )
 }
 
+pub fn train_oblivious(
+    train_set: &DenseTable,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_classifier(
+        train_set,
+        DecisionTreeAlgorithm::Oblivious,
+        DecisionTreeOptions::default(),
+    )
+}
+
 fn train_classifier(
     train_set: &DenseTable,
     algorithm: DecisionTreeAlgorithm,
@@ -124,22 +152,29 @@ fn train_classifier(
     }
 
     let (class_labels, class_indices) = encode_class_labels(train_set)?;
-    let mut nodes = Vec::new();
-    let all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
-    let context = BuildContext {
-        table: train_set,
-        class_indices: &class_indices,
-        class_labels: &class_labels,
-        algorithm,
-        options,
+    let structure = match algorithm {
+        DecisionTreeAlgorithm::Oblivious => {
+            train_oblivious_structure(train_set, &class_indices, &class_labels, options)
+        }
+        _ => {
+            let mut nodes = Vec::new();
+            let all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
+            let context = BuildContext {
+                table: train_set,
+                class_indices: &class_indices,
+                class_labels: &class_labels,
+                algorithm,
+                options,
+            };
+            let root = build_node(&context, &mut nodes, &all_rows, 0);
+            TreeStructure::Standard { nodes, root }
+        }
     };
-    let root = build_node(&context, &mut nodes, &all_rows, 0);
 
     Ok(DecisionTreeClassifier {
         algorithm,
         class_labels,
-        nodes,
-        root,
+        structure,
     })
 }
 
@@ -155,38 +190,56 @@ impl DecisionTreeClassifier {
     }
 
     fn predict_row(&self, table: &DenseTable, row_idx: usize) -> f64 {
-        let mut node_index = self.root;
+        match &self.structure {
+            TreeStructure::Standard { nodes, root } => {
+                let mut node_index = *root;
 
-        loop {
-            match &self.nodes[node_index] {
-                TreeNode::Leaf { class_index } => return self.class_labels[*class_index],
-                TreeNode::MultiwaySplit {
-                    feature_index,
-                    fallback_class_index,
-                    branches,
-                } => {
-                    let bin = table.binned_feature_column(*feature_index).value(row_idx);
-                    if let Some((_, child_index)) =
-                        branches.iter().find(|(branch_bin, _)| *branch_bin == bin)
-                    {
-                        node_index = *child_index;
-                    } else {
-                        return self.class_labels[*fallback_class_index];
+                loop {
+                    match &nodes[node_index] {
+                        TreeNode::Leaf { class_index } => return self.class_labels[*class_index],
+                        TreeNode::MultiwaySplit {
+                            feature_index,
+                            fallback_class_index,
+                            branches,
+                        } => {
+                            let bin = table.binned_feature_column(*feature_index).value(row_idx);
+                            if let Some((_, child_index)) =
+                                branches.iter().find(|(branch_bin, _)| *branch_bin == bin)
+                            {
+                                node_index = *child_index;
+                            } else {
+                                return self.class_labels[*fallback_class_index];
+                            }
+                        }
+                        TreeNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            left_child,
+                            right_child,
+                        } => {
+                            let bin = table.binned_feature_column(*feature_index).value(row_idx);
+                            node_index = if bin <= *threshold_bin {
+                                *left_child
+                            } else {
+                                *right_child
+                            };
+                        }
                     }
                 }
-                TreeNode::BinarySplit {
-                    feature_index,
-                    threshold_bin,
-                    left_child,
-                    right_child,
-                } => {
-                    let bin = table.binned_feature_column(*feature_index).value(row_idx);
-                    node_index = if bin <= *threshold_bin {
-                        *left_child
-                    } else {
-                        *right_child
-                    };
-                }
+            }
+            TreeStructure::Oblivious {
+                splits,
+                leaf_class_indices,
+            } => {
+                let leaf_index = splits.iter().fold(0usize, |leaf_index, split| {
+                    let go_right = table
+                        .binned_feature_column(split.feature_index)
+                        .value(row_idx)
+                        > split.threshold_bin;
+                    (leaf_index << 1) | usize::from(go_right)
+                });
+
+                self.class_labels[leaf_class_indices[leaf_index]]
             }
         }
     }
@@ -252,7 +305,7 @@ fn build_node(
         return push_leaf(nodes, majority_class_index);
     }
 
-    let best_split = (0..context.table.n_features())
+    let best_split = (0..context.table.binned_feature_count())
         .filter_map(|feature_index| {
             score_split(
                 context.table,
@@ -267,6 +320,13 @@ fn build_node(
         .max_by(|left, right| split_score(left).total_cmp(&split_score(right)));
 
     match best_split {
+        Some(best_split)
+            if context
+                .table
+                .is_canary_binned_feature(split_feature_index(&best_split)) =>
+        {
+            push_leaf(nodes, majority_class_index)
+        }
         Some(SplitCandidate::Multiway {
             feature_index,
             score,
@@ -320,6 +380,167 @@ struct BuildContext<'a> {
     options: DecisionTreeOptions,
 }
 
+#[derive(Debug, Clone)]
+struct ObliviousLeafState {
+    rows: Vec<usize>,
+    class_index: usize,
+}
+
+fn train_oblivious_structure(
+    table: &DenseTable,
+    class_indices: &[usize],
+    class_labels: &[f64],
+    options: DecisionTreeOptions,
+) -> TreeStructure {
+    let all_rows: Vec<usize> = (0..table.n_rows()).collect();
+    let mut leaves = vec![ObliviousLeafState {
+        class_index: majority_class(&all_rows, class_indices, class_labels.len()),
+        rows: all_rows,
+    }];
+    let mut splits = Vec::new();
+
+    for _depth in 0..options.max_depth {
+        let best_split = (0..table.binned_feature_count())
+            .filter_map(|feature_index| {
+                score_oblivious_split(
+                    table,
+                    class_indices,
+                    feature_index,
+                    &leaves,
+                    class_labels.len(),
+                    options.min_samples_leaf,
+                )
+            })
+            .max_by(|left, right| left.score.total_cmp(&right.score));
+
+        let Some(best_split) = best_split.filter(|candidate| candidate.score > 0.0) else {
+            break;
+        };
+        if table.is_canary_binned_feature(best_split.feature_index) {
+            break;
+        }
+
+        let next_leaves = leaves
+            .into_iter()
+            .flat_map(|leaf| {
+                split_oblivious_leaf(
+                    table,
+                    class_indices,
+                    class_labels.len(),
+                    leaf,
+                    best_split.feature_index,
+                    best_split.threshold_bin,
+                )
+            })
+            .collect();
+
+        leaves = next_leaves;
+        splits.push(ObliviousSplit {
+            feature_index: best_split.feature_index,
+            threshold_bin: best_split.threshold_bin,
+        });
+    }
+
+    TreeStructure::Oblivious {
+        splits,
+        leaf_class_indices: leaves.into_iter().map(|leaf| leaf.class_index).collect(),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ObliviousSplitCandidate {
+    feature_index: usize,
+    threshold_bin: u16,
+    score: f64,
+}
+
+fn score_oblivious_split(
+    table: &DenseTable,
+    class_indices: &[usize],
+    feature_index: usize,
+    leaves: &[ObliviousLeafState],
+    num_classes: usize,
+    min_samples_leaf: usize,
+) -> Option<ObliviousSplitCandidate> {
+    let feature = table.binned_feature_column(feature_index);
+    let candidate_thresholds = leaves
+        .iter()
+        .flat_map(|leaf| leaf.rows.iter().map(|row_idx| feature.value(*row_idx)))
+        .collect::<BTreeSet<_>>();
+
+    candidate_thresholds
+        .into_iter()
+        .filter_map(|threshold_bin| {
+            let score = leaves.iter().fold(0.0, |score, leaf| {
+                let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = leaf
+                    .rows
+                    .iter()
+                    .copied()
+                    .partition(|row_idx| feature.value(*row_idx) <= threshold_bin);
+
+                if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
+                    return score;
+                }
+
+                let parent_counts = class_counts(&leaf.rows, class_indices, num_classes);
+                let left_counts = class_counts(&left_rows, class_indices, num_classes);
+                let right_counts = class_counts(&right_rows, class_indices, num_classes);
+
+                let weighted_parent_gini =
+                    leaf.rows.len() as f64 * gini(&parent_counts, leaf.rows.len());
+                let weighted_children_gini = left_rows.len() as f64
+                    * gini(&left_counts, left_rows.len())
+                    + right_rows.len() as f64 * gini(&right_counts, right_rows.len());
+
+                score + (weighted_parent_gini - weighted_children_gini)
+            });
+
+            (score > 0.0).then_some(ObliviousSplitCandidate {
+                feature_index,
+                threshold_bin,
+                score,
+            })
+        })
+        .max_by(|left, right| left.score.total_cmp(&right.score))
+}
+
+fn split_oblivious_leaf(
+    table: &DenseTable,
+    class_indices: &[usize],
+    num_classes: usize,
+    leaf: ObliviousLeafState,
+    feature_index: usize,
+    threshold_bin: u16,
+) -> [ObliviousLeafState; 2] {
+    let feature = table.binned_feature_column(feature_index);
+    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = leaf
+        .rows
+        .into_iter()
+        .partition(|row_idx| feature.value(*row_idx) <= threshold_bin);
+
+    let left_class_index = if left_rows.is_empty() {
+        leaf.class_index
+    } else {
+        majority_class(&left_rows, class_indices, num_classes)
+    };
+    let right_class_index = if right_rows.is_empty() {
+        leaf.class_index
+    } else {
+        majority_class(&right_rows, class_indices, num_classes)
+    };
+
+    [
+        ObliviousLeafState {
+            rows: left_rows,
+            class_index: left_class_index,
+        },
+        ObliviousLeafState {
+            rows: right_rows,
+            class_index: right_class_index,
+        },
+    ]
+}
+
 fn score_split(
     table: &DenseTable,
     class_indices: &[usize],
@@ -356,6 +577,7 @@ fn score_split(
             num_classes,
             min_samples_leaf,
         ),
+        DecisionTreeAlgorithm::Oblivious => None,
     }
 }
 
@@ -521,6 +743,13 @@ fn split_score(candidate: &SplitCandidate) -> f64 {
     }
 }
 
+fn split_feature_index(candidate: &SplitCandidate) -> usize {
+    match candidate {
+        SplitCandidate::Multiway { feature_index, .. }
+        | SplitCandidate::Binary { feature_index, .. } => *feature_index,
+    }
+}
+
 fn push_leaf(nodes: &mut Vec<TreeNode>, class_index: usize) -> usize {
     push_node(nodes, TreeNode::Leaf { class_index })
 }
@@ -557,6 +786,23 @@ mod tests {
         .unwrap()
     }
 
+    fn canary_target_table() -> DenseTable {
+        let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
+        let probe = DenseTable::with_canaries(x.clone(), vec![0.0; 8], 1).unwrap();
+        let canary_index = probe.n_features();
+        let y = (0..probe.n_rows())
+            .map(|row_idx| {
+                if probe.binned_feature_column(canary_index).value(row_idx) > 255 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        DenseTable::with_canaries(x, y, 1).unwrap()
+    }
+
     #[test]
     fn id3_fits_basic_boolean_pattern() {
         let table = and_table();
@@ -585,6 +831,15 @@ mod tests {
     }
 
     #[test]
+    fn oblivious_fits_basic_boolean_pattern() {
+        let table = and_table();
+        let model = train_oblivious(&table).unwrap();
+
+        assert_eq!(model.algorithm(), DecisionTreeAlgorithm::Oblivious);
+        assert_eq!(model.predict_table(&table), table_targets(&table));
+    }
+
+    #[test]
     fn rejects_non_finite_class_labels() {
         let table = DenseTable::new(vec![vec![0.0], vec![1.0]], vec![0.0, f64::NAN]).unwrap();
 
@@ -593,6 +848,26 @@ mod tests {
             err,
             DecisionTreeError::InvalidTargetValue { row: 1, value } if value.is_nan()
         ));
+    }
+
+    #[test]
+    fn stops_standard_tree_growth_when_a_canary_wins() {
+        let table = canary_target_table();
+        let model = train_id3(&table).unwrap();
+        let preds = model.predict_table(&table);
+
+        assert!(preds.iter().all(|pred| *pred == preds[0]));
+        assert_ne!(preds, table_targets(&table));
+    }
+
+    #[test]
+    fn stops_oblivious_tree_growth_when_a_canary_wins() {
+        let table = canary_target_table();
+        let model = train_oblivious(&table).unwrap();
+        let preds = model.predict_table(&table);
+
+        assert!(preds.iter().all(|pred| *pred == preds[0]));
+        assert_ne!(preds, table_targets(&table));
     }
 
     fn table_targets(table: &DenseTable) -> Vec<f64> {

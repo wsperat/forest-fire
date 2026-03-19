@@ -11,6 +11,7 @@ pub use tree::classifier::DecisionTreeOptions;
 pub use tree::classifier::train_c45;
 pub use tree::classifier::train_cart;
 pub use tree::classifier::train_id3;
+pub use tree::classifier::train_oblivious;
 pub use tree::mean_tree::ModelError;
 pub use tree::mean_tree::TargetMeanTree;
 pub use tree::mean_tree::train_target_mean;
@@ -26,6 +27,7 @@ pub enum TreeType {
     Id3,
     C45,
     Cart,
+    Oblivious,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -80,6 +82,9 @@ pub fn train(train_set: &DenseTable, config: TrainConfig) -> Result<Model, Train
         (TrainAlgorithm::Dt, TreeType::Cart) => train_cart(train_set)
             .map(Model::DecisionTree)
             .map_err(TrainError::DecisionTree),
+        (TrainAlgorithm::Dt, TreeType::Oblivious) => train_oblivious(train_set)
+            .map(Model::DecisionTree)
+            .map_err(TrainError::DecisionTree),
     }
 }
 
@@ -104,6 +109,7 @@ impl Model {
                 DecisionTreeAlgorithm::Id3 => TreeType::Id3,
                 DecisionTreeAlgorithm::C45 => TreeType::C45,
                 DecisionTreeAlgorithm::Cart => TreeType::Cart,
+                DecisionTreeAlgorithm::Oblivious => TreeType::Oblivious,
             },
         }
     }

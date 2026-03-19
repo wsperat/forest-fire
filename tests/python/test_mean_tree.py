@@ -48,10 +48,22 @@ def test_train_cart_classifier():
     X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 0.0, 0.0, 1.0])
 
-    model = train(X, y, algorithm="dt", tree_type="cart")
+    model = train(X, y, algorithm="dt", tree_type="cart", canaries=0)
 
     assert model.algorithm == "dt"
     assert model.tree_type == "cart"
+    assert model.mean_ is None
+    assert np.array_equal(model.predict(X), y)
+
+
+def test_train_oblivious_classifier():
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 0.0, 0.0, 1.0])
+
+    model = train(X, y, algorithm="dt", tree_type="oblivious", canaries=0)
+
+    assert model.algorithm == "dt"
+    assert model.tree_type == "oblivious"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
@@ -62,3 +74,12 @@ def test_train_rejects_unknown_algorithm():
 
     with pytest.raises(ValueError, match="Unsupported algorithm"):
         train(X, y, algorithm="rf")
+
+
+def test_train_accepts_canaries_hyperparameter():
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+
+    model = train(X, y, algorithm="dt", tree_type="cart", canaries=1)
+
+    assert model.algorithm == "dt"

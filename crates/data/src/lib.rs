@@ -1,18 +1,34 @@
 use arrow::array::{Float64Array, UInt16Array};
+use rand::seq::SliceRandom;
+use rand::{SeedableRng, rngs::StdRng};
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 const NUMERIC_BINS: usize = 512;
+const DEFAULT_CANARIES: usize = 2;
 
 /// Arrow-backed dense table for tabular regression/classification data.
 #[derive(Debug, Clone)]
 pub struct DenseTable {
     feature_columns: Vec<Float64Array>,
     binned_feature_columns: Vec<UInt16Array>,
+    binned_column_kinds: Vec<BinnedColumnKind>,
     target: Float64Array,
     n_rows: usize,
     n_features: usize,
+    canaries: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinnedColumnKind {
+    Real {
+        source_index: usize,
+    },
+    Canary {
+        source_index: usize,
+        copy_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +69,14 @@ impl Error for DenseTableError {}
 
 impl DenseTable {
     pub fn new(x: Vec<Vec<f64>>, y: Vec<f64>) -> Result<Self, DenseTableError> {
+        Self::with_canaries(x, y, DEFAULT_CANARIES)
+    }
+
+    pub fn with_canaries(
+        x: Vec<Vec<f64>>,
+        y: Vec<f64>,
+        canaries: usize,
+    ) -> Result<Self, DenseTableError> {
         if x.len() != y.len() {
             return Err(DenseTableError::MismatchedLengths {
                 x: x.len(),
@@ -81,17 +105,43 @@ impl DenseTable {
             .iter()
             .map(|column| Float64Array::from(column.clone()))
             .collect();
-        let binned_feature_columns = columns
+
+        let real_binned_columns: Vec<Vec<u16>> = columns
             .iter()
-            .map(|column| UInt16Array::from(bin_numeric_column(column)))
+            .map(|column| bin_numeric_column(column))
             .collect();
+        let real_binned_arrays = real_binned_columns
+            .iter()
+            .map(|column| UInt16Array::from(column.clone()));
+        let canary_columns = (0..canaries).flat_map(|copy_index| {
+            real_binned_columns
+                .iter()
+                .enumerate()
+                .map(move |(source_index, column)| {
+                    (
+                        BinnedColumnKind::Canary {
+                            source_index,
+                            copy_index,
+                        },
+                        UInt16Array::from(shuffle_canary_column(column, copy_index, source_index)),
+                    )
+                })
+        });
+
+        let (binned_column_kinds, binned_feature_columns): (Vec<_>, Vec<_>) = (0..n_features)
+            .map(|source_index| BinnedColumnKind::Real { source_index })
+            .zip(real_binned_arrays)
+            .chain(canary_columns)
+            .unzip();
 
         Ok(Self {
             feature_columns,
             binned_feature_columns,
+            binned_column_kinds,
             target: Float64Array::from(y),
             n_rows,
             n_features,
+            canaries,
         })
     }
 
@@ -106,6 +156,16 @@ impl DenseTable {
     }
 
     #[inline]
+    pub fn canaries(&self) -> usize {
+        self.canaries
+    }
+
+    #[inline]
+    pub fn binned_feature_count(&self) -> usize {
+        self.binned_feature_columns.len()
+    }
+
+    #[inline]
     pub fn feature_column(&self, index: usize) -> &Float64Array {
         &self.feature_columns[index]
     }
@@ -113,6 +173,19 @@ impl DenseTable {
     #[inline]
     pub fn binned_feature_column(&self, index: usize) -> &UInt16Array {
         &self.binned_feature_columns[index]
+    }
+
+    #[inline]
+    pub fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        self.binned_column_kinds[index]
+    }
+
+    #[inline]
+    pub fn is_canary_binned_feature(&self, index: usize) -> bool {
+        matches!(
+            self.binned_column_kinds[index],
+            BinnedColumnKind::Canary { .. }
+        )
     }
 
     #[inline]
@@ -172,9 +245,21 @@ fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
     bins
 }
 
+fn shuffle_canary_column(values: &[u16], copy_index: usize, source_index: usize) -> Vec<u16> {
+    let mut shuffled = values.to_vec();
+    let seed = 0xA11CE5EED_u64
+        ^ ((copy_index as u64) << 32)
+        ^ (source_index as u64)
+        ^ ((values.len() as u64) << 16);
+    let mut rng = StdRng::seed_from_u64(seed);
+    shuffled.shuffle(&mut rng);
+    shuffled
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn builds_arrow_backed_dense_table() {
@@ -183,20 +268,22 @@ mod tests {
 
         assert_eq!(table.n_rows(), 2);
         assert_eq!(table.n_features(), 2);
+        assert_eq!(table.canaries(), 2);
+        assert_eq!(table.binned_feature_count(), 6);
         assert_eq!(table.feature_column(0).value(0), 0.0);
         assert_eq!(table.feature_column(0).value(1), 1.0);
         assert_eq!(table.target().value(0), 3.0);
         assert_eq!(table.target().value(1), 5.0);
+        assert!(!table.is_canary_binned_feature(0));
+        assert!(table.is_canary_binned_feature(2));
     }
 
     #[test]
     fn bins_numeric_columns_into_512_rank_bins() {
-        use std::collections::BTreeSet;
-
         let x: Vec<Vec<f64>> = (0..1024).map(|value| vec![value as f64]).collect();
         let y: Vec<f64> = vec![1.0; 1024];
 
-        let table = DenseTable::new(x, y).unwrap();
+        let table = DenseTable::with_canaries(x, y, 0).unwrap();
         let bins = table.binned_feature_column(0);
 
         assert_eq!(bins.value(0), 0);
@@ -213,9 +300,10 @@ mod tests {
 
     #[test]
     fn keeps_equal_values_in_the_same_bin() {
-        let table = DenseTable::new(
+        let table = DenseTable::with_canaries(
             vec![vec![0.0], vec![0.0], vec![1.0], vec![1.0], vec![2.0]],
             vec![0.0; 5],
+            0,
         )
         .unwrap();
         let bins = table.binned_feature_column(0);
@@ -223,6 +311,43 @@ mod tests {
         assert_eq!(bins.value(0), bins.value(1));
         assert_eq!(bins.value(2), bins.value(3));
         assert!(bins.value(1) < bins.value(2));
+    }
+
+    #[test]
+    fn creates_canary_columns_as_shuffled_binned_copies() {
+        let table = DenseTable::with_canaries(
+            vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0], vec![4.0]],
+            vec![0.0; 5],
+            1,
+        )
+        .unwrap();
+
+        let real_bins = table.binned_feature_column(0);
+        let canary_bins = table.binned_feature_column(1);
+
+        assert!(matches!(
+            table.binned_column_kind(1),
+            BinnedColumnKind::Canary {
+                source_index: 0,
+                copy_index: 0
+            }
+        ));
+        assert_eq!(
+            (0..table.n_rows())
+                .map(|idx| real_bins.value(idx))
+                .collect::<BTreeSet<_>>(),
+            (0..table.n_rows())
+                .map(|idx| canary_bins.value(idx))
+                .collect::<BTreeSet<_>>()
+        );
+        assert_ne!(
+            (0..table.n_rows())
+                .map(|idx| real_bins.value(idx))
+                .collect::<Vec<_>>(),
+            (0..table.n_rows())
+                .map(|idx| canary_bins.value(idx))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
