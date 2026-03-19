@@ -1,4 +1,4 @@
-use arrow::array::{Float64Array, UInt16Array};
+use arrow::array::{BooleanArray, Float64Array, UInt16Array};
 use rand::seq::SliceRandom;
 use rand::{SeedableRng, rngs::StdRng};
 use std::cmp::Ordering;
@@ -11,13 +11,37 @@ const DEFAULT_CANARIES: usize = 2;
 /// Arrow-backed dense table for tabular regression/classification data.
 #[derive(Debug, Clone)]
 pub struct DenseTable {
-    feature_columns: Vec<Float64Array>,
-    binned_feature_columns: Vec<UInt16Array>,
+    feature_columns: Vec<FeatureColumn>,
+    binned_feature_columns: Vec<BinnedFeatureColumn>,
     binned_column_kinds: Vec<BinnedColumnKind>,
     target: Float64Array,
     n_rows: usize,
     n_features: usize,
     canaries: usize,
+}
+
+#[derive(Debug, Clone)]
+enum FeatureColumn {
+    Numeric(Float64Array),
+    Binary(BooleanArray),
+}
+
+#[derive(Debug, Clone)]
+enum BinnedFeatureColumn {
+    Numeric(UInt16Array),
+    Binary(BooleanArray),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum FeatureColumnRef<'a> {
+    Numeric(&'a Float64Array),
+    Binary(&'a BooleanArray),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BinnedFeatureColumnRef<'a> {
+    Numeric(&'a UInt16Array),
+    Binary(&'a BooleanArray),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,34 +127,33 @@ impl DenseTable {
 
         let feature_columns = columns
             .iter()
-            .map(|column| Float64Array::from(column.clone()))
+            .map(|column| build_feature_column(column))
             .collect();
 
-        let real_binned_columns: Vec<Vec<u16>> = columns
+        let real_binned_columns: Vec<BinnedFeatureColumn> = columns
             .iter()
-            .map(|column| bin_numeric_column(column))
+            .map(|column| build_binned_feature_column(column))
             .collect();
-        let real_binned_arrays = real_binned_columns
-            .iter()
-            .map(|column| UInt16Array::from(column.clone()));
-        let canary_columns = (0..canaries).flat_map(|copy_index| {
-            real_binned_columns
-                .iter()
-                .enumerate()
-                .map(move |(source_index, column)| {
-                    (
-                        BinnedColumnKind::Canary {
-                            source_index,
-                            copy_index,
-                        },
-                        UInt16Array::from(shuffle_canary_column(column, copy_index, source_index)),
-                    )
-                })
-        });
+        let canary_columns: Vec<(BinnedColumnKind, BinnedFeatureColumn)> = (0..canaries)
+            .flat_map(|copy_index| {
+                real_binned_columns
+                    .iter()
+                    .enumerate()
+                    .map(move |(source_index, column)| {
+                        (
+                            BinnedColumnKind::Canary {
+                                source_index,
+                                copy_index,
+                            },
+                            shuffle_canary_column(column, copy_index, source_index),
+                        )
+                    })
+            })
+            .collect();
 
         let (binned_column_kinds, binned_feature_columns): (Vec<_>, Vec<_>) = (0..n_features)
             .map(|source_index| BinnedColumnKind::Real { source_index })
-            .zip(real_binned_arrays)
+            .zip(real_binned_columns)
             .chain(canary_columns)
             .unzip();
 
@@ -166,13 +189,48 @@ impl DenseTable {
     }
 
     #[inline]
-    pub fn feature_column(&self, index: usize) -> &Float64Array {
-        &self.feature_columns[index]
+    pub fn feature_column(&self, index: usize) -> FeatureColumnRef<'_> {
+        match &self.feature_columns[index] {
+            FeatureColumn::Numeric(column) => FeatureColumnRef::Numeric(column),
+            FeatureColumn::Binary(column) => FeatureColumnRef::Binary(column),
+        }
     }
 
     #[inline]
-    pub fn binned_feature_column(&self, index: usize) -> &UInt16Array {
-        &self.binned_feature_columns[index]
+    pub fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        match &self.feature_columns[feature_index] {
+            FeatureColumn::Numeric(column) => column.value(row_index),
+            FeatureColumn::Binary(column) => f64::from(u8::from(column.value(row_index))),
+        }
+    }
+
+    #[inline]
+    pub fn is_binary_feature(&self, index: usize) -> bool {
+        matches!(self.feature_columns[index], FeatureColumn::Binary(_))
+    }
+
+    #[inline]
+    pub fn binned_feature_column(&self, index: usize) -> BinnedFeatureColumnRef<'_> {
+        match &self.binned_feature_columns[index] {
+            BinnedFeatureColumn::Numeric(column) => BinnedFeatureColumnRef::Numeric(column),
+            BinnedFeatureColumn::Binary(column) => BinnedFeatureColumnRef::Binary(column),
+        }
+    }
+
+    #[inline]
+    pub fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        match &self.binned_feature_columns[feature_index] {
+            BinnedFeatureColumn::Numeric(column) => column.value(row_index),
+            BinnedFeatureColumn::Binary(column) => u16::from(u8::from(column.value(row_index))),
+        }
+    }
+
+    #[inline]
+    pub fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        match &self.binned_feature_columns[feature_index] {
+            BinnedFeatureColumn::Binary(column) => Some(column.value(row_index)),
+            BinnedFeatureColumn::Numeric(_) => None,
+        }
     }
 
     #[inline]
@@ -189,9 +247,47 @@ impl DenseTable {
     }
 
     #[inline]
+    pub fn is_binary_binned_feature(&self, index: usize) -> bool {
+        matches!(
+            self.binned_feature_columns[index],
+            BinnedFeatureColumn::Binary(_)
+        )
+    }
+
+    #[inline]
     pub fn target(&self) -> &Float64Array {
         &self.target
     }
+}
+
+fn build_feature_column(values: &[f64]) -> FeatureColumn {
+    if is_binary_column(values) {
+        FeatureColumn::Binary(BooleanArray::from(to_binary_values(values)))
+    } else {
+        FeatureColumn::Numeric(Float64Array::from(values.to_vec()))
+    }
+}
+
+fn build_binned_feature_column(values: &[f64]) -> BinnedFeatureColumn {
+    if is_binary_column(values) {
+        BinnedFeatureColumn::Binary(BooleanArray::from(to_binary_values(values)))
+    } else {
+        BinnedFeatureColumn::Numeric(UInt16Array::from(bin_numeric_column(values)))
+    }
+}
+
+fn is_binary_column(values: &[f64]) -> bool {
+    values.iter().all(|value| {
+        matches!(value.total_cmp(&0.0), Ordering::Equal)
+            || matches!(value.total_cmp(&1.0), Ordering::Equal)
+    })
+}
+
+fn to_binary_values(values: &[f64]) -> Vec<bool> {
+    values
+        .iter()
+        .map(|value| value.total_cmp(&1.0) == Ordering::Equal)
+        .collect()
 }
 
 fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
@@ -245,15 +341,36 @@ fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
     bins
 }
 
-fn shuffle_canary_column(values: &[u16], copy_index: usize, source_index: usize) -> Vec<u16> {
-    let mut shuffled = values.to_vec();
+fn shuffle_canary_column(
+    values: &BinnedFeatureColumn,
+    copy_index: usize,
+    source_index: usize,
+) -> BinnedFeatureColumn {
+    match values {
+        BinnedFeatureColumn::Numeric(values) => {
+            let mut shuffled = (0..values.len())
+                .map(|idx| values.value(idx))
+                .collect::<Vec<_>>();
+            shuffle_values(&mut shuffled, copy_index, source_index);
+            BinnedFeatureColumn::Numeric(UInt16Array::from(shuffled))
+        }
+        BinnedFeatureColumn::Binary(values) => {
+            let mut shuffled = (0..values.len())
+                .map(|idx| values.value(idx))
+                .collect::<Vec<_>>();
+            shuffle_values(&mut shuffled, copy_index, source_index);
+            BinnedFeatureColumn::Binary(BooleanArray::from(shuffled))
+        }
+    }
+}
+
+fn shuffle_values<T>(values: &mut [T], copy_index: usize, source_index: usize) {
     let seed = 0xA11CE5EED_u64
         ^ ((copy_index as u64) << 32)
         ^ (source_index as u64)
         ^ ((values.len() as u64) << 16);
     let mut rng = StdRng::seed_from_u64(seed);
-    shuffled.shuffle(&mut rng);
-    shuffled
+    values.shuffle(&mut rng);
 }
 
 #[cfg(test)]
@@ -270,8 +387,8 @@ mod tests {
         assert_eq!(table.n_features(), 2);
         assert_eq!(table.canaries(), 2);
         assert_eq!(table.binned_feature_count(), 6);
-        assert_eq!(table.feature_column(0).value(0), 0.0);
-        assert_eq!(table.feature_column(0).value(1), 1.0);
+        assert_eq!(table.feature_value(0, 0), 0.0);
+        assert_eq!(table.feature_value(0, 1), 1.0);
         assert_eq!(table.target().value(0), 3.0);
         assert_eq!(table.target().value(1), 5.0);
         assert!(!table.is_canary_binned_feature(0));
@@ -284,14 +401,13 @@ mod tests {
         let y: Vec<f64> = vec![1.0; 1024];
 
         let table = DenseTable::with_canaries(x, y, 0).unwrap();
-        let bins = table.binned_feature_column(0);
 
-        assert_eq!(bins.value(0), 0);
-        assert_eq!(bins.value(1023), 511);
-        assert!((1..1024).all(|idx| bins.value(idx - 1) <= bins.value(idx)));
+        assert_eq!(table.binned_value(0, 0), 0);
+        assert_eq!(table.binned_value(0, 1023), 511);
+        assert!((1..1024).all(|idx| table.binned_value(0, idx - 1) <= table.binned_value(0, idx)));
         assert_eq!(
             (0..1024)
-                .map(|idx| bins.value(idx))
+                .map(|idx| table.binned_value(0, idx))
                 .collect::<BTreeSet<_>>()
                 .len(),
             512
@@ -306,11 +422,30 @@ mod tests {
             0,
         )
         .unwrap();
-        let bins = table.binned_feature_column(0);
 
-        assert_eq!(bins.value(0), bins.value(1));
-        assert_eq!(bins.value(2), bins.value(3));
-        assert!(bins.value(1) < bins.value(2));
+        assert_eq!(table.binned_value(0, 0), table.binned_value(0, 1));
+        assert_eq!(table.binned_value(0, 2), table.binned_value(0, 3));
+        assert!(table.binned_value(0, 1) < table.binned_value(0, 2));
+    }
+
+    #[test]
+    fn stores_binary_columns_as_booleans() {
+        let table = DenseTable::with_canaries(
+            vec![vec![0.0, 2.0], vec![1.0, 3.0], vec![0.0, 4.0]],
+            vec![0.0; 3],
+            1,
+        )
+        .unwrap();
+
+        assert!(table.is_binary_feature(0));
+        assert!(!table.is_binary_feature(1));
+        assert!(table.is_binary_binned_feature(0));
+        assert!(!table.is_binary_binned_feature(1));
+        assert!(table.is_binary_binned_feature(2));
+        assert_eq!(table.feature_value(0, 0), 0.0);
+        assert_eq!(table.feature_value(0, 1), 1.0);
+        assert_eq!(table.binned_boolean_value(0, 0), Some(false));
+        assert_eq!(table.binned_boolean_value(0, 1), Some(true));
     }
 
     #[test]
@@ -322,9 +457,6 @@ mod tests {
         )
         .unwrap();
 
-        let real_bins = table.binned_feature_column(0);
-        let canary_bins = table.binned_feature_column(1);
-
         assert!(matches!(
             table.binned_column_kind(1),
             BinnedColumnKind::Canary {
@@ -334,18 +466,18 @@ mod tests {
         ));
         assert_eq!(
             (0..table.n_rows())
-                .map(|idx| real_bins.value(idx))
+                .map(|idx| table.binned_value(0, idx))
                 .collect::<BTreeSet<_>>(),
             (0..table.n_rows())
-                .map(|idx| canary_bins.value(idx))
+                .map(|idx| table.binned_value(1, idx))
                 .collect::<BTreeSet<_>>()
         );
         assert_ne!(
             (0..table.n_rows())
-                .map(|idx| real_bins.value(idx))
+                .map(|idx| table.binned_value(0, idx))
                 .collect::<Vec<_>>(),
             (0..table.n_rows())
-                .map(|idx| canary_bins.value(idx))
+                .map(|idx| table.binned_value(1, idx))
                 .collect::<Vec<_>>()
         );
     }

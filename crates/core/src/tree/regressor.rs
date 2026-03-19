@@ -240,7 +240,7 @@ impl DecisionTreeRegressor {
                             left_child,
                             right_child,
                         } => {
-                            let bin = table.binned_feature_column(*feature_index).value(row_idx);
+                            let bin = table.binned_value(*feature_index, row_idx);
                             node_index = if bin <= *threshold_bin {
                                 *left_child
                             } else {
@@ -255,10 +255,8 @@ impl DecisionTreeRegressor {
                 leaf_values,
             } => {
                 let leaf_index = splits.iter().fold(0usize, |leaf_index, split| {
-                    let go_right = table
-                        .binned_feature_column(split.feature_index)
-                        .value(row_idx)
-                        > split.threshold_bin;
+                    let go_right =
+                        table.binned_value(split.feature_index, row_idx) > split.threshold_bin;
                     (leaf_index << 1) | usize::from(go_right)
                 });
 
@@ -453,18 +451,27 @@ fn score_split(
     criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<RegressionSplitCandidate> {
-    let feature = table.binned_feature_column(feature_index);
+    if table.is_binary_binned_feature(feature_index) {
+        return score_binary_split(
+            table,
+            targets,
+            feature_index,
+            rows,
+            criterion,
+            min_samples_leaf,
+        );
+    }
     let parent_loss = regression_loss(rows, targets, criterion);
 
     rows.iter()
-        .map(|row_idx| feature.value(*row_idx))
+        .map(|row_idx| table.binned_value(feature_index, *row_idx))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .filter_map(|threshold_bin| {
             let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = rows
                 .iter()
                 .copied()
-                .partition(|row_idx| feature.value(*row_idx) <= threshold_bin);
+                .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
 
             if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
                 return None;
@@ -493,10 +500,20 @@ fn score_oblivious_split(
     criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<ObliviousSplitCandidate> {
-    let feature = table.binned_feature_column(feature_index);
+    if table.is_binary_binned_feature(feature_index) {
+        return score_binary_oblivious_split(
+            table,
+            targets,
+            feature_index,
+            leaves,
+            criterion,
+            min_samples_leaf,
+        );
+    }
+    let feature_value = |row_idx: usize| table.binned_value(feature_index, row_idx);
     let candidate_thresholds = leaves
         .iter()
-        .flat_map(|leaf| leaf.rows.iter().map(|row_idx| feature.value(*row_idx)))
+        .flat_map(|leaf| leaf.rows.iter().map(|row_idx| feature_value(*row_idx)))
         .collect::<BTreeSet<_>>();
 
     candidate_thresholds
@@ -507,7 +524,7 @@ fn score_oblivious_split(
                     .rows
                     .iter()
                     .copied()
-                    .partition(|row_idx| feature.value(*row_idx) <= threshold_bin);
+                    .partition(|row_idx| feature_value(*row_idx) <= threshold_bin);
 
                 if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
                     return score;
@@ -536,11 +553,10 @@ fn split_oblivious_leaf(
     criterion: Criterion,
 ) -> [ObliviousLeafState; 2] {
     let fallback_value = leaf.value;
-    let feature = table.binned_feature_column(feature_index);
     let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = leaf
         .rows
         .into_iter()
-        .partition(|row_idx| feature.value(*row_idx) <= threshold_bin);
+        .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
 
     [
         ObliviousLeafState {
@@ -615,6 +631,71 @@ fn regression_loss(rows: &[usize], targets: &[f64], criterion: Criterion) -> f64
     }
 }
 
+fn score_binary_split(
+    table: &DenseTable,
+    targets: &[f64],
+    feature_index: usize,
+    rows: &[usize],
+    criterion: Criterion,
+    min_samples_leaf: usize,
+) -> Option<RegressionSplitCandidate> {
+    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) =
+        rows.iter().copied().partition(|row_idx| {
+            !table
+                .binned_boolean_value(feature_index, *row_idx)
+                .expect("binary feature must expose boolean values")
+        });
+
+    if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
+        return None;
+    }
+
+    let parent_loss = regression_loss(rows, targets, criterion);
+    let score = parent_loss
+        - (regression_loss(&left_rows, targets, criterion)
+            + regression_loss(&right_rows, targets, criterion));
+
+    Some(RegressionSplitCandidate {
+        feature_index,
+        threshold_bin: 0,
+        score,
+        left_rows,
+        right_rows,
+    })
+}
+
+fn score_binary_oblivious_split(
+    table: &DenseTable,
+    targets: &[f64],
+    feature_index: usize,
+    leaves: &[ObliviousLeafState],
+    criterion: Criterion,
+    min_samples_leaf: usize,
+) -> Option<ObliviousSplitCandidate> {
+    let score = leaves.iter().fold(0.0, |score, leaf| {
+        let (left_rows, right_rows): (Vec<usize>, Vec<usize>) =
+            leaf.rows.iter().copied().partition(|row_idx| {
+                !table
+                    .binned_boolean_value(feature_index, *row_idx)
+                    .expect("binary feature must expose boolean values")
+            });
+
+        if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
+            return score;
+        }
+
+        score + regression_loss(&leaf.rows, targets, criterion)
+            - (regression_loss(&left_rows, targets, criterion)
+                + regression_loss(&right_rows, targets, criterion))
+    });
+
+    (score > 0.0).then_some(ObliviousSplitCandidate {
+        feature_index,
+        threshold_bin: 0,
+        score,
+    })
+}
+
 fn has_constant_target(rows: &[usize], targets: &[f64]) -> bool {
     rows.first().is_none_or(|first_row| {
         rows.iter()
@@ -657,7 +738,7 @@ mod tests {
         let canary_index = probe.n_features();
         let y = (0..probe.n_rows())
             .map(|row_idx| {
-                if probe.binned_feature_column(canary_index).value(row_idx) > 255 {
+                if probe.binned_value(canary_index, row_idx) > 255 {
                     100.0
                 } else {
                     -100.0
