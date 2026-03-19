@@ -1,17 +1,18 @@
 import numpy as np
 import pytest
 from forestfire import Table, train
+from numpy.typing import NDArray
 
 
 @pytest.fixture
-def toy_data():
+def toy_data() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     X = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([10.0, 12.0, 14.0, 20.0])
     return X, y
 
 
 @pytest.fixture
-def and_data():
+def and_data() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     X = np.array(
         [
             [0.0, 0.0],
@@ -24,7 +25,9 @@ def and_data():
     return X, y
 
 
-def test_train_and_predict_shape_and_value(toy_data):
+def test_train_and_predict_shape_and_value(
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = toy_data
     m = train(X, y, algorithm="dt", tree_type="target_mean")
     assert m.algorithm == "dt"
@@ -38,7 +41,9 @@ def test_train_and_predict_shape_and_value(toy_data):
     assert np.allclose(preds, m.mean_)
 
 
-def test_train_defaults_match_documented_regression_baseline(toy_data):
+def test_train_defaults_match_documented_regression_baseline(
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = toy_data
 
     model = train(X, y)
@@ -49,7 +54,7 @@ def test_train_defaults_match_documented_regression_baseline(toy_data):
     assert model.criterion == "mean"
 
 
-def test_table_builds_sparse_layout_for_binary_data():
+def test_table_builds_sparse_layout_for_binary_data() -> None:
     X = np.array([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 1.0, 1.0])
 
@@ -61,7 +66,7 @@ def test_table_builds_sparse_layout_for_binary_data():
     assert table.canaries == 1
 
 
-def test_table_builds_dense_layout_for_mixed_data():
+def test_table_builds_dense_layout_for_mixed_data() -> None:
     X = np.array([[0.0, 1.5], [1.0, 0.0], [1.0, 2.0]])
     y = np.array([0.0, 1.0, 1.0])
 
@@ -72,7 +77,9 @@ def test_table_builds_dense_layout_for_mixed_data():
     assert table.n_features == 2
 
 
-def test_train_accepts_prebuilt_table(and_data):
+def test_train_accepts_prebuilt_table(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     table = Table(X, y, canaries=0)
 
@@ -90,21 +97,23 @@ def test_train_accepts_prebuilt_table(and_data):
         (np.array([5.0]), 5.0),
     ],
 )
-def test_mean_is_computed_correctly(y, expected):
+def test_mean_is_computed_correctly(y: NDArray[np.float64], expected: float) -> None:
     X = np.zeros((y.shape[0], 2))
     m = train(X, y, algorithm="dt", tree_type="target_mean")
     assert m.mean_ == pytest.approx(expected, abs=1e-12)
     assert np.allclose(m.predict(X), expected)
 
 
-def test_train_raises_on_mismatched_lengths():
+def test_train_raises_on_mismatched_lengths() -> None:
     X = np.zeros((3, 1))
     y = np.ones(2)
     with pytest.raises(ValueError):
         train(X, y)
 
 
-def test_train_cart_classifier(and_data):
+def test_train_cart_classifier(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
@@ -118,7 +127,9 @@ def test_train_cart_classifier(and_data):
     assert np.array_equal(model.predict(X), y)
 
 
-def test_predict_accepts_feature_only_table(and_data):
+def test_predict_accepts_feature_only_table(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     model = train(X, y, task="classification", tree_type="cart", canaries=0)
 
@@ -128,7 +139,9 @@ def test_predict_accepts_feature_only_table(and_data):
     assert np.array_equal(model.predict(feature_table), y)
 
 
-def test_train_id3_classifier(and_data):
+def test_train_id3_classifier(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="id3", canaries=0
@@ -142,7 +155,9 @@ def test_train_id3_classifier(and_data):
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_c45_classifier(and_data):
+def test_train_c45_classifier(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="c45", canaries=0
@@ -156,7 +171,9 @@ def test_train_c45_classifier(and_data):
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_oblivious_classifier(and_data):
+def test_train_oblivious_classifier(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="oblivious", canaries=0
@@ -170,7 +187,7 @@ def test_train_oblivious_classifier(and_data):
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_cart_regressor():
+def test_train_cart_regressor() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
     y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
 
@@ -184,7 +201,7 @@ def test_train_cart_regressor():
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_oblivious_regressor():
+def test_train_oblivious_regressor() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
     y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
 
@@ -213,8 +230,12 @@ def test_train_oblivious_regressor():
     ],
 )
 def test_auto_criterion_resolves_by_task_and_tree_type(
-    and_data, toy_data, task, tree_type, expected_criterion
-):
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+    task: str,
+    tree_type: str,
+    expected_criterion: str,
+) -> None:
     if task == "classification":
         X, y = and_data
     else:
@@ -225,7 +246,7 @@ def test_auto_criterion_resolves_by_task_and_tree_type(
     assert model.criterion == expected_criterion
 
 
-def test_train_target_mean_can_use_median_criterion():
+def test_train_target_mean_can_use_median_criterion() -> None:
     X = np.zeros((3, 1))
     y = np.array([0.0, 0.0, 100.0])
 
@@ -238,7 +259,7 @@ def test_train_target_mean_can_use_median_criterion():
     assert np.array_equal(model.predict(X), np.array([0.0, 0.0, 0.0]))
 
 
-def test_train_cart_regressor_can_use_median_criterion():
+def test_train_cart_regressor_can_use_median_criterion() -> None:
     X = np.zeros((3, 1))
     y = np.array([0.0, 0.0, 100.0])
 
@@ -255,7 +276,7 @@ def test_train_cart_regressor_can_use_median_criterion():
     assert np.array_equal(median_model.predict(X), np.array([0.0, 0.0, 0.0]))
 
 
-def test_train_oblivious_regressor_can_use_median_criterion():
+def test_train_oblivious_regressor_can_use_median_criterion() -> None:
     X = np.zeros((3, 1))
     y = np.array([0.0, 0.0, 100.0])
 
@@ -272,7 +293,7 @@ def test_train_oblivious_regressor_can_use_median_criterion():
     assert np.array_equal(median_model.predict(X), np.array([0.0, 0.0, 0.0]))
 
 
-def test_train_rejects_unknown_algorithm():
+def test_train_rejects_unknown_algorithm() -> None:
     X = np.zeros((2, 1))
     y = np.array([0.0, 1.0])
 
@@ -280,7 +301,9 @@ def test_train_rejects_unknown_algorithm():
         train(X, y, algorithm="rf")
 
 
-def test_train_rejects_y_when_x_is_already_a_table(and_data):
+def test_train_rejects_y_when_x_is_already_a_table(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     table = Table(X, y, canaries=0)
 
@@ -288,7 +311,7 @@ def test_train_rejects_y_when_x_is_already_a_table(and_data):
         train(table, y)
 
 
-def test_train_rejects_unknown_task():
+def test_train_rejects_unknown_task() -> None:
     X = np.zeros((2, 1))
     y = np.array([0.0, 1.0])
 
@@ -296,7 +319,7 @@ def test_train_rejects_unknown_task():
         train(X, y, task="ranking")
 
 
-def test_train_rejects_unknown_criterion():
+def test_train_rejects_unknown_criterion() -> None:
     X = np.zeros((2, 1))
     y = np.array([0.0, 1.0])
 
@@ -308,7 +331,7 @@ def test_train_rejects_unknown_criterion():
     ("task", "tree_type"),
     [("regression", "cart"), ("classification", "cart")],
 )
-def test_train_rejects_non_finite_targets(task, tree_type):
+def test_train_rejects_non_finite_targets(task: str, tree_type: str) -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, np.nan])
 
@@ -325,7 +348,11 @@ def test_train_rejects_non_finite_targets(task, tree_type):
         ("classification", "cart", "mean"),
     ],
 )
-def test_train_rejects_unsupported_task_tree_type_pairs(task, tree_type, criterion):
+def test_train_rejects_unsupported_task_tree_type_pairs(
+    task: str,
+    tree_type: str,
+    criterion: str,
+) -> None:
     X = np.array([[0.0], [1.0], [2.0]])
     y = np.array([0.0, 1.0, 2.0])
 
@@ -333,7 +360,7 @@ def test_train_rejects_unsupported_task_tree_type_pairs(task, tree_type, criteri
         train(X, y, task=task, tree_type=tree_type, criterion=criterion)
 
 
-def test_train_accepts_canaries_hyperparameter():
+def test_train_accepts_canaries_hyperparameter() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
 
@@ -344,7 +371,7 @@ def test_train_accepts_canaries_hyperparameter():
     assert model.algorithm == "dt"
 
 
-def test_train_accepts_physical_cores_parameter():
+def test_train_accepts_physical_cores_parameter() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
 
@@ -361,7 +388,7 @@ def test_train_accepts_physical_cores_parameter():
     assert model.algorithm == "dt"
 
 
-def test_train_caps_large_physical_core_requests():
+def test_train_caps_large_physical_core_requests() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
 
@@ -378,7 +405,7 @@ def test_train_caps_large_physical_core_requests():
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_rejects_zero_physical_cores():
+def test_train_rejects_zero_physical_cores() -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
 
@@ -386,7 +413,9 @@ def test_train_rejects_zero_physical_cores():
         train(X, y, physical_cores=0)
 
 
-def test_predict_generalizes_on_binary_feature_rows(and_data):
+def test_predict_generalizes_on_binary_feature_rows(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
     X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
@@ -397,7 +426,7 @@ def test_predict_generalizes_on_binary_feature_rows(and_data):
     assert np.array_equal(model.predict(new_rows), np.array([0.0, 1.0, 0.0]))
 
 
-def test_table_accepts_plain_python_lists():
+def test_table_accepts_plain_python_lists() -> None:
     X = [[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]
     y = [0.0, 1.0, 1.0]
 
@@ -408,7 +437,7 @@ def test_table_accepts_plain_python_lists():
     assert np.array_equal(model.predict(X), np.array(y))
 
 
-def test_table_accepts_pandas_dataframes_if_installed():
+def test_table_accepts_pandas_dataframes_if_installed() -> None:
     pd = pytest.importorskip("pandas")
 
     X = pd.DataFrame({"a": [0.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0]})
@@ -421,7 +450,7 @@ def test_table_accepts_pandas_dataframes_if_installed():
     assert np.array_equal(model.predict(X), y.to_numpy())
 
 
-def test_table_accepts_polars_dataframes_if_installed():
+def test_table_accepts_polars_dataframes_if_installed() -> None:
     pl = pytest.importorskip("polars")
 
     X = pl.DataFrame({"a": [0.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0]})
@@ -434,7 +463,7 @@ def test_table_accepts_polars_dataframes_if_installed():
     assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
 
 
-def test_table_accepts_pyarrow_tables_if_installed():
+def test_table_accepts_pyarrow_tables_if_installed() -> None:
     pa = pytest.importorskip("pyarrow")
 
     X = pa.table({"a": [0.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0]})
@@ -447,7 +476,7 @@ def test_table_accepts_pyarrow_tables_if_installed():
     assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
 
 
-def test_table_accepts_scipy_sparse_matrices_if_installed():
+def test_table_accepts_scipy_sparse_matrices_if_installed() -> None:
     scipy_sparse = pytest.importorskip("scipy.sparse")
 
     X = scipy_sparse.csr_matrix([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
@@ -460,7 +489,7 @@ def test_table_accepts_scipy_sparse_matrices_if_installed():
     assert np.array_equal(model.predict(X), y)
 
 
-def test_table_rejects_non_binary_scipy_sparse_matrices_if_installed():
+def test_table_rejects_non_binary_scipy_sparse_matrices_if_installed() -> None:
     scipy_sparse = pytest.importorskip("scipy.sparse")
 
     X = scipy_sparse.csr_matrix([[0.0, 2.0], [1.0, 0.0]])
@@ -470,7 +499,7 @@ def test_table_rejects_non_binary_scipy_sparse_matrices_if_installed():
         Table(X, y, canaries=0)
 
 
-def test_train_accepts_scipy_dense_matrix_like_inputs_if_installed():
+def test_train_accepts_scipy_dense_matrix_like_inputs_if_installed() -> None:
     scipy_sparse = pytest.importorskip("scipy.sparse")
 
     X = scipy_sparse.csr_matrix([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]).todense()
