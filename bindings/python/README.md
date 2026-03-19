@@ -8,6 +8,7 @@ Current supported surface:
 - `tree_type="target_mean" | "id3" | "c45" | "cart" | "oblivious"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 - `canaries=2` by default for automatic growth stopping
+- `physical_cores=None | int` to control training parallelism
 
 Example:
 ```python
@@ -24,9 +25,14 @@ model = train(
     task="classification",
     tree_type="cart",
     criterion="gini",
+    physical_cores=4,
 )
 preds = model.predict(X)
 ```
+
+Training parallelism is feature-parallel:
+- `id3`, `c45`, and `cart` score features in parallel at each node
+- `oblivious` scores features in parallel at each tree level
 
 ## Build & install (dev)
 ```bash

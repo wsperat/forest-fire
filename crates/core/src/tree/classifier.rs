@@ -1,5 +1,6 @@
-use crate::Criterion;
+use crate::{Criterion, Parallelism};
 use forestfire_data::DenseTable;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -118,10 +119,19 @@ pub fn train_id3_with_criterion(
     train_set: &DenseTable,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_id3_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
+}
+
+pub(crate) fn train_id3_with_criterion_and_parallelism(
+    train_set: &DenseTable,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::Id3,
         criterion,
+        parallelism,
         DecisionTreeOptions::default(),
     )
 }
@@ -134,10 +144,19 @@ pub fn train_c45_with_criterion(
     train_set: &DenseTable,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_c45_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
+}
+
+pub(crate) fn train_c45_with_criterion_and_parallelism(
+    train_set: &DenseTable,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::C45,
         criterion,
+        parallelism,
         DecisionTreeOptions::default(),
     )
 }
@@ -150,10 +169,19 @@ pub fn train_cart_with_criterion(
     train_set: &DenseTable,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_cart_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
+}
+
+pub(crate) fn train_cart_with_criterion_and_parallelism(
+    train_set: &DenseTable,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::Cart,
         criterion,
+        parallelism,
         DecisionTreeOptions::default(),
     )
 }
@@ -168,10 +196,19 @@ pub fn train_oblivious_with_criterion(
     train_set: &DenseTable,
     criterion: Criterion,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_oblivious_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
+}
+
+pub(crate) fn train_oblivious_with_criterion_and_parallelism(
+    train_set: &DenseTable,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_classifier(
         train_set,
         DecisionTreeAlgorithm::Oblivious,
         criterion,
+        parallelism,
         DecisionTreeOptions::default(),
     )
 }
@@ -180,6 +217,7 @@ fn train_classifier(
     train_set: &DenseTable,
     algorithm: DecisionTreeAlgorithm,
     criterion: Criterion,
+    parallelism: Parallelism,
     options: DecisionTreeOptions,
 ) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     if train_set.n_rows() == 0 {
@@ -188,9 +226,14 @@ fn train_classifier(
 
     let (class_labels, class_indices) = encode_class_labels(train_set)?;
     let structure = match algorithm {
-        DecisionTreeAlgorithm::Oblivious => {
-            train_oblivious_structure(train_set, &class_indices, &class_labels, criterion, options)
-        }
+        DecisionTreeAlgorithm::Oblivious => train_oblivious_structure(
+            train_set,
+            &class_indices,
+            &class_labels,
+            criterion,
+            parallelism,
+            options,
+        ),
         _ => {
             let mut nodes = Vec::new();
             let all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
@@ -200,6 +243,7 @@ fn train_classifier(
                 class_labels: &class_labels,
                 algorithm,
                 criterion,
+                parallelism,
                 options,
             };
             let root = build_node(&context, &mut nodes, &all_rows, 0);
@@ -353,9 +397,20 @@ fn build_node(
         criterion: context.criterion,
         min_samples_leaf: context.options.min_samples_leaf,
     };
-    let best_split = (0..context.table.binned_feature_count())
-        .filter_map(|feature_index| score_split(&scoring, feature_index, rows, context.algorithm))
-        .max_by(|left, right| split_score(left).total_cmp(&split_score(right)));
+    let best_split = if context.parallelism.enabled() {
+        (0..context.table.binned_feature_count())
+            .into_par_iter()
+            .filter_map(|feature_index| {
+                score_split(&scoring, feature_index, rows, context.algorithm)
+            })
+            .max_by(|left, right| split_score(left).total_cmp(&split_score(right)))
+    } else {
+        (0..context.table.binned_feature_count())
+            .filter_map(|feature_index| {
+                score_split(&scoring, feature_index, rows, context.algorithm)
+            })
+            .max_by(|left, right| split_score(left).total_cmp(&split_score(right)))
+    };
 
     match best_split {
         Some(best_split)
@@ -416,6 +471,7 @@ struct BuildContext<'a> {
     class_labels: &'a [f64],
     algorithm: DecisionTreeAlgorithm,
     criterion: Criterion,
+    parallelism: Parallelism,
     options: DecisionTreeOptions,
 }
 
@@ -438,6 +494,7 @@ fn train_oblivious_structure(
     class_indices: &[usize],
     class_labels: &[f64],
     criterion: Criterion,
+    parallelism: Parallelism,
     options: DecisionTreeOptions,
 ) -> TreeStructure {
     let all_rows: Vec<usize> = (0..table.n_rows()).collect();
@@ -448,19 +505,36 @@ fn train_oblivious_structure(
     let mut splits = Vec::new();
 
     for _depth in 0..options.max_depth {
-        let best_split = (0..table.binned_feature_count())
-            .filter_map(|feature_index| {
-                score_oblivious_split(
-                    table,
-                    class_indices,
-                    feature_index,
-                    &leaves,
-                    class_labels.len(),
-                    criterion,
-                    options.min_samples_leaf,
-                )
-            })
-            .max_by(|left, right| left.score.total_cmp(&right.score));
+        let best_split = if parallelism.enabled() {
+            (0..table.binned_feature_count())
+                .into_par_iter()
+                .filter_map(|feature_index| {
+                    score_oblivious_split(
+                        table,
+                        class_indices,
+                        feature_index,
+                        &leaves,
+                        class_labels.len(),
+                        criterion,
+                        options.min_samples_leaf,
+                    )
+                })
+                .max_by(|left, right| left.score.total_cmp(&right.score))
+        } else {
+            (0..table.binned_feature_count())
+                .filter_map(|feature_index| {
+                    score_oblivious_split(
+                        table,
+                        class_indices,
+                        feature_index,
+                        &leaves,
+                        class_labels.len(),
+                        criterion,
+                        options.min_samples_leaf,
+                    )
+                })
+                .max_by(|left, right| left.score.total_cmp(&right.score))
+        };
 
         let Some(best_split) = best_split.filter(|candidate| candidate.score > 0.0) else {
             break;
@@ -909,6 +983,7 @@ mod tests {
             &table,
             DecisionTreeAlgorithm::Cart,
             Criterion::Gini,
+            Parallelism::sequential(),
             options,
         )
         .unwrap();
@@ -916,6 +991,7 @@ mod tests {
             &table,
             DecisionTreeAlgorithm::Cart,
             Criterion::Entropy,
+            Parallelism::sequential(),
             options,
         )
         .unwrap();

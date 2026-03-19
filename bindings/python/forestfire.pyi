@@ -12,6 +12,7 @@ def train(
     tree_type: str = "target_mean",
     criterion: str = "auto",
     canaries: int = 2,
+    physical_cores: int | None = None,
 ) -> "Model": ...
 
 class Model:

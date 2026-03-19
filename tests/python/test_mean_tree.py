@@ -220,3 +220,28 @@ def test_train_accepts_canaries_hyperparameter():
     )
 
     assert model.algorithm == "dt"
+
+
+def test_train_accepts_physical_cores_parameter():
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+
+    model = train(
+        X,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        physical_cores=1,
+    )
+
+    assert model.algorithm == "dt"
+
+
+def test_train_rejects_zero_physical_cores():
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Requested 0 physical cores"):
+        train(X, y, physical_cores=0)

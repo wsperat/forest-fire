@@ -9,8 +9,9 @@ The current implementation focuses on a unified `train` interface, Arrow-backed 
 
 - Performance-first: Rust + Rayon for parallel training/prediction; cache-friendly data layouts.
 - Arrow-backed storage: `DenseTable` stores feature columns in Arrow arrays and pre-bins numeric features into 512 bins.
-- Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., task=..., tree_type=..., criterion=...)` entrypoint.
+- Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., task=..., tree_type=..., criterion=..., physical_cores=...)` entrypoint.
 - Automatic growth stopping: shuffled canary variables are generated during table construction and halt growth when selected.
+- Parallel training: standard trees parallelize feature scoring per node, and oblivious trees parallelize feature scoring per level.
 - Extensible design: a common dispatcher for tree learners behind one training interface.
 
 # Roadmap
@@ -90,6 +91,7 @@ Priorities may shift in the future, and new ones added.
     - `mean`
     - `median`
     - `auto` (resolved from task and tree type)
+- User-controlled training parallelism via `physical_cores`
 - Automatic canary-based growth stopping with `canaries=2` by default
 - NumPy input support in Python
 
@@ -132,6 +134,7 @@ clf = train(
     tree_type="cart",
     criterion="gini",
     canaries=2,
+    physical_cores=4,
 )
 pred = clf.predict(X)            # -> NumPy array [n_samples]
 ```
@@ -147,6 +150,13 @@ The current task/tree support is:
 The current criterion support is:
 - classification trees: `criterion="gini" | "entropy"` and `auto`
 - regression models: `criterion="mean" | "median"` and `auto`
+
+Parallelization strategy:
+- `id3`, `c45`, and `cart`: parallel feature scoring at each node
+- `oblivious`: parallel feature scoring at each depth
+- `target_mean`: no meaningful threaded work beyond dispatcher overhead
+
+`physical_cores` defaults to all available physical cores. Requests above the hardware limit are capped to the available physical-core count, and `0` is rejected.
 
 Training materializes an Arrow-backed `DenseTable`, pre-bins numerical columns into 512 rank bins, and appends shuffled canary copies of the binned columns.
 
@@ -172,6 +182,7 @@ fn main() -> Result<()> {
         task: Task::Classification,
         tree_type: TreeType::Cart,
         criterion: Criterion::Gini,
+        physical_cores: Some(4),
     };
     let model = train(&table, config)?;
     let preds = model.predict_table(&table);

@@ -1,5 +1,6 @@
-use crate::Criterion;
+use crate::{Criterion, Parallelism};
 use forestfire_data::DenseTable;
+use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -120,10 +121,23 @@ pub fn train_cart_regressor_with_criterion(
     train_set: &DenseTable,
     criterion: Criterion,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_cart_regressor_with_criterion_and_parallelism(
+        train_set,
+        criterion,
+        Parallelism::sequential(),
+    )
+}
+
+pub(crate) fn train_cart_regressor_with_criterion_and_parallelism(
+    train_set: &DenseTable,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_regressor(
         train_set,
         RegressionTreeAlgorithm::Cart,
         criterion,
+        parallelism,
         RegressionTreeOptions::default(),
     )
 }
@@ -138,10 +152,23 @@ pub fn train_oblivious_regressor_with_criterion(
     train_set: &DenseTable,
     criterion: Criterion,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_oblivious_regressor_with_criterion_and_parallelism(
+        train_set,
+        criterion,
+        Parallelism::sequential(),
+    )
+}
+
+pub(crate) fn train_oblivious_regressor_with_criterion_and_parallelism(
+    train_set: &DenseTable,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_regressor(
         train_set,
         RegressionTreeAlgorithm::Oblivious,
         criterion,
+        parallelism,
         RegressionTreeOptions::default(),
     )
 }
@@ -150,6 +177,7 @@ fn train_regressor(
     train_set: &DenseTable,
     algorithm: RegressionTreeAlgorithm,
     criterion: Criterion,
+    parallelism: Parallelism,
     options: RegressionTreeOptions,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     if train_set.n_rows() == 0 {
@@ -165,13 +193,14 @@ fn train_regressor(
                 table: train_set,
                 targets: &targets,
                 criterion,
+                parallelism,
                 options,
             };
             let root = build_node(&context, &mut nodes, &all_rows, 0);
             RegressionTreeStructure::Standard { nodes, root }
         }
         RegressionTreeAlgorithm::Oblivious => {
-            train_oblivious_structure(train_set, &targets, criterion, options)
+            train_oblivious_structure(train_set, &targets, criterion, parallelism, options)
         }
     };
 
@@ -243,6 +272,7 @@ struct BuildContext<'a> {
     table: &'a DenseTable,
     targets: &'a [f64],
     criterion: Criterion,
+    parallelism: Parallelism,
     options: RegressionTreeOptions,
 }
 
@@ -278,18 +308,34 @@ fn build_node(
         return push_leaf(nodes, leaf_value);
     }
 
-    let best_split = (0..context.table.binned_feature_count())
-        .filter_map(|feature_index| {
-            score_split(
-                context.table,
-                context.targets,
-                feature_index,
-                rows,
-                context.criterion,
-                context.options.min_samples_leaf,
-            )
-        })
-        .max_by(|left, right| left.score.total_cmp(&right.score));
+    let best_split = if context.parallelism.enabled() {
+        (0..context.table.binned_feature_count())
+            .into_par_iter()
+            .filter_map(|feature_index| {
+                score_split(
+                    context.table,
+                    context.targets,
+                    feature_index,
+                    rows,
+                    context.criterion,
+                    context.options.min_samples_leaf,
+                )
+            })
+            .max_by(|left, right| left.score.total_cmp(&right.score))
+    } else {
+        (0..context.table.binned_feature_count())
+            .filter_map(|feature_index| {
+                score_split(
+                    context.table,
+                    context.targets,
+                    feature_index,
+                    rows,
+                    context.criterion,
+                    context.options.min_samples_leaf,
+                )
+            })
+            .max_by(|left, right| left.score.total_cmp(&right.score))
+    };
 
     match best_split {
         Some(best_split)
@@ -327,6 +373,7 @@ fn train_oblivious_structure(
     table: &DenseTable,
     targets: &[f64],
     criterion: Criterion,
+    parallelism: Parallelism,
     options: RegressionTreeOptions,
 ) -> RegressionTreeStructure {
     let all_rows: Vec<usize> = (0..table.n_rows()).collect();
@@ -337,18 +384,34 @@ fn train_oblivious_structure(
     let mut splits = Vec::new();
 
     for _depth in 0..options.max_depth {
-        let best_split = (0..table.binned_feature_count())
-            .filter_map(|feature_index| {
-                score_oblivious_split(
-                    table,
-                    targets,
-                    feature_index,
-                    &leaves,
-                    criterion,
-                    options.min_samples_leaf,
-                )
-            })
-            .max_by(|left, right| left.score.total_cmp(&right.score));
+        let best_split = if parallelism.enabled() {
+            (0..table.binned_feature_count())
+                .into_par_iter()
+                .filter_map(|feature_index| {
+                    score_oblivious_split(
+                        table,
+                        targets,
+                        feature_index,
+                        &leaves,
+                        criterion,
+                        options.min_samples_leaf,
+                    )
+                })
+                .max_by(|left, right| left.score.total_cmp(&right.score))
+        } else {
+            (0..table.binned_feature_count())
+                .filter_map(|feature_index| {
+                    score_oblivious_split(
+                        table,
+                        targets,
+                        feature_index,
+                        &leaves,
+                        criterion,
+                        options.min_samples_leaf,
+                    )
+                })
+                .max_by(|left, right| left.score.total_cmp(&right.score))
+        };
 
         let Some(best_split) = best_split.filter(|candidate| candidate.score > 0.0) else {
             break;

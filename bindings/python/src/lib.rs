@@ -117,7 +117,8 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2))]
+#[pyo3(signature = (x, y, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, physical_cores=None))]
+#[allow(clippy::too_many_arguments)]
 fn train(
     x: PyReadonlyArray2<f64>,
     y: PyReadonlyArray1<f64>,
@@ -126,6 +127,7 @@ fn train(
     tree_type: &str,
     criterion: &str,
     canaries: usize,
+    physical_cores: Option<usize>,
 ) -> PyResult<PyModel> {
     let table = build_table(x, y, canaries)?;
     let config = TrainConfig {
@@ -133,6 +135,7 @@ fn train(
         task: parse_task(task)?,
         tree_type: parse_tree_type(tree_type)?,
         criterion: parse_criterion(criterion)?,
+        physical_cores,
     };
     let model = train_model(&table, config)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;

@@ -1,4 +1,5 @@
 use forestfire_data::DenseTable;
+use rayon::ThreadPoolBuilder;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -57,6 +58,7 @@ pub struct TrainConfig {
     pub task: Task,
     pub tree_type: TreeType,
     pub criterion: Criterion,
+    pub physical_cores: Option<usize>,
 }
 
 impl Default for TrainConfig {
@@ -66,6 +68,7 @@ impl Default for TrainConfig {
             task: Task::Regression,
             tree_type: TreeType::TargetMean,
             criterion: Criterion::Auto,
+            physical_cores: None,
         }
     }
 }
@@ -82,6 +85,11 @@ pub enum TrainError {
     Mean(ModelError),
     DecisionTree(DecisionTreeError),
     RegressionTree(RegressionTreeError),
+    InvalidPhysicalCoreCount {
+        requested: usize,
+        available: usize,
+    },
+    ThreadPoolBuildFailed(String),
     UnsupportedConfiguration {
         task: Task,
         tree_type: TreeType,
@@ -95,6 +103,17 @@ impl Display for TrainError {
             TrainError::Mean(err) => err.fmt(f),
             TrainError::DecisionTree(err) => err.fmt(f),
             TrainError::RegressionTree(err) => err.fmt(f),
+            TrainError::InvalidPhysicalCoreCount {
+                requested,
+                available,
+            } => write!(
+                f,
+                "Requested {} physical cores, but the available physical core count is {}.",
+                requested, available
+            ),
+            TrainError::ThreadPoolBuildFailed(message) => {
+                write!(f, "Failed to build training thread pool: {}.", message)
+            }
             TrainError::UnsupportedConfiguration {
                 task,
                 tree_type,
@@ -110,60 +129,102 @@ impl Display for TrainError {
 
 impl Error for TrainError {}
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Parallelism {
+    thread_count: usize,
+}
+
+impl Parallelism {
+    pub(crate) fn sequential() -> Self {
+        Self { thread_count: 1 }
+    }
+
+    pub(crate) fn enabled(self) -> bool {
+        self.thread_count > 1
+    }
+}
+
 pub fn train(train_set: &DenseTable, config: TrainConfig) -> Result<Model, TrainError> {
     let criterion = resolve_criterion(config.task, config.tree_type, config.criterion)?;
+    let parallelism = resolve_parallelism(config.physical_cores)?;
 
-    match (config.algorithm, config.task, config.tree_type, criterion) {
-        (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Mean)
-        | (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Median) => {
-            tree::mean_tree::train_target_mean_with_criterion(train_set, criterion)
-                .map(Model::TargetMean)
-                .map_err(TrainError::Mean)
-        }
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Gini)
-        | (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Entropy) => {
-            tree::classifier::train_id3_with_criterion(train_set, criterion)
+    run_with_parallelism(parallelism, || {
+        match (config.algorithm, config.task, config.tree_type, criterion) {
+            (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Mean)
+            | (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Median) => {
+                tree::mean_tree::train_target_mean_with_criterion(train_set, criterion)
+                    .map(Model::TargetMean)
+                    .map_err(TrainError::Mean)
+            }
+            (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Gini)
+            | (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Entropy) => {
+                tree::classifier::train_id3_with_criterion_and_parallelism(
+                    train_set,
+                    criterion,
+                    parallelism,
+                )
                 .map(Model::DecisionTreeClassifier)
                 .map_err(TrainError::DecisionTree)
-        }
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Gini)
-        | (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Entropy) => {
-            tree::classifier::train_c45_with_criterion(train_set, criterion)
+            }
+            (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Gini)
+            | (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Entropy) => {
+                tree::classifier::train_c45_with_criterion_and_parallelism(
+                    train_set,
+                    criterion,
+                    parallelism,
+                )
                 .map(Model::DecisionTreeClassifier)
                 .map_err(TrainError::DecisionTree)
-        }
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Gini)
-        | (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Entropy) => {
-            tree::classifier::train_cart_with_criterion(train_set, criterion)
+            }
+            (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Gini)
+            | (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Entropy) => {
+                tree::classifier::train_cart_with_criterion_and_parallelism(
+                    train_set,
+                    criterion,
+                    parallelism,
+                )
                 .map(Model::DecisionTreeClassifier)
                 .map_err(TrainError::DecisionTree)
-        }
-        (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Gini)
-        | (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Entropy) => {
-            tree::classifier::train_oblivious_with_criterion(train_set, criterion)
+            }
+            (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Gini)
+            | (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Entropy) => {
+                tree::classifier::train_oblivious_with_criterion_and_parallelism(
+                    train_set,
+                    criterion,
+                    parallelism,
+                )
                 .map(Model::DecisionTreeClassifier)
                 .map_err(TrainError::DecisionTree)
-        }
-        (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Mean)
-        | (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Median) => {
-            tree::regressor::train_cart_regressor_with_criterion(train_set, criterion)
+            }
+            (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Mean)
+            | (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Median) => {
+                tree::regressor::train_cart_regressor_with_criterion_and_parallelism(
+                    train_set,
+                    criterion,
+                    parallelism,
+                )
                 .map(Model::DecisionTreeRegressor)
                 .map_err(TrainError::RegressionTree)
-        }
-        (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Mean)
-        | (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Median) => {
-            tree::regressor::train_oblivious_regressor_with_criterion(train_set, criterion)
+            }
+            (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Mean)
+            | (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Median) => {
+                tree::regressor::train_oblivious_regressor_with_criterion_and_parallelism(
+                    train_set,
+                    criterion,
+                    parallelism,
+                )
                 .map(Model::DecisionTreeRegressor)
                 .map_err(TrainError::RegressionTree)
+            }
+            (TrainAlgorithm::Dt, task, tree_type, criterion) => {
+                Err(TrainError::UnsupportedConfiguration {
+                    task,
+                    tree_type,
+                    criterion,
+                })
+            }
         }
-        (TrainAlgorithm::Dt, task, tree_type, criterion) => {
-            Err(TrainError::UnsupportedConfiguration {
-                task,
-                tree_type,
-                criterion,
-            })
-        }
-    }
+    })
 }
 
 fn resolve_criterion(
@@ -208,6 +269,38 @@ fn resolve_criterion(
     };
 
     Ok(resolved)
+}
+
+fn resolve_parallelism(physical_cores: Option<usize>) -> Result<Parallelism, TrainError> {
+    let available = num_cpus::get_physical().max(1);
+    let requested = physical_cores.unwrap_or(available);
+
+    if requested == 0 {
+        return Err(TrainError::InvalidPhysicalCoreCount {
+            requested,
+            available,
+        });
+    }
+
+    Ok(Parallelism {
+        thread_count: requested.min(available),
+    })
+}
+
+fn run_with_parallelism<T, F>(parallelism: Parallelism, train_fn: F) -> Result<T, TrainError>
+where
+    T: Send,
+    F: FnOnce() -> Result<T, TrainError> + Send,
+{
+    if !parallelism.enabled() {
+        return train_fn();
+    }
+
+    ThreadPoolBuilder::new()
+        .num_threads(parallelism.thread_count)
+        .build()
+        .map_err(|err| TrainError::ThreadPoolBuildFailed(err.to_string()))?
+        .install(train_fn)
 }
 
 impl Model {
@@ -292,6 +385,7 @@ mod tests {
                 task: Task::Regression,
                 tree_type: TreeType::Cart,
                 criterion: Criterion::Mean,
+                physical_cores: Some(1),
             },
         )
         .unwrap();
@@ -313,6 +407,7 @@ mod tests {
                 task: Task::Regression,
                 tree_type: TreeType::Id3,
                 criterion: Criterion::Mean,
+                physical_cores: Some(1),
             },
         )
         .unwrap_err();
@@ -324,6 +419,142 @@ mod tests {
                 tree_type: TreeType::Id3,
                 criterion: Criterion::Mean,
             }
+        ));
+    }
+
+    #[test]
+    fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
+        let classification_table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let regression_table = DenseTable::with_canaries(
+            vec![
+                vec![0.0],
+                vec![1.0],
+                vec![2.0],
+                vec![3.0],
+                vec![4.0],
+                vec![5.0],
+            ],
+            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0],
+            0,
+        )
+        .unwrap();
+
+        for config in [
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::TargetMean,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        ] {
+            let single_core = train(&regression_table, config).unwrap();
+            let parallel = train(
+                &regression_table,
+                TrainConfig {
+                    physical_cores: Some(2),
+                    ..config
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                single_core.predict_table(&regression_table),
+                parallel.predict_table(&regression_table)
+            );
+        }
+
+        for config in [
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Id3,
+                criterion: Criterion::Entropy,
+                physical_cores: Some(1),
+            },
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::C45,
+                criterion: Criterion::Entropy,
+                physical_cores: Some(1),
+            },
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        ] {
+            let single_core = train(&classification_table, config).unwrap();
+            let parallel = train(
+                &classification_table,
+                TrainConfig {
+                    physical_cores: Some(2),
+                    ..config
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                single_core.predict_table(&classification_table),
+                parallel.predict_table(&classification_table)
+            );
+        }
+    }
+
+    #[test]
+    fn unified_train_rejects_zero_physical_cores() {
+        let table = DenseTable::new(vec![vec![0.0], vec![1.0]], vec![0.0, 1.0]).unwrap();
+
+        let err = train(
+            &table,
+            TrainConfig {
+                physical_cores: Some(0),
+                ..TrainConfig::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TrainError::InvalidPhysicalCoreCount { requested: 0, .. }
         ));
     }
 }
