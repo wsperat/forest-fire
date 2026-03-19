@@ -72,12 +72,9 @@ impl DenseTable {
             }
         }
 
-        let mut columns = vec![Vec::with_capacity(n_rows); n_features];
-        for row in &x {
-            for (col_idx, value) in row.iter().enumerate() {
-                columns[col_idx].push(*value);
-            }
-        }
+        let columns: Vec<Vec<f64>> = (0..n_features)
+            .map(|col_idx| x.iter().map(|row| row[col_idx]).collect())
+            .collect();
 
         let feature_columns = columns
             .iter()
