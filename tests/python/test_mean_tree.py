@@ -14,6 +14,7 @@ def test_train_and_predict_shape_and_value(toy_data):
     X, y = toy_data
     m = train(X, y, algorithm="dt", tree_type="target_mean")
     assert m.algorithm == "dt"
+    assert m.task == "regression"
     assert m.tree_type == "target_mean"
     assert m.mean_ == pytest.approx(14.0, abs=1e-12)
 
@@ -48,9 +49,12 @@ def test_train_cart_classifier():
     X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 0.0, 0.0, 1.0])
 
-    model = train(X, y, algorithm="dt", tree_type="cart", canaries=0)
+    model = train(
+        X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
+    )
 
     assert model.algorithm == "dt"
+    assert model.task == "classification"
     assert model.tree_type == "cart"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -60,9 +64,12 @@ def test_train_id3_classifier():
     X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 0.0, 0.0, 1.0])
 
-    model = train(X, y, algorithm="dt", tree_type="id3", canaries=0)
+    model = train(
+        X, y, algorithm="dt", task="classification", tree_type="id3", canaries=0
+    )
 
     assert model.algorithm == "dt"
+    assert model.task == "classification"
     assert model.tree_type == "id3"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -72,9 +79,12 @@ def test_train_c45_classifier():
     X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 0.0, 0.0, 1.0])
 
-    model = train(X, y, algorithm="dt", tree_type="c45", canaries=0)
+    model = train(
+        X, y, algorithm="dt", task="classification", tree_type="c45", canaries=0
+    )
 
     assert model.algorithm == "dt"
+    assert model.task == "classification"
     assert model.tree_type == "c45"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -84,9 +94,40 @@ def test_train_oblivious_classifier():
     X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 0.0, 0.0, 1.0])
 
-    model = train(X, y, algorithm="dt", tree_type="oblivious", canaries=0)
+    model = train(
+        X, y, algorithm="dt", task="classification", tree_type="oblivious", canaries=0
+    )
 
     assert model.algorithm == "dt"
+    assert model.task == "classification"
+    assert model.tree_type == "oblivious"
+    assert model.mean_ is None
+    assert np.array_equal(model.predict(X), y)
+
+
+def test_train_cart_regressor():
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
+
+    model = train(X, y, algorithm="dt", task="regression", tree_type="cart", canaries=0)
+
+    assert model.algorithm == "dt"
+    assert model.task == "regression"
+    assert model.tree_type == "cart"
+    assert model.mean_ is None
+    assert np.array_equal(model.predict(X), y)
+
+
+def test_train_oblivious_regressor():
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
+
+    model = train(
+        X, y, algorithm="dt", task="regression", tree_type="oblivious", canaries=0
+    )
+
+    assert model.algorithm == "dt"
+    assert model.task == "regression"
     assert model.tree_type == "oblivious"
     assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
@@ -100,10 +141,36 @@ def test_train_rejects_unknown_algorithm():
         train(X, y, algorithm="rf")
 
 
+def test_train_rejects_unknown_task():
+    X = np.zeros((2, 1))
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Unsupported task"):
+        train(X, y, task="ranking")
+
+
+@pytest.mark.parametrize(
+    ("task", "tree_type"),
+    [
+        ("regression", "id3"),
+        ("regression", "c45"),
+        ("classification", "target_mean"),
+    ],
+)
+def test_train_rejects_unsupported_task_tree_type_pairs(task, tree_type):
+    X = np.array([[0.0], [1.0], [2.0]])
+    y = np.array([0.0, 1.0, 2.0])
+
+    with pytest.raises(ValueError, match="Unsupported training configuration"):
+        train(X, y, task=task, tree_type=tree_type)
+
+
 def test_train_accepts_canaries_hyperparameter():
     X = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
 
-    model = train(X, y, algorithm="dt", tree_type="cart", canaries=1)
+    model = train(
+        X, y, algorithm="dt", task="classification", tree_type="cart", canaries=1
+    )
 
     assert model.algorithm == "dt"

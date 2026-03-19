@@ -8,12 +8,14 @@ def train(
     x: NDArray[np.float64],
     y: NDArray[np.float64],
     algorithm: str = "dt",
+    task: str = "regression",
     tree_type: str = "target_mean",
     canaries: int = 2,
 ) -> "Model": ...
 
 class Model:
     algorithm: str
+    task: str
     tree_type: str
     mean_: float | None
 

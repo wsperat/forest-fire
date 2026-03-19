@@ -23,6 +23,16 @@ impl Regressor for forestfire_core::TargetMeanTree {
     }
 }
 
+impl Regressor for forestfire_core::DecisionTreeRegressor {
+    fn predict_rows(&self, _n_rows: usize) -> Vec<f64> {
+        unreachable!("regression trees require feature data for prediction")
+    }
+
+    fn predict_table(&self, table: &DenseTable) -> Vec<f64> {
+        forestfire_core::DecisionTreeRegressor::predict_table(self, table)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +64,40 @@ mod tests {
 
         assert_eq!(via_trait, via_inherent);
         assert!(via_trait.iter().all(|&p| (p - m.mean).abs() < 1e-12));
+    }
+
+    #[test]
+    fn regression_tree_trait_predictions_match_inherent_methods() {
+        let table = forestfire_data::DenseTable::with_canaries(
+            vec![
+                vec![0.0],
+                vec![1.0],
+                vec![2.0],
+                vec![3.0],
+                vec![4.0],
+                vec![5.0],
+            ],
+            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0],
+            0,
+        )
+        .unwrap();
+
+        let m = train(
+            &table,
+            TrainConfig {
+                tree_type: TreeType::Cart,
+                ..TrainConfig::default()
+            },
+        )
+        .unwrap();
+        let Model::DecisionTreeRegressor(m) = m else {
+            panic!("expected decision tree regressor");
+        };
+        let via_trait =
+            <forestfire_core::DecisionTreeRegressor as Regressor>::predict_table(&m, &table);
+        let via_inherent = m.predict_table(&table);
+
+        assert_eq!(via_trait, via_inherent);
+        assert_eq!(via_trait, vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0]);
     }
 }

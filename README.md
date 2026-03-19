@@ -9,7 +9,7 @@ The current implementation focuses on a unified `train` interface, Arrow-backed 
 
 - Performance-first: Rust + Rayon for parallel training/prediction; cache-friendly data layouts.
 - Arrow-backed storage: `DenseTable` stores feature columns in Arrow arrays and pre-bins numeric features into 512 bins.
-- Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., tree_type=...)` entrypoint.
+- Friendly Python API: a LightGBM-like `train(X, y, algorithm=..., task=..., tree_type=...)` entrypoint.
 - Automatic growth stopping: shuffled canary variables are generated during table construction and halt growth when selected.
 - Extensible design: a common dispatcher for tree learners behind one training interface.
 
@@ -81,6 +81,9 @@ Priorities may shift in the future, and new ones added.
     - `c45`
     - `cart`
     - `oblivious`
+- Supported tasks:
+    - `regression`
+    - `classification`
 - Automatic canary-based growth stopping with `canaries=2` by default
 - NumPy input support in Python
 
@@ -115,13 +118,24 @@ from forestfire import train
 X = np.array([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]])
 y = np.array([0.0, 0.0, 0.0, 1.0])
 
-clf = train(X, y, algorithm="dt", tree_type="cart", canaries=2)
+clf = train(
+    X,
+    y,
+    algorithm="dt",
+    task="classification",
+    tree_type="cart",
+    canaries=2,
+)
 pred = clf.predict(X)            # -> NumPy array [n_samples]
 ```
 
 # Data interop tips
 
 NumPy arrays are accepted directly for `train(X, y, ...)`.
+
+The current task/tree support is:
+- `task="regression"` with `tree_type="target_mean" | "cart" | "oblivious"`
+- `task="classification"` with `tree_type="id3" | "c45" | "cart" | "oblivious"`
 
 Training materializes an Arrow-backed `DenseTable`, pre-bins numerical columns into 512 rank bins, and appends shuffled canary copies of the binned columns.
 
@@ -130,7 +144,7 @@ If a split chooses a canary variable, growth stops automatically at that node. F
 # Quickstart (Rust)
 ```rust
 use anyhow::Result;
-use forestfire_core::{train, TrainAlgorithm, TrainConfig, TreeType};
+use forestfire_core::{train, Task, TrainAlgorithm, TrainConfig, TreeType};
 use forestfire_data::DenseTable;
 
 fn main() -> Result<()> {
@@ -144,6 +158,7 @@ fn main() -> Result<()> {
     let table = DenseTable::new(x, y)?;
     let config = TrainConfig {
         algorithm: TrainAlgorithm::Dt,
+        task: Task::Classification,
         tree_type: TreeType::Cart,
     };
     let model = train(&table, config)?;

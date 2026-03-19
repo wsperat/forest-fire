@@ -1,4 +1,4 @@
-use forestfire_core::{Model, TrainAlgorithm, TrainConfig, TreeType, train as train_model};
+use forestfire_core::{Model, Task, TrainAlgorithm, TrainConfig, TreeType, train as train_model};
 use forestfire_data::DenseTable;
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{Bound, prelude::*};
@@ -56,9 +56,27 @@ fn parse_tree_type(tree_type: &str) -> PyResult<TreeType> {
     }
 }
 
+fn parse_task(task: &str) -> PyResult<Task> {
+    match task {
+        "regression" => Ok(Task::Regression),
+        "classification" => Ok(Task::Classification),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported task '{}'. Expected one of: regression, classification",
+            task
+        ))),
+    }
+}
+
 fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
+    }
+}
+
+fn task_name(task: Task) -> &'static str {
+    match task {
+        Task::Regression => "regression",
+        Task::Classification => "classification",
     }
 }
 
@@ -73,17 +91,19 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y, algorithm="dt", tree_type="target_mean", canaries=2))]
+#[pyo3(signature = (x, y, algorithm="dt", task="regression", tree_type="target_mean", canaries=2))]
 fn train(
     x: PyReadonlyArray2<f64>,
     y: PyReadonlyArray1<f64>,
     algorithm: &str,
+    task: &str,
     tree_type: &str,
     canaries: usize,
 ) -> PyResult<PyModel> {
     let table = build_table(x, y, canaries)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
+        task: parse_task(task)?,
         tree_type: parse_tree_type(tree_type)?,
     };
     let model = train_model(&table, config)
@@ -107,6 +127,11 @@ impl PyModel {
     #[getter]
     fn algorithm(&self) -> &'static str {
         algorithm_name(self.inner.algorithm())
+    }
+
+    #[getter]
+    fn task(&self) -> &'static str {
+        task_name(self.inner.task())
     }
 
     #[getter]

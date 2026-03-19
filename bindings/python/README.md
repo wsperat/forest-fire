@@ -4,6 +4,7 @@ Python bindings for the unified `forestfire.train(...)` interface.
 
 Current supported surface:
 - `algorithm="dt"`
+- `task="regression" | "classification"`
 - `tree_type="target_mean" | "id3" | "c45" | "cart" | "oblivious"`
 - `canaries=2` by default for automatic growth stopping
 
@@ -15,7 +16,7 @@ from forestfire import train
 X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
 y = np.array([0.0, 0.0, 0.0, 1.0])
 
-model = train(X, y, algorithm="dt", tree_type="cart")
+model = train(X, y, algorithm="dt", task="classification", tree_type="cart")
 preds = model.predict(X)
 ```
 
