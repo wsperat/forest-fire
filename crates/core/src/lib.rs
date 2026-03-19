@@ -423,6 +423,110 @@ mod tests {
     }
 
     #[test]
+    fn unified_train_resolves_auto_criterion_across_supported_matrix() {
+        let classification_table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let regression_table = DenseTable::with_canaries(
+            vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0]],
+            vec![1.0, 3.0, 5.0, 7.0],
+            0,
+        )
+        .unwrap();
+
+        for (table, config, expected_criterion) in [
+            (
+                &regression_table,
+                TrainConfig {
+                    algorithm: TrainAlgorithm::Dt,
+                    task: Task::Regression,
+                    tree_type: TreeType::TargetMean,
+                    criterion: Criterion::Auto,
+                    physical_cores: Some(1),
+                },
+                Criterion::Mean,
+            ),
+            (
+                &regression_table,
+                TrainConfig {
+                    algorithm: TrainAlgorithm::Dt,
+                    task: Task::Regression,
+                    tree_type: TreeType::Cart,
+                    criterion: Criterion::Auto,
+                    physical_cores: Some(1),
+                },
+                Criterion::Mean,
+            ),
+            (
+                &regression_table,
+                TrainConfig {
+                    algorithm: TrainAlgorithm::Dt,
+                    task: Task::Regression,
+                    tree_type: TreeType::Oblivious,
+                    criterion: Criterion::Auto,
+                    physical_cores: Some(1),
+                },
+                Criterion::Mean,
+            ),
+            (
+                &classification_table,
+                TrainConfig {
+                    algorithm: TrainAlgorithm::Dt,
+                    task: Task::Classification,
+                    tree_type: TreeType::Id3,
+                    criterion: Criterion::Auto,
+                    physical_cores: Some(1),
+                },
+                Criterion::Entropy,
+            ),
+            (
+                &classification_table,
+                TrainConfig {
+                    algorithm: TrainAlgorithm::Dt,
+                    task: Task::Classification,
+                    tree_type: TreeType::C45,
+                    criterion: Criterion::Auto,
+                    physical_cores: Some(1),
+                },
+                Criterion::Entropy,
+            ),
+            (
+                &classification_table,
+                TrainConfig {
+                    algorithm: TrainAlgorithm::Dt,
+                    task: Task::Classification,
+                    tree_type: TreeType::Cart,
+                    criterion: Criterion::Auto,
+                    physical_cores: Some(1),
+                },
+                Criterion::Gini,
+            ),
+            (
+                &classification_table,
+                TrainConfig {
+                    algorithm: TrainAlgorithm::Dt,
+                    task: Task::Classification,
+                    tree_type: TreeType::Oblivious,
+                    criterion: Criterion::Auto,
+                    physical_cores: Some(1),
+                },
+                Criterion::Gini,
+            ),
+        ] {
+            let model = train(table, config).unwrap();
+            assert_eq!(model.criterion(), expected_criterion);
+        }
+    }
+
+    #[test]
     fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
         let classification_table = DenseTable::with_canaries(
             vec![
@@ -556,5 +660,48 @@ mod tests {
             err,
             TrainError::InvalidPhysicalCoreCount { requested: 0, .. }
         ));
+    }
+
+    #[test]
+    fn unified_train_caps_physical_cores_to_available_hardware() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+
+        let single_core = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let overprovisioned = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(usize::MAX),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            single_core.predict_table(&table),
+            overprovisioned.predict_table(&table)
+        );
     }
 }

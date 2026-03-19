@@ -495,4 +495,73 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn rejects_mismatched_lengths() {
+        let err = DenseTable::new(vec![vec![1.0], vec![2.0]], vec![1.0]).unwrap_err();
+
+        assert_eq!(err, DenseTableError::MismatchedLengths { x: 2, y: 1 });
+    }
+
+    #[test]
+    fn canary_generation_is_deterministic_for_identical_inputs() {
+        let left = DenseTable::with_canaries(
+            vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0], vec![4.0]],
+            vec![0.0; 5],
+            2,
+        )
+        .unwrap();
+        let right = DenseTable::with_canaries(
+            vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0], vec![4.0]],
+            vec![0.0; 5],
+            2,
+        )
+        .unwrap();
+
+        let left_values = binned_snapshot(&left);
+        let right_values = binned_snapshot(&right);
+
+        assert_eq!(left_values, right_values);
+    }
+
+    #[test]
+    fn binary_canaries_remain_boolean_and_preserve_value_counts() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0],
+                vec![1.0],
+                vec![0.0],
+                vec![1.0],
+                vec![1.0],
+                vec![0.0],
+            ],
+            vec![0.0; 6],
+            2,
+        )
+        .unwrap();
+
+        let real_true_count = (0..table.n_rows())
+            .filter(|row_idx| table.binned_boolean_value(0, *row_idx) == Some(true))
+            .count();
+
+        for feature_index in 1..table.binned_feature_count() {
+            assert!(table.is_binary_binned_feature(feature_index));
+            let canary_true_count = (0..table.n_rows())
+                .filter(|row_idx| table.binned_boolean_value(feature_index, *row_idx) == Some(true))
+                .count();
+            assert_eq!(canary_true_count, real_true_count);
+        }
+    }
+
+    fn binned_snapshot(table: &DenseTable) -> Vec<u16> {
+        let mut values = Vec::new();
+
+        for feature_idx in 0..table.binned_feature_count() {
+            for row_idx in 0..table.n_rows() {
+                values.push(table.binned_value(feature_idx, row_idx));
+            }
+        }
+
+        values
+    }
 }

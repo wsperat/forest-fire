@@ -10,6 +10,20 @@ def toy_data():
     return X, y
 
 
+@pytest.fixture
+def and_data():
+    X = np.array(
+        [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 0.0, 1.0])
+    return X, y
+
+
 def test_train_and_predict_shape_and_value(toy_data):
     X, y = toy_data
     m = train(X, y, algorithm="dt", tree_type="target_mean")
@@ -22,6 +36,17 @@ def test_train_and_predict_shape_and_value(toy_data):
     preds = m.predict(X)
     assert preds.shape == (X.shape[0],)
     assert np.allclose(preds, m.mean_)
+
+
+def test_train_defaults_match_documented_regression_baseline(toy_data):
+    X, y = toy_data
+
+    model = train(X, y)
+
+    assert model.algorithm == "dt"
+    assert model.task == "regression"
+    assert model.tree_type == "target_mean"
+    assert model.criterion == "mean"
 
 
 @pytest.mark.parametrize(
@@ -46,10 +71,8 @@ def test_train_raises_on_mismatched_lengths():
         train(X, y)
 
 
-def test_train_cart_classifier():
-    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
-    y = np.array([0.0, 0.0, 0.0, 1.0])
-
+def test_train_cart_classifier(and_data):
+    X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
     )
@@ -62,10 +85,8 @@ def test_train_cart_classifier():
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_id3_classifier():
-    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
-    y = np.array([0.0, 0.0, 0.0, 1.0])
-
+def test_train_id3_classifier(and_data):
+    X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="id3", canaries=0
     )
@@ -78,10 +99,8 @@ def test_train_id3_classifier():
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_c45_classifier():
-    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
-    y = np.array([0.0, 0.0, 0.0, 1.0])
-
+def test_train_c45_classifier(and_data):
+    X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="c45", canaries=0
     )
@@ -94,10 +113,8 @@ def test_train_c45_classifier():
     assert np.array_equal(model.predict(X), y)
 
 
-def test_train_oblivious_classifier():
-    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
-    y = np.array([0.0, 0.0, 0.0, 1.0])
-
+def test_train_oblivious_classifier(and_data):
+    X, y = and_data
     model = train(
         X, y, algorithm="dt", task="classification", tree_type="oblivious", canaries=0
     )
@@ -140,6 +157,31 @@ def test_train_oblivious_regressor():
     assert np.array_equal(model.predict(X), y)
 
 
+@pytest.mark.parametrize(
+    ("task", "tree_type", "expected_criterion"),
+    [
+        ("regression", "target_mean", "mean"),
+        ("regression", "cart", "mean"),
+        ("regression", "oblivious", "mean"),
+        ("classification", "id3", "entropy"),
+        ("classification", "c45", "entropy"),
+        ("classification", "cart", "gini"),
+        ("classification", "oblivious", "gini"),
+    ],
+)
+def test_auto_criterion_resolves_by_task_and_tree_type(
+    and_data, toy_data, task, tree_type, expected_criterion
+):
+    if task == "classification":
+        X, y = and_data
+    else:
+        X, y = toy_data
+
+    model = train(X, y, task=task, tree_type=tree_type, criterion="auto", canaries=0)
+
+    assert model.criterion == expected_criterion
+
+
 def test_train_target_mean_can_use_median_criterion():
     X = np.zeros((3, 1))
     y = np.array([0.0, 0.0, 100.0])
@@ -170,6 +212,23 @@ def test_train_cart_regressor_can_use_median_criterion():
     assert np.array_equal(median_model.predict(X), np.array([0.0, 0.0, 0.0]))
 
 
+def test_train_oblivious_regressor_can_use_median_criterion():
+    X = np.zeros((3, 1))
+    y = np.array([0.0, 0.0, 100.0])
+
+    mean_model = train(
+        X, y, task="regression", tree_type="oblivious", criterion="mean", canaries=0
+    )
+    median_model = train(
+        X, y, task="regression", tree_type="oblivious", criterion="median", canaries=0
+    )
+
+    assert mean_model.criterion == "mean"
+    assert median_model.criterion == "median"
+    assert np.allclose(mean_model.predict(X), np.array([100.0 / 3.0] * 3))
+    assert np.array_equal(median_model.predict(X), np.array([0.0, 0.0, 0.0]))
+
+
 def test_train_rejects_unknown_algorithm():
     X = np.zeros((2, 1))
     y = np.array([0.0, 1.0])
@@ -192,6 +251,18 @@ def test_train_rejects_unknown_criterion():
 
     with pytest.raises(ValueError, match="Unsupported criterion"):
         train(X, y, criterion="mae")
+
+
+@pytest.mark.parametrize(
+    ("task", "tree_type"),
+    [("regression", "cart"), ("classification", "cart")],
+)
+def test_train_rejects_non_finite_targets(task, tree_type):
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, np.nan])
+
+    with pytest.raises(ValueError, match="must be finite"):
+        train(X, y, task=task, tree_type=tree_type, canaries=0)
 
 
 @pytest.mark.parametrize(
@@ -239,9 +310,37 @@ def test_train_accepts_physical_cores_parameter():
     assert model.algorithm == "dt"
 
 
+def test_train_caps_large_physical_core_requests():
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+
+    model = train(
+        X,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        physical_cores=10_000,
+    )
+
+    assert np.array_equal(model.predict(X), y)
+
+
 def test_train_rejects_zero_physical_cores():
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
 
     with pytest.raises(ValueError, match="Requested 0 physical cores"):
         train(X, y, physical_cores=0)
+
+
+def test_predict_generalizes_on_binary_feature_rows(and_data):
+    X, y = and_data
+    model = train(
+        X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
+    )
+
+    new_rows = np.array([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0]])
+
+    assert np.array_equal(model.predict(new_rows), np.array([0.0, 1.0, 0.0]))
