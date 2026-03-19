@@ -75,7 +75,7 @@ Priorities may shift in the future, and new ones added.
 # Features
 
 - Unified `train` interface in Rust and Python
-- Arrow-backed `DenseTable` with 512-bin numeric feature binning
+- Arrow-backed `DenseTable` with binary-column compaction and 512-bin numeric feature binning
 - Supported tree types behind `algorithm="dt"`:
     - `target_mean`
     - `id3`
@@ -139,28 +139,158 @@ clf = train(
 pred = clf.predict(X)            # -> NumPy array [n_samples]
 ```
 
-# Data interop tips
+# Train Interface
+
+`train(X, y, algorithm=..., task=..., tree_type=..., criterion=..., canaries=..., physical_cores=...)`
 
 NumPy arrays are accepted directly for `train(X, y, ...)`.
 
-The current task/tree support is:
+## Parameter rationale
+
+### `algorithm`
+
+Current value: `dt`
+
+Why it exists:
+- It keeps the top-level API stable while the library grows beyond a single learner family.
+- It separates "which general training family is this?" from "which exact tree shape should it use?".
+
+Why it is a string in Python but an enum internally:
+- Python callers get a LightGBM-style interface that is easy to type and inspect.
+- Rust keeps exhaustive matches and validation through enums, so unsupported combinations fail clearly.
+
+### `task`
+
+Current values:
+- `regression`
+- `classification`
+
+Why it exists:
+- It forces the library to choose loss semantics explicitly instead of guessing from `y`.
+- The same tree shape can behave differently under regression and classification, so task selection belongs at the API boundary.
+
+What it controls:
+- available `tree_type` values
+- criterion resolution for `criterion="auto"`
+- impurity/dispersion scoring
+- leaf prediction semantics
+
+### `tree_type`
+
+Current values:
+- regression: `target_mean`, `cart`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `oblivious`
+
+Why it exists:
+- Different tree families make different structural promises, and those differences matter more than a single "depth" or "regularization" knob.
+- Exposing the tree family directly makes behavior easier to reason about than hiding it behind many secondary parameters.
+
+Rationale for each value:
+- `target_mean`: simplest regression baseline; useful as a control model and for verifying data/metric pipelines.
+- `id3`: categorical-style information-gain tree; useful as a reference for entropy-first classification behavior.
+- `c45`: extension of ID3 with a more practical split-selection style; kept separate because users expect it by name.
+- `cart`: standard binary tree family; strong default when you want conventional decision-tree behavior.
+- `oblivious`: symmetric tree where every node at a depth uses the same split; this structure is attractive for predictable inference and level-wise parallelization.
+
+### `criterion`
+
+Current values:
+- classification: `gini`, `entropy`, `auto`
+- regression: `mean`, `median`, `auto`
+
+Why it exists:
+- Criterion is one of the few choices that genuinely changes the model’s bias, not just runtime.
+- Making it explicit avoids hiding a statistically meaningful decision behind undocumented defaults.
+
+Rationale for each option:
+- `gini`: usually cheaper to evaluate and a strong default for classification CART-style trees.
+- `entropy`: keeps information-gain semantics explicit for `id3` and `c45`.
+- `mean`: optimizes around average error behavior and matches the usual squared-error intuition.
+- `median`: more robust when targets contain heavy tails or outliers.
+- `auto`: keeps the API concise while still picking a criterion that matches the chosen learner family.
+
+Current `auto` resolution:
+- `id3`, `c45` classification -> `entropy`
+- `cart`, `oblivious` classification -> `gini`
+- regression models -> `mean`
+
+### `canaries`
+
+Default: `2`
+
+Why it exists:
+- This library prefers automatic growth stopping over post-hoc pruning.
+- Canary features provide a built-in null reference: if a shuffled copy of a real feature looks best, the learner has reached noise territory.
+
+Why shuffled copies:
+- They preserve the marginal distribution and bin occupancy of the original feature.
+- They destroy the relationship with the target.
+- That makes them a stronger stopping signal than a purely synthetic random column.
+
+How stopping works:
+- standard trees: if a node selects a canary, that node becomes a leaf
+- oblivious trees: if a level selects a canary, the entire tree stops growing
+
+How to think about the value:
+- `0` disables the mechanism entirely
+- larger values make the stopping test harsher
+- the default `2` is intentionally conservative for small trees without making toy datasets impossible to fit
+
+### `physical_cores`
+
+Default: all available physical cores
+
+Why it exists:
+- Tree training is CPU-bound, and users often need predictable resource usage on shared machines.
+- Physical cores are a better default control than logical threads for this workload because split scoring is memory-sensitive and can saturate before SMT helps.
+
+Behavior:
+- `None` uses all detected physical cores
+- values above the machine limit are capped
+- `0` is rejected
+
+Why parallelism is chosen per tree type:
+- `id3`, `c45`, `cart`: feature scoring is independent at a node, so node-local feature parallelism is the cheapest win
+- `oblivious`: depth-wise shared splits make per-level feature scoring the natural strategy
+- `target_mean`: there is not enough work to justify thread-pool overhead
+
+## Data rationale
+
+Training first materializes an Arrow-backed `DenseTable`.
+
+Why `DenseTable` exists:
+- learners need a validated, columnar, reusable training view
+- the Python and Rust APIs should feed the same internal representation
+- repeated split scoring benefits from a layout designed for scans rather than row-by-row iteration
+
+Why Arrow-backed columns:
+- columnar arrays are cache-friendly for feature-wise scoring
+- Arrow gives compact primitive storage and a clear path to future interop work
+
+Why binary columns are stored as booleans:
+- `0/1` and `false/true` features are common in tabular data
+- bit-packed boolean storage cuts memory relative to generic float storage
+- learners can skip threshold search and use a direct false/true split path
+
+Why numeric features are pre-binned into 512 bins:
+- tree learners repeatedly compare feature values; exact continuous-value handling is often more expensive than it is useful
+- fixed bins reduce split-search cost and bound per-feature work
+- `512` is a compromise: fine-grained enough for common tabular problems, still small enough to stay cheap in memory and scanning
+
+Why binning is rank-based:
+- it is stable under monotonic rescaling of the input
+- it keeps the representation focused on ordering, which is what tree splits mostly care about
+
+Why canaries are attached to the table instead of generated inside each learner:
+- every learner should see the same stopping reference distribution
+- table-level generation keeps training logic simpler and more comparable across algorithms
+- it avoids repeating the same preprocessing work for each learner implementation
+
+## Support matrix
+
+Current task/tree support:
 - `task="regression"` with `tree_type="target_mean" | "cart" | "oblivious"`
 - `task="classification"` with `tree_type="id3" | "c45" | "cart" | "oblivious"`
-
-The current criterion support is:
-- classification trees: `criterion="gini" | "entropy"` and `auto`
-- regression models: `criterion="mean" | "median"` and `auto`
-
-Parallelization strategy:
-- `id3`, `c45`, and `cart`: parallel feature scoring at each node
-- `oblivious`: parallel feature scoring at each depth
-- `target_mean`: no meaningful threaded work beyond dispatcher overhead
-
-`physical_cores` defaults to all available physical cores. Requests above the hardware limit are capped to the available physical-core count, and `0` is rejected.
-
-Training materializes an Arrow-backed `DenseTable`, pre-bins numerical columns into 512 rank bins, and appends shuffled canary copies of the binned columns.
-
-If a split chooses a canary variable, growth stops automatically at that node. For oblivious trees, selecting a canary stops the whole tree-growth loop.
 
 # Quickstart (Rust)
 ```rust
@@ -182,6 +312,7 @@ fn main() -> Result<()> {
         task: Task::Classification,
         tree_type: TreeType::Cart,
         criterion: Criterion::Gini,
+        canaries: 2,
         physical_cores: Some(4),
     };
     let model = train(&table, config)?;
@@ -192,11 +323,15 @@ fn main() -> Result<()> {
 ```
 
 # Design notes
-- Arrow everywhere: The core stores features in Arrow arrays for columnar, cache-friendly scans.
-- `DenseTable` holds feature columns and target data separately.
+- Unified train surface: users should not need a different top-level entrypoint for every learner family.
+- String API, enum core: Python gets ergonomic strings; Rust keeps typed dispatch and exhaustive validation.
+- Arrow everywhere: the core stores features in Arrow arrays for columnar, cache-friendly scans.
+- `DenseTable` holds feature columns and target data separately so training and inference logic can stay focused on model behavior.
 - Tree learners consume the pre-binned representation rather than re-sorting features during fitting.
+- Binary features receive a dedicated compact representation because they are common and structurally simpler to split on.
 - Canary columns are synthetic shuffled copies of the binned features and act as a built-in stopping signal.
-- The current Python API is NumPy-first.
+- Automatic growth stopping is preferred over pruning because it keeps the stopping rule inside the split search itself.
+- The current Python API is NumPy-first because that gives the smallest dependency surface while the core learning design stabilizes.
 
 # Building & testing
 ## Rust
@@ -221,7 +356,7 @@ task test
 
 Rust: stable toolchain (latest two releases supported)
 
-Python: >=3.13 (x86_64 & aarch64 on Linux/macOS/Windows)
+Python: >=3.12 (x86_64 & aarch64 on Linux/macOS/Windows)
 
 Binary wheels: built via maturin; source installs require Rust toolchain
 
