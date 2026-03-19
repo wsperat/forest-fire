@@ -35,6 +35,7 @@ def test_train_and_predict_shape_and_value(
     assert m.criterion == "mean"
     assert m.tree_type == "target_mean"
     assert m.mean_ == pytest.approx(14.0, abs=1e-12)
+    assert m.mean_ is not None
 
     preds = m.predict(X)
     assert preds.shape == (X.shape[0],)
