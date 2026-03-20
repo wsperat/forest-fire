@@ -1,544 +1,414 @@
 {
+  "notes": [
+    "Standard trees are manually built as depth-N binary chains so every row traverses the full requested depth.",
+    "Oblivious trees are manually built at exact depth where feasible; depths above 16 are skipped because oblivious trees require 2^depth leaves.",
+    "Large row counts are estimated from stable fixed-batch prediction timings rather than fully materialized in memory."
+  ],
   "results": [
     {
       "tree_type": "cart",
-      "requested_depth": 8,
-      "measured_depth": 1,
+      "requested_depth": 2,
+      "measured_depth": 2,
+      "row_count": 1000,
+      "baseline_seconds": 0.00045449641402228735,
+      "optimized_single_core_seconds": 0.0004895807344382774,
+      "optimized_parallel_seconds": 0.000656465492170355
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 10000,
-      "baseline_seconds": 0.007661760375412996,
-      "optimized_single_core_seconds": 0.008899015624592721,
-      "optimized_parallel_seconds": 0.008936218750022817
+      "baseline_seconds": 0.004444416625119629,
+      "optimized_single_core_seconds": 0.0047941432503648684,
+      "optimized_parallel_seconds": 0.004736679687084688
     },
     {
       "tree_type": "cart",
-      "requested_depth": 8,
-      "measured_depth": 1,
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 100000,
-      "baseline_seconds": 0.10035100000095554,
-      "optimized_single_core_seconds": 0.11665091599570587,
-      "optimized_parallel_seconds": 0.11422191599558573
+      "baseline_seconds": 0.05800633299804758,
+      "optimized_single_core_seconds": 0.062577250006143,
+      "optimized_parallel_seconds": 0.05984704200818669
     },
     {
       "tree_type": "cart",
-      "requested_depth": 8,
-      "measured_depth": 1,
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 1000000,
-      "baseline_seconds": 0.7979420000920072,
-      "optimized_single_core_seconds": 0.9330060000065714,
-      "optimized_parallel_seconds": 0.9149146560812369
+      "baseline_seconds": 0.46511766395997256,
+      "optimized_single_core_seconds": 0.499990671989508,
+      "optimized_parallel_seconds": 0.4745286719407886
     },
     {
       "tree_type": "cart",
-      "requested_depth": 8,
-      "measured_depth": 1,
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 10000000,
-      "baseline_seconds": 7.696614051848883,
-      "optimized_single_core_seconds": 8.93881462495483,
-      "optimized_parallel_seconds": 8.783761823855457
+      "baseline_seconds": 4.455146488449827,
+      "optimized_single_core_seconds": 4.774224776287156,
+      "optimized_parallel_seconds": 4.561130812915508
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 4,
+      "measured_depth": 4,
+      "row_count": 1000,
+      "baseline_seconds": 0.0005962421874983193,
+      "optimized_single_core_seconds": 0.0006579033203024665,
+      "optimized_parallel_seconds": 0.0008117994686926977
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 4,
+      "measured_depth": 4,
+      "row_count": 10000,
+      "baseline_seconds": 0.005807249999634223,
+      "optimized_single_core_seconds": 0.006464526124545955,
+      "optimized_parallel_seconds": 0.0062988541249069385
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 4,
+      "measured_depth": 4,
+      "row_count": 100000,
+      "baseline_seconds": 0.0761303329927614,
+      "optimized_single_core_seconds": 0.08476958399114665,
+      "optimized_parallel_seconds": 0.07960783300222829
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 4,
+      "measured_depth": 4,
+      "row_count": 1000000,
+      "baseline_seconds": 0.6080373279983178,
+      "optimized_single_core_seconds": 0.6757716640131548,
+      "optimized_parallel_seconds": 0.636717664077878
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 4,
+      "measured_depth": 4,
+      "row_count": 10000000,
+      "baseline_seconds": 5.856852775432344,
+      "optimized_single_core_seconds": 6.47935553741263,
+      "optimized_parallel_seconds": 6.0842777124853455
     },
     {
       "tree_type": "cart",
       "requested_depth": 8,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 76.40637440612772,
-      "optimized_single_core_seconds": 88.99307725320978,
-      "optimized_parallel_seconds": 87.18470316454477
+      "measured_depth": 8,
+      "row_count": 1000,
+      "baseline_seconds": 0.0008726523437871947,
+      "optimized_single_core_seconds": 0.0009751927188972331,
+      "optimized_parallel_seconds": 0.0011084609375302534
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 8,
+      "measured_depth": 8,
+      "row_count": 10000,
+      "baseline_seconds": 0.008641953125334112,
+      "optimized_single_core_seconds": 0.009647432249039412,
+      "optimized_parallel_seconds": 0.009235656250893953
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 8,
+      "measured_depth": 8,
+      "row_count": 100000,
+      "baseline_seconds": 0.11288825000519864,
+      "optimized_single_core_seconds": 0.12677558400901034,
+      "optimized_parallel_seconds": 0.11706241601496004
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 8,
+      "measured_depth": 8,
+      "row_count": 1000000,
+      "baseline_seconds": 0.8955240000505,
+      "optimized_single_core_seconds": 1.0146633279509842,
+      "optimized_parallel_seconds": 0.9381326721049845
+    },
+    {
+      "tree_type": "cart",
+      "requested_depth": 8,
+      "measured_depth": 8,
+      "row_count": 10000000,
+      "baseline_seconds": 8.600085323458188,
+      "optimized_single_core_seconds": 9.63510477253294,
+      "optimized_parallel_seconds": 8.94956287664536
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.01216796874996362,
-      "optimized_single_core_seconds": 0.014888416750181932,
-      "optimized_parallel_seconds": 0.014930937499229913
+      "measured_depth": 16,
+      "row_count": 1000,
+      "baseline_seconds": 0.0014149511719097063,
+      "optimized_single_core_seconds": 0.0016463372189718939,
+      "optimized_parallel_seconds": 0.0016884674691937107
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 0.159124833997339,
-      "optimized_single_core_seconds": 0.19569241799763404,
-      "optimized_parallel_seconds": 0.19227666599908844
+      "measured_depth": 16,
+      "row_count": 10000,
+      "baseline_seconds": 0.014318302000901895,
+      "optimized_single_core_seconds": 0.01663996875140583,
+      "optimized_parallel_seconds": 0.015411427248182008
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 1.2785246720304713,
-      "optimized_single_core_seconds": 1.5659706561127678,
-      "optimized_parallel_seconds": 1.553777344059199
+      "measured_depth": 16,
+      "row_count": 100000,
+      "baseline_seconds": 0.18440616800216958,
+      "optimized_single_core_seconds": 0.22181108201039024,
+      "optimized_parallel_seconds": 0.20127325001521967
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 10000000,
-      "baseline_seconds": 12.174235550919548,
-      "optimized_single_core_seconds": 14.950471500007552,
-      "optimized_parallel_seconds": 14.823009801759326
+      "measured_depth": 16,
+      "row_count": 1000000,
+      "baseline_seconds": 1.5141873280517757,
+      "optimized_single_core_seconds": 1.8243239999283105,
+      "optimized_parallel_seconds": 1.6471053278073668
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 121.80907243931142,
-      "optimized_single_core_seconds": 149.80684775290138,
-      "optimized_parallel_seconds": 147.80645249327063
-    },
-    {
-      "tree_type": "cart",
-      "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.021336333249564632,
-      "optimized_single_core_seconds": 0.026659625000320375,
-      "optimized_parallel_seconds": 0.026703666502726264
-    },
-    {
-      "tree_type": "cart",
-      "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 0.28125424998870585,
-      "optimized_single_core_seconds": 0.35198016600043047,
-      "optimized_parallel_seconds": 0.35180533400853164
-    },
-    {
-      "tree_type": "cart",
-      "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 2.263136656023562,
-      "optimized_single_core_seconds": 2.8160560000687838,
-      "optimized_parallel_seconds": 2.8247660000342876
-    },
-    {
-      "tree_type": "cart",
-      "requested_depth": 32,
-      "measured_depth": 1,
+      "measured_depth": 16,
       "row_count": 10000000,
-      "baseline_seconds": 21.64990162551112,
-      "optimized_single_core_seconds": 27.061460676362913,
-      "optimized_parallel_seconds": 26.891866602905793
+      "baseline_seconds": 14.739720274577849,
+      "optimized_single_core_seconds": 17.333701552051934,
+      "optimized_parallel_seconds": 15.242841802508337
     },
     {
       "tree_type": "cart",
       "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 216.61665374226868,
-      "optimized_single_core_seconds": 269.8855628369347,
-      "optimized_parallel_seconds": 267.656267588638
+      "measured_depth": 32,
+      "row_count": 1000,
+      "baseline_seconds": 0.0025584713121133973,
+      "optimized_single_core_seconds": 0.0029693775936721067,
+      "optimized_parallel_seconds": 0.00290852734406144
     },
     {
       "tree_type": "cart",
-      "requested_depth": 64,
-      "measured_depth": 1,
+      "requested_depth": 32,
+      "measured_depth": 32,
       "row_count": 10000,
-      "baseline_seconds": 0.039651812498050276,
-      "optimized_single_core_seconds": 0.04928858399944147,
-      "optimized_parallel_seconds": 0.049721770501491847
+      "baseline_seconds": 0.02563460399687756,
+      "optimized_single_core_seconds": 0.030014687501534354,
+      "optimized_parallel_seconds": 0.027738332995795645
     },
     {
       "tree_type": "cart",
-      "requested_depth": 64,
-      "measured_depth": 1,
+      "requested_depth": 32,
+      "measured_depth": 32,
       "row_count": 100000,
-      "baseline_seconds": 0.5760081680055009,
-      "optimized_single_core_seconds": 0.7093110839923611,
-      "optimized_parallel_seconds": 0.7065932499972405
+      "baseline_seconds": 0.33906466598273255,
+      "optimized_single_core_seconds": 0.3960729160171468,
+      "optimized_parallel_seconds": 0.35946800000965595
     },
     {
       "tree_type": "cart",
-      "requested_depth": 64,
-      "measured_depth": 1,
+      "requested_depth": 32,
+      "measured_depth": 32,
       "row_count": 1000000,
-      "baseline_seconds": 4.609020655974746,
-      "optimized_single_core_seconds": 5.663824671995826,
-      "optimized_parallel_seconds": 5.679151999996975
+      "baseline_seconds": 2.7048526720609516,
+      "optimized_single_core_seconds": 3.1873053279705346,
+      "optimized_parallel_seconds": 2.873337327968329
     },
     {
       "tree_type": "cart",
-      "requested_depth": 64,
-      "measured_depth": 1,
+      "requested_depth": 32,
+      "measured_depth": 32,
       "row_count": 10000000,
-      "baseline_seconds": 44.11829587438842,
-      "optimized_single_core_seconds": 54.853107426715724,
-      "optimized_parallel_seconds": 54.22694207466702
+      "baseline_seconds": 25.812629999709316,
+      "optimized_single_core_seconds": 30.486276475625345,
+      "optimized_parallel_seconds": 27.723950674655498
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 64,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 440.81472881480295,
-      "optimized_single_core_seconds": 542.069472426112,
-      "optimized_parallel_seconds": 543.5076618106395
+      "tree_type": "oblivious",
+      "requested_depth": 2,
+      "measured_depth": 2,
+      "row_count": 1000,
+      "baseline_seconds": 0.0004682216796254579,
+      "optimized_single_core_seconds": 0.0004957392577580322,
+      "optimized_parallel_seconds": 0.0005533505859602883
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 128,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 10000,
-      "baseline_seconds": 0.07606674999988172,
-      "optimized_single_core_seconds": 0.095683708001161,
-      "optimized_parallel_seconds": 0.09581691700441297
+      "baseline_seconds": 0.004561614562589966,
+      "optimized_single_core_seconds": 0.004813578124412743,
+      "optimized_parallel_seconds": 0.004433958375557268
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 128,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 100000,
-      "baseline_seconds": 1.0082414999924367,
-      "optimized_single_core_seconds": 1.2806708320131293,
-      "optimized_parallel_seconds": 1.2907806659932248
+      "baseline_seconds": 0.06041624999488704,
+      "optimized_single_core_seconds": 0.06323312500899192,
+      "optimized_parallel_seconds": 0.056486792003852315
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 128,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 1000000,
-      "baseline_seconds": 8.120845999917947,
-      "optimized_single_core_seconds": 10.46018932806328,
-      "optimized_parallel_seconds": 10.360581343993545
+      "baseline_seconds": 0.483269999967888,
+      "optimized_single_core_seconds": 0.504793000058271,
+      "optimized_parallel_seconds": 0.4516466719796881
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 128,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 2,
+      "measured_depth": 2,
       "row_count": 10000000,
-      "baseline_seconds": 77.19935014861403,
-      "optimized_single_core_seconds": 99.88297087471437,
-      "optimized_parallel_seconds": 99.96502982345555
+      "baseline_seconds": 4.569571286272549,
+      "optimized_single_core_seconds": 4.81967533754505,
+      "optimized_parallel_seconds": 4.298034537023341
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 128,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 782.7494279035745,
-      "optimized_single_core_seconds": 994.9500924994209,
-      "optimized_parallel_seconds": 1007.1786309372983
+      "tree_type": "oblivious",
+      "requested_depth": 4,
+      "measured_depth": 4,
+      "row_count": 1000,
+      "baseline_seconds": 0.0006118502578829066,
+      "optimized_single_core_seconds": 0.0006667197266096991,
+      "optimized_parallel_seconds": 0.0006993414688167832
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 256,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 4,
+      "measured_depth": 4,
       "row_count": 10000,
-      "baseline_seconds": 0.15095991700218292,
-      "optimized_single_core_seconds": 0.19162954100465868,
-      "optimized_parallel_seconds": 0.19203724999533733
+      "baseline_seconds": 0.005980718749924563,
+      "optimized_single_core_seconds": 0.006495953124613152,
+      "optimized_parallel_seconds": 0.0058701301877590595
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 256,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 4,
+      "measured_depth": 4,
       "row_count": 100000,
-      "baseline_seconds": 2.010670581992599,
-      "optimized_single_core_seconds": 2.674358083997504,
-      "optimized_parallel_seconds": 2.6579205000016373
+      "baseline_seconds": 0.078794042012305,
+      "optimized_single_core_seconds": 0.08562750001146924,
+      "optimized_parallel_seconds": 0.07588200000463985
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 256,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 4,
+      "measured_depth": 4,
       "row_count": 1000000,
-      "baseline_seconds": 16.17855732794851,
-      "optimized_single_core_seconds": 21.37814399995841,
-      "optimized_parallel_seconds": 21.412278671981767
+      "baseline_seconds": 0.6426020000362769,
+      "optimized_single_core_seconds": 0.6787340000737458,
+      "optimized_parallel_seconds": 0.5895733359502628
     },
     {
-      "tree_type": "cart",
-      "requested_depth": 256,
-      "measured_depth": 1,
+      "tree_type": "oblivious",
+      "requested_depth": 4,
+      "measured_depth": 4,
       "row_count": 10000000,
-      "baseline_seconds": 154.50281710131821,
-      "optimized_single_core_seconds": 205.01342742609268,
-      "optimized_parallel_seconds": 204.14021175080416
-    },
-    {
-      "tree_type": "cart",
-      "requested_depth": 256,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 1549.726565409277,
-      "optimized_single_core_seconds": 2042.4646543423587,
-      "optimized_parallel_seconds": 2040.4840329911822
+      "baseline_seconds": 5.974015662912279,
+      "optimized_single_core_seconds": 6.5293769739655545,
+      "optimized_parallel_seconds": 5.866906099705375
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.00783514062550239,
-      "optimized_single_core_seconds": 0.008300833374960348,
-      "optimized_parallel_seconds": 0.008213958374653885
+      "measured_depth": 8,
+      "row_count": 1000,
+      "baseline_seconds": 0.0009105735623506916,
+      "optimized_single_core_seconds": 0.0010191503906753496,
+      "optimized_parallel_seconds": 0.0009459140626404405
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 0.10290508400066756,
-      "optimized_single_core_seconds": 0.10960833399440162,
-      "optimized_parallel_seconds": 0.10579991599661298
+      "measured_depth": 8,
+      "row_count": 10000,
+      "baseline_seconds": 0.008625015623692889,
+      "optimized_single_core_seconds": 0.010233307375528966,
+      "optimized_parallel_seconds": 0.008395088500037673
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 0.8194826720282435,
-      "optimized_single_core_seconds": 0.8720593280158937,
-      "optimized_parallel_seconds": 0.8422033439856023
+      "measured_depth": 8,
+      "row_count": 100000,
+      "baseline_seconds": 0.11266216600779444,
+      "optimized_single_core_seconds": 0.12656858199625276,
+      "optimized_parallel_seconds": 0.10716258399770595
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
-      "measured_depth": 1,
-      "row_count": 10000000,
-      "baseline_seconds": 7.838190000700706,
-      "optimized_single_core_seconds": 8.312783300323645,
-      "optimized_parallel_seconds": 8.00233987547108
+      "measured_depth": 8,
+      "row_count": 1000000,
+      "baseline_seconds": 0.8965559999924153,
+      "optimized_single_core_seconds": 1.0164973440114409,
+      "optimized_parallel_seconds": 0.8524526560213417
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 78.0620218343538,
-      "optimized_single_core_seconds": 82.65674374825903,
-      "optimized_parallel_seconds": 80.05014500269317
+      "measured_depth": 8,
+      "row_count": 10000000,
+      "baseline_seconds": 8.591479074719246,
+      "optimized_single_core_seconds": 9.663435476380982,
+      "optimized_parallel_seconds": 8.245399501072825
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.012368395749945194,
-      "optimized_single_core_seconds": 0.013283833499372122,
-      "optimized_parallel_seconds": 0.013230916749307653
+      "measured_depth": 16,
+      "row_count": 1000,
+      "baseline_seconds": 0.001435268234445175,
+      "optimized_single_core_seconds": 0.0016601992188043369,
+      "optimized_parallel_seconds": 0.001511593093709962
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 0.16261933400528505,
-      "optimized_single_core_seconds": 0.1743563339987304,
-      "optimized_parallel_seconds": 0.17094608399202116
+      "measured_depth": 16,
+      "row_count": 10000,
+      "baseline_seconds": 0.01452672900268226,
+      "optimized_single_core_seconds": 0.016391698001825716,
+      "optimized_parallel_seconds": 0.013699479000933934
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 1.2943513279315084,
-      "optimized_single_core_seconds": 1.3934446559287608,
-      "optimized_parallel_seconds": 1.358849327894859
+      "measured_depth": 16,
+      "row_count": 100000,
+      "baseline_seconds": 0.18938008401892148,
+      "optimized_single_core_seconds": 0.21436666601221077,
+      "optimized_parallel_seconds": 0.17696691601304337
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 10000000,
-      "baseline_seconds": 12.436917273138533,
-      "optimized_single_core_seconds": 13.318254801088187,
-      "optimized_parallel_seconds": 13.099044050628436
+      "measured_depth": 16,
+      "row_count": 1000000,
+      "baseline_seconds": 1.5104046559426934,
+      "optimized_single_core_seconds": 1.714007344096899,
+      "optimized_parallel_seconds": 1.4112826560158283
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 123.5111972472514,
-      "optimized_single_core_seconds": 133.09320608752023,
-      "optimized_parallel_seconds": 130.19920965643541
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.021427510251669446,
-      "optimized_single_core_seconds": 0.02331668749866367,
-      "optimized_parallel_seconds": 0.023237270999743487
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 0.2865298340038862,
-      "optimized_single_core_seconds": 0.3105705000052694,
-      "optimized_parallel_seconds": 0.30710474999796133
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 2.29213132802397,
-      "optimized_single_core_seconds": 2.4825379999820143,
-      "optimized_parallel_seconds": 2.453043328016065
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 32,
-      "measured_depth": 1,
+      "measured_depth": 16,
       "row_count": 10000000,
-      "baseline_seconds": 21.97189012486342,
-      "optimized_single_core_seconds": 23.746211999256047,
-      "optimized_parallel_seconds": 23.428207773140457
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 32,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 217.5092996575404,
-      "optimized_single_core_seconds": 236.26975290625705,
-      "optimized_parallel_seconds": 233.70836191072885
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 64,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.04005993750251946,
-      "optimized_single_core_seconds": 0.04345400000238442,
-      "optimized_parallel_seconds": 0.04356968749925727
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 64,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 0.5823946660093497,
-      "optimized_single_core_seconds": 0.6278650839958573,
-      "optimized_parallel_seconds": 0.6253059159935219
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 64,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 4.674037328106351,
-      "optimized_single_core_seconds": 5.040781327988952,
-      "optimized_parallel_seconds": 5.01842667197343
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 64,
-      "measured_depth": 1,
-      "row_count": 10000000,
-      "baseline_seconds": 44.67796987572365,
-      "optimized_single_core_seconds": 48.237304499649326,
-      "optimized_parallel_seconds": 47.83414949897997
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 64,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 443.9926894274686,
-      "optimized_single_core_seconds": 479.8397005887382,
-      "optimized_parallel_seconds": 476.67426691707806
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 128,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.07709991699812235,
-      "optimized_single_core_seconds": 0.08416358300019056,
-      "optimized_parallel_seconds": 0.08408604199939873
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 128,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 1.0284674180002185,
-      "optimized_single_core_seconds": 1.1187466680130456,
-      "optimized_parallel_seconds": 1.1208049160049995
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 128,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 8.340052000014111,
-      "optimized_single_core_seconds": 9.124106672010385,
-      "optimized_parallel_seconds": 8.956200656015426
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 128,
-      "measured_depth": 1,
-      "row_count": 10000000,
-      "baseline_seconds": 79.6430087733388,
-      "optimized_single_core_seconds": 86.71762687511364,
-      "optimized_parallel_seconds": 86.58934907417279
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 128,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 798.777069998323,
-      "optimized_single_core_seconds": 867.435052754081,
-      "optimized_parallel_seconds": 868.1345970879338
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 256,
-      "measured_depth": 1,
-      "row_count": 10000,
-      "baseline_seconds": 0.15981108399864752,
-      "optimized_single_core_seconds": 0.17507804200431565,
-      "optimized_parallel_seconds": 0.1768065829965053
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 256,
-      "measured_depth": 1,
-      "row_count": 100000,
-      "baseline_seconds": 2.040558749999036,
-      "optimized_single_core_seconds": 2.214540000000852,
-      "optimized_parallel_seconds": 2.2134707499935757
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 256,
-      "measured_depth": 1,
-      "row_count": 1000000,
-      "baseline_seconds": 16.388236671919003,
-      "optimized_single_core_seconds": 17.743185327970423,
-      "optimized_parallel_seconds": 17.737571344012395
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 256,
-      "measured_depth": 1,
-      "row_count": 10000000,
-      "baseline_seconds": 156.9399221253043,
-      "optimized_single_core_seconds": 169.94584639848472,
-      "optimized_parallel_seconds": 169.95852642569662
-    },
-    {
-      "tree_type": "oblivious",
-      "requested_depth": 256,
-      "measured_depth": 1,
-      "row_count": 100000000,
-      "baseline_seconds": 1563.8870198460936,
-      "optimized_single_core_seconds": 1697.9206219116313,
-      "optimized_parallel_seconds": 1702.8417826818913
+      "baseline_seconds": 14.493039751279866,
+      "optimized_single_core_seconds": 16.396818751221872,
+      "optimized_parallel_seconds": 13.510033876489615
     }
   ]
 }
