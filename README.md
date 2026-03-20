@@ -338,11 +338,13 @@ This produces an optimized runtime object that preserves exactly the same semant
 
 The optimized runtime does a few different things:
 
-- standard trees are converted into prediction-only node layouts
-- binary splits use array-indexed child selection instead of repeated `if/else` branching
+- CART-style binary trees are lowered into prediction-only fallthrough/jump layouts
+- binary splits use array-indexed or fallthrough child selection instead of repeated training-structure branching
 - multiway classifier splits precompute a dense bin-to-child lookup table, replacing per-row linear search over branches
 - oblivious trees are stored as compact per-level feature and threshold arrays, then evaluated by accumulating the leaf index directly
-- raw inference inputs are converted into a row-major binned matrix, which improves cache locality during repeated row traversal
+- multi-row inputs are preprocessed together before scoring
+- compiled binary and oblivious runtimes convert those rows into column-major binned matrices so one split can scan many rows in one pass
+- `LazyFrame` inputs are streamed in batches of about `10_000` rows instead of being collected into one giant materialized dataframe first
 - batch prediction is parallelized across rows with a dedicated Rayon thread pool created by `optimize_inference(...)`
 
 ### How each optimization affects low-level compute
@@ -370,19 +372,23 @@ At the CPU level this reduces:
 
 In practice, that matters most for standard trees, where every scored row walks a chain of nodes and repeatedly touches that node memory.
 
-#### 2. Branch-reduced binary traversal
+#### 2. Compiled CART-style fallthrough traversal
 
-Standard binary splits are still logically a branch, but the optimized path makes the hot step simpler:
+For binary trees, the optimized runtime lowers each node into a compact branch record:
 
-- compute `go_right` as `0` or `1`
-- select the next child from a two-slot array
+- feature index
+- threshold bin
+- one jump target
+- one “jump when predicate is true/false” flag
 
-That does two things:
+The more common child is laid out as the next node in memory, and the less common child becomes the explicit jump target. That is the same general idea used by highly tuned tree runtimes: keep the hot branch as fallthrough and pay the jump only for the less common path.
 
-- it gives the compiler a tighter inner loop with fewer shape-specific decisions
-- it reduces the amount of unpredictable control flow compared with a more general match-heavy traversal
+At the CPU level this reduces:
 
-This matters because tree inference is full of hard-to-predict branches. On mixed data, consecutive rows often diverge quickly, so branch predictors are less effective than they are in regular numeric kernels.
+- child-pointer loads
+- node size
+- unpredictable control flow in the hot loop
+- wasted instruction-cache space on training-only structure
 
 #### 3. Dense lookup for multiway splits
 
@@ -430,23 +436,41 @@ At the hardware level this is much more regular than standard-tree traversal:
 
 That is why oblivious trees are usually the easiest tree family to push toward very high inference throughput.
 
-#### 5. Row-major binned inference matrix
+#### 5. Whole-batch preprocessing and column-major binned matrices
 
-The optimized runtime first turns inference inputs into a compact binned matrix. Conceptually, each row becomes a short contiguous array of `u16` bin ids.
+The optimized runtime preprocesses multi-row inputs as a batch before traversal. For the compiled binary and oblivious kernels, those batches are then rearranged into column-major `u16` bin matrices.
 
 Why that helps:
 
-- row traversal reads contiguous memory instead of recomputing or fetching feature state through a more abstract interface
+- one split can scan the same feature column across many rows
+- repeated threshold checks hit a compact `u16` buffer instead of raw `f64` values
 - bin ids are much smaller than raw `f64` values, so more working set fits in cache
-- repeated prediction over the same batch touches a dense, regular layout that CPUs handle well
+- rows can be partitioned in-place by branch outcome without re-reading the full input object model
 
 This especially helps when:
 
 - there are many rows
-- trees touch multiple features per prediction
+- compiled binary trees touch multiple splits per prediction
 - raw input coercion is already done and traversal becomes the main cost
 
-#### 6. Row-parallel batch scoring
+#### 6. Batch partitioning for compiled binary trees
+
+For compiled CART-style trees, the optimized runtime does not walk each row independently through the full tree. Instead, it keeps a mutable row-index buffer for a batch chunk and partitions that buffer at each node into:
+
+- rows that fall through
+- rows that jump
+
+Then each child subtree works on its own contiguous row segment.
+
+Low-level effect:
+
+- one feature column is read across many rows before moving on
+- branch decisions become data partition work rather than “full tree traversal per row”
+- the predictor touches fewer unrelated cache lines at once
+
+This is the closest part of the runtime to the “compiled tree evaluation” style used by tools like Treelite and lleaves: not source-code generation, but a lowered execution form designed around whole-batch traversal rather than the original training objects.
+
+#### 7. Row-parallel batch scoring
 
 Batch prediction is embarrassingly parallel across rows. `optimize_inference(...)` therefore builds a dedicated inference thread pool and parallelizes over rows once the batch is large enough.
 
@@ -463,6 +487,17 @@ That is a good CPU pattern because:
 - scaling is usually limited by memory hierarchy and branch behavior rather than lock overhead
 
 This optimization helps most on larger batches. On tiny batches, thread scheduling and setup costs can dominate.
+
+#### 8. LazyFrame streaming
+
+`polars.LazyFrame` inputs are treated differently from already materialized arrays/dataframes:
+
+- the lazy query is sliced into batches of about `10_000` rows
+- each batch is collected
+- that batch is preprocessed and scored
+- predictions are appended in order
+
+This avoids materializing an arbitrarily large lazy result all at once while still letting each collected batch benefit from the same compiled/batched predictor path.
 
 ### Why this is faster
 
@@ -482,9 +517,11 @@ The biggest gains usually come from:
 
 - large prediction batches, where row-parallel execution can keep all requested cores busy
 - deeper standard trees, where branch-reduced traversal matters more
+- compiled binary trees, where fallthrough layout and batch partitioning reduce traversal overhead
 - classifier trees with multiway nodes, because the dense child lookup avoids repeated branch search
 - repeated scoring workloads, where the one-time optimization cost is amortized across many predictions
 - dense numeric or mixed tabular batches, where traversal cost dominates once preprocessing has been done
+- large lazyframe predictions, where `10_000`-row batching avoids full eager materialization
 
 ### Where it helps less
 
@@ -494,6 +531,7 @@ The gains are usually smaller for:
 - `target_mean`, because its inference path is already trivial
 - very shallow trees, where there is little branch structure to optimize away
 - cases where input coercion dominates total latency more than model traversal does
+- oblivious single-core scoring, where the extra batch-layout conversion can still outweigh the traversal savings on some workloads
 
 ### Why this also matters for future GPU work
 

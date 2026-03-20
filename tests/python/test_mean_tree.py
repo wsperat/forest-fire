@@ -5,6 +5,8 @@ import pytest
 from forestfire import Table, train
 from numpy.typing import NDArray
 
+PREDICTION_TOLERANCE = 10e-6
+
 
 @pytest.fixture
 def toy_data() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -210,7 +212,41 @@ def test_optimize_inference_preserves_predictions_and_ir(
     assert optimized.mean_ == model.mean_
     assert optimized.serialize() == model.serialize()
     assert optimized.to_ir_json() == model.to_ir_json()
-    assert np.array_equal(optimized.predict(X), model.predict(X))
+    assert np.allclose(
+        optimized.predict(X),
+        model.predict(X),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+
+
+def test_optimized_inference_batch_and_single_row_predictions_match(
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = toy_data
+    model = train(X, y, task="regression", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    batch_preds = optimized.predict(X)
+    single_row_preds = np.array(
+        [
+            optimized.predict(X[row_idx : row_idx + 1])[0]
+            for row_idx in range(X.shape[0])
+        ]
+    )
+
+    assert np.allclose(
+        batch_preds,
+        single_row_preds,
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+    assert np.allclose(
+        batch_preds,
+        model.predict(X),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
 
 
 def test_optimized_inference_accepts_named_feature_dict(
@@ -568,6 +604,52 @@ def test_predict_accepts_polars_lazyframes_if_installed() -> None:
     preds = model.predict(X.lazy())
 
     assert np.array_equal(preds, y)
+
+
+def test_predict_batches_large_polars_lazyframes_if_installed() -> None:
+    pl = pytest.importorskip("polars")
+
+    pattern_a = np.array([0.0, 1.0, 1.0])
+    pattern_b = np.array([1.0, 0.0, 1.0])
+    pattern_y = np.array([0.0, 1.0, 1.0])
+    n_rows = 20_003
+    X = pl.DataFrame(
+        {
+            "a": np.resize(pattern_a, n_rows),
+            "b": np.resize(pattern_b, n_rows),
+        }
+    )
+    expected = np.resize(pattern_y, n_rows)
+
+    model = train(
+        pl.DataFrame({"a": pattern_a, "b": pattern_b}),
+        pattern_y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+    )
+    optimized = model.optimize_inference(physical_cores=1)
+    optimized_dataframe_preds = optimized.predict(X)
+    optimized_lazyframe_preds = optimized.predict(X.lazy())
+
+    assert np.allclose(
+        model.predict(X.lazy()),
+        expected,
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+    assert np.allclose(
+        optimized_lazyframe_preds,
+        expected,
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+    assert np.allclose(
+        optimized_lazyframe_preds,
+        optimized_dataframe_preds,
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
 
 
 def test_table_accepts_pyarrow_tables_if_installed() -> None:

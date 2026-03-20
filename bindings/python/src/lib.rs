@@ -8,6 +8,8 @@ use pyo3::types::{PyDict, PyType};
 use pyo3::{Bound, prelude::*};
 use std::collections::BTreeMap;
 
+const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
+
 #[pyclass(name = "Model")]
 struct PyModel {
     inner: Model,
@@ -110,6 +112,83 @@ fn build_inference_input(x: &Bound<PyAny>) -> PyResult<InferenceInput> {
 
 fn is_scipy_sparse_matrix(x: &Bound<PyAny>) -> PyResult<bool> {
     Ok(x.hasattr("getnnz")? && x.hasattr("nonzero")?)
+}
+
+fn is_polars_lazyframe(x: &Bound<PyAny>) -> PyResult<bool> {
+    if !(x.hasattr("collect")? && x.hasattr("slice")?) {
+        return Ok(false);
+    }
+
+    let class = x.getattr("__class__")?;
+    let name: String = class.getattr("__name__")?.extract()?;
+    let module: String = class.getattr("__module__")?.extract()?;
+    Ok(name == "LazyFrame" && module.starts_with("polars"))
+}
+
+fn row_count(x: &Bound<PyAny>) -> PyResult<usize> {
+    if x.hasattr("height")? {
+        return x.getattr("height")?.extract();
+    }
+
+    if x.hasattr("shape")? {
+        let shape: Vec<usize> = x.getattr("shape")?.extract()?;
+        return Ok(shape.first().copied().unwrap_or(0));
+    }
+
+    x.len()
+}
+
+fn predict_lazyframe_in_batches<F>(x: &Bound<PyAny>, predict_batch: F) -> PyResult<Vec<f64>>
+where
+    F: Fn(InferenceInput) -> PyResult<Vec<f64>>,
+{
+    let mut predictions = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let sliced = x.call_method1("slice", (offset, LAZYFRAME_PREDICT_BATCH_ROWS))?;
+        let batch = sliced.call_method0("collect")?;
+        let height = row_count(&batch)?;
+        if height == 0 {
+            break;
+        }
+        predictions.extend(predict_batch(build_inference_input(&batch)?)?);
+        if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+            break;
+        }
+        offset += height;
+    }
+    Ok(predictions)
+}
+
+fn predict_input_with_model(model: &Model, input: InferenceInput) -> PyResult<Vec<f64>> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    }
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+fn predict_input_with_optimized_model(
+    model: &CoreOptimizedModel,
+    input: InferenceInput,
+) -> PyResult<Vec<f64>> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    }
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
 fn build_sparse_training_table(
@@ -560,19 +639,11 @@ impl PyModel {
         py: Python<'py>,
         x: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let preds = match build_inference_input(x)? {
-            InferenceInput::Rows(rows) => self.inner.predict_rows(rows),
-            InferenceInput::NamedColumns(columns) => self.inner.predict_named_columns(columns),
-            InferenceInput::SparseBinaryColumns {
-                n_rows,
-                n_features,
-                columns,
-            } => self
-                .inner
-                .predict_sparse_binary_columns(n_rows, n_features, columns),
-            InferenceInput::TrainingTable(table) => Ok(self.inner.predict_table(&table)),
-        }
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        let preds = if is_polars_lazyframe(x)? {
+            predict_lazyframe_in_batches(x, |input| predict_input_with_model(&self.inner, input))?
+        } else {
+            predict_input_with_model(&self.inner, build_inference_input(x)?)?
+        };
         Ok(PyArray1::from_vec(py, preds))
     }
 
@@ -638,19 +709,13 @@ impl PyOptimizedModel {
         py: Python<'py>,
         x: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let preds = match build_inference_input(x)? {
-            InferenceInput::Rows(rows) => self.inner.predict_rows(rows),
-            InferenceInput::NamedColumns(columns) => self.inner.predict_named_columns(columns),
-            InferenceInput::SparseBinaryColumns {
-                n_rows,
-                n_features,
-                columns,
-            } => self
-                .inner
-                .predict_sparse_binary_columns(n_rows, n_features, columns),
-            InferenceInput::TrainingTable(table) => Ok(self.inner.predict_table(&table)),
-        }
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        let preds = if is_polars_lazyframe(x)? {
+            predict_lazyframe_in_batches(x, |input| {
+                predict_input_with_optimized_model(&self.inner, input)
+            })?
+        } else {
+            predict_input_with_optimized_model(&self.inner, build_inference_input(x)?)?
+        };
         Ok(PyArray1::from_vec(py, preds))
     }
 

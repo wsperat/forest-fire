@@ -151,11 +151,13 @@ The returned `OptimizedModel` predicts the same values and serializes to the sam
 
 ### What it changes internally
 
-- standard trees are converted into compact prediction-only node layouts
-- binary splits pick the next child by array index instead of repeated branching
+- CART-style binary trees are lowered into compact fallthrough/jump layouts
+- binary splits pick the next child by fallthrough or one stored jump instead of the original training structure
 - multiway classifier splits use a dense bin lookup table instead of scanning the branch list
 - oblivious trees are evaluated from compact level arrays into a leaf index
-- inference batches are converted into a row-major binned matrix
+- multi-row inputs are preprocessed together before scoring
+- compiled binary and oblivious runtimes use column-major binned matrices so one split can scan many rows at once
+- `polars.LazyFrame` inputs are collected and scored in batches of about `10_000` rows
 - row batches are scored in parallel across the requested physical cores
 
 ### What that means at the CPU level
@@ -164,9 +166,9 @@ The returned `OptimizedModel` predicts the same values and serializes to the sam
 
 The optimized runtime removes training-only fields from the hot prediction path. That reduces object size, cache pressure, and the amount of general-case logic the predictor loop has to carry around.
 
-#### Binary split child selection
+#### Compiled CART-style fallthrough layout
 
-Instead of a more general branch-heavy step, the optimized runtime computes a `0` or `1` decision and indexes directly into a two-child array. The goal is not to remove all branching, but to make the inner loop simpler and more compiler-friendly.
+For binary trees, the optimized runtime keeps the more common child as the next node in memory and stores only the less common branch as an explicit jump target. That shrinks the hot node representation and reduces branch-heavy traversal logic.
 
 #### Dense lookup for multiway nodes
 
@@ -176,20 +178,30 @@ For multiway classifier nodes, the optimized runtime replaces “scan branches u
 
 Oblivious trees become a sequence of feature-index and threshold arrays plus a final leaf array. Scoring becomes a fixed loop that accumulates a leaf index, which is much more regular than standard pointer-chasing tree traversal.
 
-#### Row-major binned batches
+#### Whole-batch preprocessing and column-major batches
 
-Inference inputs are converted into compact bin ids before the optimized traversal runs. That makes row access denser and smaller than working directly from raw `float64` values, which usually improves cache behavior on larger batches.
+Inference inputs are converted into compact bin ids before the optimized traversal runs. For compiled binary and oblivious runtimes, those bins are arranged column-major so the predictor can read one feature across many rows before moving on.
+
+#### Batch partitioning for compiled binary trees
+
+Compiled CART-style trees operate on row batches, not just one row at a time. At each node, the runtime partitions a row-index buffer into “fallthrough” and “jump” segments, then continues traversal on those contiguous row slices. That keeps feature reads and branch outcomes grouped together.
 
 #### Row-parallel scoring
 
 Rows are independent at prediction time, so the optimized runtime parallelizes across them with a dedicated thread pool. That keeps the model read-only and shared while each worker operates on separate rows.
 
+#### LazyFrame streaming
+
+`polars.LazyFrame` inputs are not collected all at once. They are sliced into batches of roughly `10_000` rows, collected, preprocessed, scored, and appended in order. That keeps memory usage bounded while still benefiting from the optimized batch kernels.
+
 ### Where it helps most
 
 - large prediction batches
 - deeper trees
+- compiled binary trees
 - multiway classifiers
 - repeated scoring of the same model
+- large lazyframe predictions
 
 ### Where it helps less
 
@@ -197,6 +209,7 @@ Rows are independent at prediction time, so the optimized runtime parallelizes a
 - `target_mean`
 - very shallow trees
 - workloads dominated by input conversion instead of traversal
+- some single-core oblivious workloads, where layout conversion can still dominate
 
 ### Why the IR stays the same
 

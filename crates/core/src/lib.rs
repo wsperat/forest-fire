@@ -1,6 +1,6 @@
 use forestfire_data::{BinnedColumnKind, TableAccess, numeric_bin_boundaries};
 #[cfg(feature = "polars")]
-use polars::prelude::{Column, DataFrame, DataType, LazyFrame};
+use polars::prelude::{Column, DataFrame, DataType, IdxSize, LazyFrame};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use schemars::JsonSchema;
@@ -37,7 +37,10 @@ pub use tree::regressor::train_oblivious_regressor;
 const OPTIMIZED_MULTIWAY_LOOKUP_SIZE: usize = 512;
 const PARALLEL_INFERENCE_ROW_THRESHOLD: usize = 256;
 const PARALLEL_INFERENCE_CHUNK_ROWS: usize = 256;
+const STANDARD_BATCH_INFERENCE_CHUNK_ROWS: usize = 4096;
 const OBLIVIOUS_SIMD_LANES: usize = 8;
+#[cfg(feature = "polars")]
+const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
@@ -787,7 +790,7 @@ impl OptimizedModel {
     }
 
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
-        if self.runtime.supports_simd_batch() {
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = ColumnMajorBinnedMatrix::from_table_access(table);
             return self.predict_column_major_binned_matrix(&matrix);
         }
@@ -799,7 +802,7 @@ impl OptimizedModel {
 
     pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
         let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
-        if self.runtime.supports_simd_batch() {
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
@@ -813,7 +816,7 @@ impl OptimizedModel {
     ) -> Result<Vec<f64>, PredictError> {
         let table =
             InferenceTable::from_named_columns(columns, self.source_model.feature_preprocessing())?;
-        if self.runtime.supports_simd_batch() {
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
@@ -833,7 +836,7 @@ impl OptimizedModel {
             columns,
             self.source_model.feature_preprocessing(),
         )?;
-        if self.runtime.supports_simd_batch() {
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
@@ -849,8 +852,24 @@ impl OptimizedModel {
 
     #[cfg(feature = "polars")]
     pub fn predict_polars_lazyframe(&self, lf: &LazyFrame) -> Result<Vec<f64>, PredictError> {
-        let df = lf.clone().collect()?;
-        self.predict_polars_dataframe(&df)
+        let mut predictions = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let batch = lf
+                .clone()
+                .slice(offset, LAZYFRAME_PREDICT_BATCH_ROWS as IdxSize)
+                .collect()?;
+            let height = batch.height();
+            if height == 0 {
+                break;
+            }
+            predictions.extend(self.predict_polars_dataframe(&batch)?);
+            if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+                break;
+            }
+            offset += height as i64;
+        }
+        Ok(predictions)
     }
 
     pub fn algorithm(&self) -> TrainAlgorithm {
@@ -900,12 +919,18 @@ impl OptimizedModel {
 }
 
 impl OptimizedRuntime {
-    fn supports_simd_batch(&self) -> bool {
+    fn supports_batch_matrix(&self) -> bool {
         matches!(
             self,
-            OptimizedRuntime::ObliviousClassifier { .. }
+            OptimizedRuntime::BinaryClassifier { .. }
+                | OptimizedRuntime::BinaryRegressor { .. }
+                | OptimizedRuntime::ObliviousClassifier { .. }
                 | OptimizedRuntime::ObliviousRegressor { .. }
         )
+    }
+
+    fn should_use_batch_matrix(&self, n_rows: usize) -> bool {
+        n_rows > 1 && self.supports_batch_matrix()
     }
 
     fn from_model(model: &Model) -> Self {
@@ -1057,6 +1082,9 @@ impl OptimizedRuntime {
         executor: &InferenceExecutor,
     ) -> Vec<f64> {
         match self {
+            OptimizedRuntime::BinaryClassifier { nodes } => {
+                predict_binary_classifier_column_major_matrix(nodes, matrix, executor)
+            }
             OptimizedRuntime::ObliviousClassifier {
                 feature_indices,
                 threshold_bins,
@@ -1073,6 +1101,9 @@ impl OptimizedRuntime {
                 matrix,
                 executor,
             ),
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_column_major_matrix(nodes, matrix, executor)
+            }
             _ => executor.predict_rows(matrix.n_rows, |row_index| {
                 self.predict_binned_row_from_columns(matrix, row_index)
             }),
@@ -1209,6 +1240,142 @@ where
                 } else {
                     node_index + 1
                 };
+            }
+        }
+    }
+}
+
+fn predict_binary_classifier_column_major_matrix(
+    nodes: &[OptimizedBinaryClassifierNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    executor: &InferenceExecutor,
+) -> Vec<f64> {
+    let mut outputs = vec![0.0; matrix.n_rows];
+    executor.fill_chunks(
+        &mut outputs,
+        STANDARD_BATCH_INFERENCE_CHUNK_ROWS,
+        |start_row, chunk| predict_binary_classifier_chunk(nodes, matrix, start_row, chunk),
+    );
+    outputs
+}
+
+fn predict_binary_classifier_chunk(
+    nodes: &[OptimizedBinaryClassifierNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) {
+    let mut row_indices: Vec<usize> = (0..output.len()).collect();
+    let mut stack = vec![(0usize, 0usize, output.len())];
+
+    while let Some((node_index, start, end)) = stack.pop() {
+        match &nodes[node_index] {
+            OptimizedBinaryClassifierNode::Leaf(value) => {
+                for position in start..end {
+                    output[row_indices[position]] = *value;
+                }
+            }
+            OptimizedBinaryClassifierNode::Branch {
+                feature_index,
+                threshold_bin,
+                jump_index,
+                jump_if_greater,
+            } => {
+                let fallthrough_index = node_index + 1;
+                if *jump_index == fallthrough_index {
+                    stack.push((fallthrough_index, start, end));
+                    continue;
+                }
+
+                let column = matrix.column(*feature_index);
+                let mut partition = start;
+                let mut jump_start = end;
+                while partition < jump_start {
+                    let row_offset = row_indices[partition];
+                    let go_right = column[start_row + row_offset] > *threshold_bin;
+                    let goes_jump = go_right == *jump_if_greater;
+                    if goes_jump {
+                        jump_start -= 1;
+                        row_indices.swap(partition, jump_start);
+                    } else {
+                        partition += 1;
+                    }
+                }
+
+                if jump_start < end {
+                    stack.push((*jump_index, jump_start, end));
+                }
+                if start < jump_start {
+                    stack.push((fallthrough_index, start, jump_start));
+                }
+            }
+        }
+    }
+}
+
+fn predict_binary_regressor_column_major_matrix(
+    nodes: &[OptimizedBinaryRegressorNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    executor: &InferenceExecutor,
+) -> Vec<f64> {
+    let mut outputs = vec![0.0; matrix.n_rows];
+    executor.fill_chunks(
+        &mut outputs,
+        STANDARD_BATCH_INFERENCE_CHUNK_ROWS,
+        |start_row, chunk| predict_binary_regressor_chunk(nodes, matrix, start_row, chunk),
+    );
+    outputs
+}
+
+fn predict_binary_regressor_chunk(
+    nodes: &[OptimizedBinaryRegressorNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) {
+    let mut row_indices: Vec<usize> = (0..output.len()).collect();
+    let mut stack = vec![(0usize, 0usize, output.len())];
+
+    while let Some((node_index, start, end)) = stack.pop() {
+        match &nodes[node_index] {
+            OptimizedBinaryRegressorNode::Leaf(value) => {
+                for position in start..end {
+                    output[row_indices[position]] = *value;
+                }
+            }
+            OptimizedBinaryRegressorNode::Branch {
+                feature_index,
+                threshold_bin,
+                jump_index,
+                jump_if_greater,
+            } => {
+                let fallthrough_index = node_index + 1;
+                if *jump_index == fallthrough_index {
+                    stack.push((fallthrough_index, start, end));
+                    continue;
+                }
+
+                let column = matrix.column(*feature_index);
+                let mut partition = start;
+                let mut jump_start = end;
+                while partition < jump_start {
+                    let row_offset = row_indices[partition];
+                    let go_right = column[start_row + row_offset] > *threshold_bin;
+                    let goes_jump = go_right == *jump_if_greater;
+                    if goes_jump {
+                        jump_start -= 1;
+                        row_indices.swap(partition, jump_start);
+                    } else {
+                        partition += 1;
+                    }
+                }
+
+                if jump_start < end {
+                    stack.push((*jump_index, jump_start, end));
+                }
+                if start < jump_start {
+                    stack.push((fallthrough_index, start, jump_start));
+                }
             }
         }
     }
@@ -1695,8 +1862,24 @@ impl Model {
 
     #[cfg(feature = "polars")]
     pub fn predict_polars_lazyframe(&self, lf: &LazyFrame) -> Result<Vec<f64>, PredictError> {
-        let df = lf.clone().collect()?;
-        self.predict_polars_dataframe(&df)
+        let mut predictions = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let batch = lf
+                .clone()
+                .slice(offset, LAZYFRAME_PREDICT_BATCH_ROWS as IdxSize)
+                .collect()?;
+            let height = batch.height();
+            if height == 0 {
+                break;
+            }
+            predictions.extend(self.predict_polars_dataframe(&batch)?);
+            if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+                break;
+            }
+            offset += height as i64;
+        }
+        Ok(predictions)
     }
 
     pub fn algorithm(&self) -> TrainAlgorithm {
@@ -1883,6 +2066,22 @@ mod tests {
     #[cfg(feature = "polars")]
     use polars::prelude::{DataFrame, IntoLazy, NamedFrom, Series};
     use std::collections::BTreeMap;
+
+    const PREDICTION_TOLERANCE: f64 = 10e-6;
+
+    fn assert_predictions_close(left: &[f64], right: &[f64]) {
+        assert_eq!(left.len(), right.len());
+        for (idx, (lhs, rhs)) in left.iter().zip(right.iter()).enumerate() {
+            assert!(
+                (lhs - rhs).abs() <= PREDICTION_TOLERANCE,
+                "prediction mismatch at index {}: left={} right={} tolerance={}",
+                idx,
+                lhs,
+                rhs,
+                PREDICTION_TOLERANCE
+            );
+        }
+    }
 
     #[test]
     fn unified_train_dispatches_regression_cart() {
@@ -2432,15 +2631,17 @@ mod tests {
 
         assert_eq!(model.to_ir_json().unwrap(), optimized.to_ir_json().unwrap());
         assert_eq!(model.serialize().unwrap(), optimized.serialize().unwrap());
-        assert_eq!(model.predict_table(&table), optimized.predict_table(&table));
-        assert_eq!(
-            model
-                .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
-                .unwrap(),
-            optimized
-                .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
-                .unwrap()
+        assert_predictions_close(
+            &model.predict_table(&table),
+            &optimized.predict_table(&table),
         );
+        let model_preds = model
+            .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+            .unwrap();
+        let optimized_preds = optimized
+            .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+            .unwrap();
+        assert_predictions_close(model_preds.as_slice(), optimized_preds.as_slice());
     }
 
     #[test]
@@ -2470,21 +2671,23 @@ mod tests {
         let optimized = model.optimize_inference(Some(2)).unwrap();
 
         assert_eq!(model.to_ir_json().unwrap(), optimized.to_ir_json().unwrap());
-        assert_eq!(model.predict_table(&table), optimized.predict_table(&table));
-        assert_eq!(
-            model
-                .predict_named_columns(BTreeMap::from([
-                    ("f0".to_string(), vec![0.0, 1.0]),
-                    ("f1".to_string(), vec![1.0, 1.0]),
-                ]))
-                .unwrap(),
-            optimized
-                .predict_named_columns(BTreeMap::from([
-                    ("f0".to_string(), vec![0.0, 1.0]),
-                    ("f1".to_string(), vec![1.0, 1.0]),
-                ]))
-                .unwrap()
+        assert_predictions_close(
+            &model.predict_table(&table),
+            &optimized.predict_table(&table),
         );
+        let model_preds = model
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 1.0]),
+                ("f1".to_string(), vec![1.0, 1.0]),
+            ]))
+            .unwrap();
+        let optimized_preds = optimized
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 1.0]),
+                ("f1".to_string(), vec![1.0, 1.0]),
+            ]))
+            .unwrap();
+        assert_predictions_close(model_preds.as_slice(), optimized_preds.as_slice());
     }
 
     #[test]
@@ -2507,10 +2710,80 @@ mod tests {
         .unwrap();
         let optimized = model.optimize_inference(Some(2)).unwrap();
 
-        assert_eq!(
-            model.predict_rows(rows.clone()).unwrap(),
-            optimized.predict_rows(rows).unwrap()
+        assert_predictions_close(
+            &model.predict_rows(rows.clone()).unwrap(),
+            &optimized.predict_rows(rows).unwrap(),
         );
+    }
+
+    #[test]
+    fn optimized_cart_model_batch_and_single_row_predictions_match() {
+        let rows = vec![
+            vec![0.0],
+            vec![1.0],
+            vec![2.0],
+            vec![3.0],
+            vec![4.0],
+            vec![5.0],
+        ];
+        let targets = vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0];
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+
+        let batch_preds = optimized.predict_rows(rows.clone()).unwrap();
+        let single_row_preds = rows
+            .iter()
+            .map(|row| optimized.predict_rows(vec![row.clone()]).unwrap()[0])
+            .collect::<Vec<_>>();
+        let base_preds = model.predict_rows(rows).unwrap();
+
+        assert_predictions_close(&batch_preds, &single_row_preds);
+        assert_predictions_close(&batch_preds, &base_preds);
+    }
+
+    #[test]
+    fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
+        let rows = (0..64)
+            .map(|idx| vec![f64::from((idx % 2) as u8), f64::from(((idx / 2) % 2) as u8)])
+            .collect::<Vec<_>>();
+        let targets = rows
+            .iter()
+            .map(|row| row[0] + row[1] * 0.5)
+            .collect::<Vec<_>>();
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+
+        let batch_preds = optimized.predict_rows(rows.clone()).unwrap();
+        let single_row_preds = rows
+            .iter()
+            .map(|row| optimized.predict_rows(vec![row.clone()]).unwrap()[0])
+            .collect::<Vec<_>>();
+        let base_preds = model.predict_rows(rows).unwrap();
+
+        assert_predictions_close(&batch_preds, &single_row_preds);
+        assert_predictions_close(&batch_preds, &base_preds);
     }
 
     #[test]
@@ -2815,6 +3088,64 @@ mod tests {
         let preds = model.predict_polars_lazyframe(&df.lazy()).unwrap();
 
         assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.clone().optimize_inference(Some(1)).unwrap();
+        let n_rows = 20_003usize;
+        let f0: Vec<f64> = [0.0, 0.0, 1.0, 1.0]
+            .iter()
+            .copied()
+            .cycle()
+            .take(n_rows)
+            .collect();
+        let f1: Vec<f64> = [0.0, 1.0, 0.0, 1.0]
+            .iter()
+            .copied()
+            .cycle()
+            .take(n_rows)
+            .collect();
+        let expected: Vec<f64> = [0.0, 0.0, 0.0, 1.0]
+            .iter()
+            .copied()
+            .cycle()
+            .take(n_rows)
+            .collect();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), f0).into(),
+            Series::new("f1".into(), f1).into(),
+        ])
+        .unwrap();
+
+        let preds = model.predict_polars_lazyframe(&df.clone().lazy()).unwrap();
+        let optimized_preds = optimized.predict_polars_lazyframe(&df.lazy()).unwrap();
+
+        assert_eq!(preds, expected);
+        assert_eq!(optimized_preds, expected);
     }
 
     #[cfg(feature = "polars")]
