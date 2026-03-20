@@ -133,6 +133,8 @@ pub struct TrainConfig {
     pub task: Task,
     pub tree_type: TreeType,
     pub criterion: Criterion,
+    pub min_samples_split: Option<usize>,
+    pub min_samples_leaf: Option<usize>,
     pub physical_cores: Option<usize>,
     pub n_trees: Option<usize>,
     pub max_features: MaxFeatures,
@@ -146,6 +148,8 @@ impl Default for TrainConfig {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Auto,
+            min_samples_split: None,
+            min_samples_leaf: None,
             physical_cores: None,
             n_trees: None,
             max_features: MaxFeatures::Auto,
@@ -175,6 +179,8 @@ pub enum TrainError {
         tree_type: TreeType,
         criterion: Criterion,
     },
+    InvalidMinSamplesSplit(usize),
+    InvalidMinSamplesLeaf(usize),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
 }
@@ -204,6 +210,20 @@ impl Display for TrainError {
                 "Unsupported training configuration: task={:?}, tree_type={:?}, criterion={:?}.",
                 task, tree_type, criterion
             ),
+            TrainError::InvalidMinSamplesSplit(value) => {
+                write!(
+                    f,
+                    "min_samples_split must be at least 1. Received {}.",
+                    value
+                )
+            }
+            TrainError::InvalidMinSamplesLeaf(value) => {
+                write!(
+                    f,
+                    "min_samples_leaf must be at least 1. Received {}.",
+                    value
+                )
+            }
             TrainError::InvalidTreeCount(n_trees) => {
                 write!(
                     f,

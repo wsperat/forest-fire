@@ -81,6 +81,8 @@ impl RandomForest {
                 config.tree_type,
                 criterion,
                 per_tree_parallelism,
+                config.min_samples_split.unwrap_or(2),
+                config.min_samples_leaf.unwrap_or(1),
                 Some(max_features),
                 tree_seed,
             )

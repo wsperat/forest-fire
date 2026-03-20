@@ -8,6 +8,14 @@ use rayon::ThreadPoolBuilder;
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
     let criterion = resolve_criterion(config.task, config.tree_type, config.criterion)?;
     let parallelism = resolve_parallelism(config.physical_cores)?;
+    let min_samples_split = config.min_samples_split.unwrap_or(2);
+    if min_samples_split == 0 {
+        return Err(TrainError::InvalidMinSamplesSplit(min_samples_split));
+    }
+    let min_samples_leaf = config.min_samples_leaf.unwrap_or(1);
+    if min_samples_leaf == 0 {
+        return Err(TrainError::InvalidMinSamplesLeaf(min_samples_leaf));
+    }
 
     run_with_parallelism(parallelism, || match config.algorithm {
         TrainAlgorithm::Dt => train_single_model(
@@ -16,6 +24,8 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             config.tree_type,
             criterion,
             parallelism,
+            min_samples_split,
+            min_samples_leaf,
         ),
         TrainAlgorithm::Rf => train_random_forest(
             train_set,
@@ -24,6 +34,8 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             criterion,
             parallelism,
             config.n_trees.unwrap_or(1000),
+            min_samples_split,
+            min_samples_leaf,
             config.max_features,
             config.seed,
         ),
@@ -36,6 +48,8 @@ pub(crate) fn train_single_model(
     tree_type: TreeType,
     criterion: Criterion,
     parallelism: Parallelism,
+    min_samples_split: usize,
+    min_samples_leaf: usize,
 ) -> Result<Model, TrainError> {
     train_single_model_with_feature_subset(
         train_set,
@@ -43,6 +57,8 @@ pub(crate) fn train_single_model(
         tree_type,
         criterion,
         parallelism,
+        min_samples_split,
+        min_samples_leaf,
         None,
         0,
     )
@@ -54,15 +70,21 @@ pub(crate) fn train_single_model_with_feature_subset(
     tree_type: TreeType,
     criterion: Criterion,
     parallelism: Parallelism,
+    min_samples_split: usize,
+    min_samples_leaf: usize,
     max_features: Option<usize>,
     random_seed: u64,
 ) -> Result<Model, TrainError> {
     let classifier_options = tree::classifier::DecisionTreeOptions {
+        min_samples_split,
+        min_samples_leaf,
         max_features,
         random_seed,
         ..tree::classifier::DecisionTreeOptions::default()
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
+        min_samples_split,
+        min_samples_leaf,
         max_features,
         random_seed,
         ..tree::regressor::RegressionTreeOptions::default()
@@ -172,6 +194,8 @@ fn train_random_forest(
     criterion: Criterion,
     parallelism: Parallelism,
     n_trees: usize,
+    min_samples_split: usize,
+    min_samples_leaf: usize,
     max_features: crate::MaxFeatures,
     seed: Option<u64>,
 ) -> Result<Model, TrainError> {
@@ -182,6 +206,8 @@ fn train_random_forest(
             task,
             tree_type,
             criterion,
+            min_samples_split: Some(min_samples_split),
+            min_samples_leaf: Some(min_samples_leaf),
             physical_cores: None,
             n_trees: Some(n_trees),
             max_features,

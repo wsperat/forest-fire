@@ -388,13 +388,15 @@ def test_model_and_optimized_model_expose_hyperparameters(
         task="classification",
         tree_type="cart",
         canaries=0,
+        min_samples_split=3,
+        min_samples_leaf=2,
     )
     optimized = model.optimize_inference()
 
     assert model.canaries == 0
     assert model.max_depth == 8
-    assert model.min_samples_split == 2
-    assert model.min_samples_leaf == 1
+    assert model.min_samples_split == 3
+    assert model.min_samples_leaf == 2
     assert model.n_trees is None
     assert model.max_features is None
     assert model.seed is None
@@ -406,6 +408,36 @@ def test_model_and_optimized_model_expose_hyperparameters(
     assert optimized.n_trees == model.n_trees
     assert optimized.max_features == model.max_features
     assert optimized.seed == model.seed
+
+
+def test_train_accepts_min_samples_hyperparameters(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        min_samples_split=5,
+        min_samples_leaf=2,
+    )
+
+    assert model.min_samples_split == 5
+    assert model.min_samples_leaf == 2
+
+
+def test_train_rejects_zero_min_samples_values(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+
+    with pytest.raises(ValueError, match="min_samples_split must be at least 1"):
+        train(X, y, min_samples_split=0)
+
+    with pytest.raises(ValueError, match="min_samples_leaf must be at least 1"):
+        train(X, y, min_samples_leaf=0)
 
 
 def test_random_forest_defaults_to_1000_trees(
