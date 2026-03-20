@@ -5,6 +5,7 @@ use forestfire_data::{Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::types::{PyDict, PyType};
 use pyo3::{Bound, prelude::*};
+use std::collections::BTreeMap;
 
 #[pyclass(name = "Model")]
 struct PyModel {
@@ -67,6 +68,38 @@ fn build_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
 
     Table::with_canaries(x_rows, y_values, 0)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+enum InferenceInput {
+    Rows(Vec<Vec<f64>>),
+    NamedColumns(BTreeMap<String, Vec<f64>>),
+    SparseBinaryColumns {
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    },
+    TrainingTable(Table),
+}
+
+fn build_inference_input(x: &Bound<PyAny>) -> PyResult<InferenceInput> {
+    if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        return Ok(InferenceInput::TrainingTable(table.inner.clone()));
+    }
+
+    if is_scipy_sparse_matrix(x)? {
+        let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
+        return Ok(InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        });
+    }
+
+    if let Ok(columns) = extract_named_columns(x) {
+        return Ok(InferenceInput::NamedColumns(columns));
+    }
+
+    Ok(InferenceInput::Rows(extract_matrix(x)?))
 }
 
 fn is_scipy_sparse_matrix(x: &Bound<PyAny>) -> PyResult<bool> {
@@ -192,6 +225,11 @@ fn extract_index_vector(values: &Bound<PyAny>) -> PyResult<Vec<usize>> {
 }
 
 fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
+    if x.hasattr("collect")? {
+        let collected = x.call_method0("collect")?;
+        return extract_matrix(&collected);
+    }
+
     if let Ok(array) = x.extract::<PyReadonlyArray2<'_, f64>>() {
         let view = array.as_array();
         return Ok(view.rows().into_iter().map(|row| row.to_vec()).collect());
@@ -241,6 +279,46 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
     }
 
     extract_matrix_from_rows(x)
+}
+
+fn extract_named_columns(x: &Bound<PyAny>) -> PyResult<BTreeMap<String, Vec<f64>>> {
+    if x.hasattr("collect")? {
+        let collected = x.call_method0("collect")?;
+        return extract_named_columns(&collected);
+    }
+
+    if x.hasattr("to_pydict")? {
+        let columns = x.call_method0("to_pydict")?;
+        return extract_named_columns_from_dict(columns.cast::<PyDict>()?);
+    }
+
+    if let Ok(columns) = x.cast::<PyDict>() {
+        return extract_named_columns_from_dict(columns);
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "Input is not a named-column mapping.",
+    ))
+}
+
+fn extract_named_columns_from_dict(
+    columns: &Bound<'_, PyDict>,
+) -> PyResult<BTreeMap<String, Vec<f64>>> {
+    let scalar_row = columns
+        .iter()
+        .next()
+        .is_some_and(|(_, value)| value.try_iter().is_err());
+    if scalar_row {
+        return columns
+            .iter()
+            .map(|(name, value)| Ok((name.extract::<String>()?, vec![extract_scalar(&value)?])))
+            .collect();
+    }
+
+    columns
+        .iter()
+        .map(|(name, values)| Ok((name.extract::<String>()?, extract_vector(&values)?)))
+        .collect()
 }
 
 fn extract_matrix_from_columns(columns: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
@@ -476,8 +554,19 @@ impl PyModel {
         py: Python<'py>,
         x: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let table = build_feature_table(x)?;
-        let preds = self.inner.predict_table(&table);
+        let preds = match build_inference_input(x)? {
+            InferenceInput::Rows(rows) => self.inner.predict_rows(rows),
+            InferenceInput::NamedColumns(columns) => self.inner.predict_named_columns(columns),
+            InferenceInput::SparseBinaryColumns {
+                n_rows,
+                n_features,
+                columns,
+            } => self
+                .inner
+                .predict_sparse_binary_columns(n_rows, n_features, columns),
+            InferenceInput::TrainingTable(table) => Ok(self.inner.predict_table(&table)),
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
         Ok(PyArray1::from_vec(py, preds))
     }
 

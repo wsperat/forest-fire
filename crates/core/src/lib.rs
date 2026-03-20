@@ -1,7 +1,8 @@
-use forestfire_data::{TableAccess, numeric_bin_boundaries};
+use forestfire_data::{BinnedColumnKind, TableAccess, numeric_bin_boundaries};
 use rayon::ThreadPoolBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -156,6 +157,78 @@ impl Display for TrainError {
 
 impl Error for TrainError {}
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PredictError {
+    RaggedRows {
+        row: usize,
+        expected: usize,
+        actual: usize,
+    },
+    FeatureCountMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    ColumnLengthMismatch {
+        feature: String,
+        expected: usize,
+        actual: usize,
+    },
+    MissingFeature(String),
+    UnexpectedFeature(String),
+    InvalidBinaryValue {
+        feature_index: usize,
+        row_index: usize,
+        value: f64,
+    },
+}
+
+impl Display for PredictError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PredictError::RaggedRows {
+                row,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "Ragged inference row at index {}: expected {} columns, found {}.",
+                row, expected, actual
+            ),
+            PredictError::FeatureCountMismatch { expected, actual } => write!(
+                f,
+                "Inference input has {} features, but the model expects {}.",
+                actual, expected
+            ),
+            PredictError::ColumnLengthMismatch {
+                feature,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "Feature '{}' has {} values, expected {}.",
+                feature, actual, expected
+            ),
+            PredictError::MissingFeature(feature) => {
+                write!(f, "Missing required feature '{}'.", feature)
+            }
+            PredictError::UnexpectedFeature(feature) => {
+                write!(f, "Unexpected feature '{}'.", feature)
+            }
+            PredictError::InvalidBinaryValue {
+                feature_index,
+                row_index,
+                value,
+            } => write!(
+                f,
+                "Feature {} at row {} must be binary for inference, found {}.",
+                feature_index, row_index, value
+            ),
+        }
+    }
+}
+
+impl Error for PredictError {}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Parallelism {
     thread_count: usize,
@@ -189,6 +262,275 @@ pub(crate) fn capture_feature_preprocessing(table: &dyn TableAccess) -> Vec<Feat
             }
         })
         .collect()
+}
+
+#[derive(Debug, Clone)]
+enum InferenceFeatureColumn {
+    Numeric(Vec<f64>),
+    Binary(Vec<bool>),
+}
+
+#[derive(Debug, Clone)]
+enum InferenceBinnedColumn {
+    Numeric(Vec<u16>),
+    Binary(Vec<bool>),
+}
+
+#[derive(Debug, Clone)]
+struct InferenceTable {
+    feature_columns: Vec<InferenceFeatureColumn>,
+    binned_feature_columns: Vec<InferenceBinnedColumn>,
+    n_rows: usize,
+}
+
+impl InferenceTable {
+    fn from_rows(
+        rows: Vec<Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        let expected = preprocessing.len();
+        if let Some((row_index, actual)) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(row_index, row)| (row.len() != expected).then_some((row_index, row.len())))
+        {
+            return Err(PredictError::RaggedRows {
+                row: row_index,
+                expected,
+                actual,
+            });
+        }
+
+        let columns = (0..expected)
+            .map(|feature_index| {
+                rows.iter()
+                    .map(|row| row[feature_index])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        Self::from_columns(columns, preprocessing)
+    }
+
+    fn from_named_columns(
+        columns: BTreeMap<String, Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        let expected = preprocessing.len();
+        if columns.len() != expected {
+            for feature_index in 0..expected {
+                let name = format!("f{}", feature_index);
+                if !columns.contains_key(&name) {
+                    return Err(PredictError::MissingFeature(name));
+                }
+            }
+            if let Some(unexpected) = columns.keys().find(|name| {
+                name.strip_prefix('f')
+                    .and_then(|idx| idx.parse::<usize>().ok())
+                    .is_none_or(|idx| idx >= expected)
+            }) {
+                return Err(PredictError::UnexpectedFeature(unexpected.clone()));
+            }
+        }
+
+        let n_rows = columns.values().next().map_or(0, Vec::len);
+        let ordered = (0..expected)
+            .map(|feature_index| {
+                let feature_name = format!("f{}", feature_index);
+                let values = columns
+                    .get(&feature_name)
+                    .ok_or_else(|| PredictError::MissingFeature(feature_name.clone()))?;
+                if values.len() != n_rows {
+                    return Err(PredictError::ColumnLengthMismatch {
+                        feature: feature_name,
+                        expected: n_rows,
+                        actual: values.len(),
+                    });
+                }
+                Ok(values.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Self::from_columns(ordered, preprocessing)
+    }
+
+    fn from_sparse_binary_columns(
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        if n_features != preprocessing.len() {
+            return Err(PredictError::FeatureCountMismatch {
+                expected: preprocessing.len(),
+                actual: n_features,
+            });
+        }
+
+        let mut dense_columns = Vec::with_capacity(n_features);
+        for (feature_index, row_indices) in columns.into_iter().enumerate() {
+            match preprocessing.get(feature_index) {
+                Some(FeaturePreprocessing::Binary) => {
+                    let mut values = vec![false; n_rows];
+                    for row_index in row_indices {
+                        if row_index >= n_rows {
+                            return Err(PredictError::ColumnLengthMismatch {
+                                feature: format!("f{}", feature_index),
+                                expected: n_rows,
+                                actual: row_index + 1,
+                            });
+                        }
+                        values[row_index] = true;
+                    }
+                    dense_columns.push(values.into_iter().map(f64::from).collect());
+                }
+                Some(FeaturePreprocessing::Numeric { .. }) => {
+                    return Err(PredictError::InvalidBinaryValue {
+                        feature_index,
+                        row_index: 0,
+                        value: 1.0,
+                    });
+                }
+                None => unreachable!("validated feature count"),
+            }
+        }
+
+        Self::from_columns(dense_columns, preprocessing)
+    }
+
+    fn from_columns(
+        columns: Vec<Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        if columns.len() != preprocessing.len() {
+            return Err(PredictError::FeatureCountMismatch {
+                expected: preprocessing.len(),
+                actual: columns.len(),
+            });
+        }
+
+        let n_rows = columns.first().map_or(0, Vec::len);
+        let mut feature_columns = Vec::with_capacity(columns.len());
+        let mut binned_feature_columns = Vec::with_capacity(columns.len());
+
+        for (feature_index, (column, feature_preprocessing)) in
+            columns.into_iter().zip(preprocessing.iter()).enumerate()
+        {
+            if column.len() != n_rows {
+                return Err(PredictError::ColumnLengthMismatch {
+                    feature: format!("f{}", feature_index),
+                    expected: n_rows,
+                    actual: column.len(),
+                });
+            }
+            match feature_preprocessing {
+                FeaturePreprocessing::Binary => {
+                    let values = column
+                        .into_iter()
+                        .enumerate()
+                        .map(|(row_index, value)| match value {
+                            v if v.total_cmp(&0.0).is_eq() => Ok(false),
+                            v if v.total_cmp(&1.0).is_eq() => Ok(true),
+                            v => Err(PredictError::InvalidBinaryValue {
+                                feature_index,
+                                row_index,
+                                value: v,
+                            }),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    feature_columns.push(InferenceFeatureColumn::Binary(values.clone()));
+                    binned_feature_columns.push(InferenceBinnedColumn::Binary(values));
+                }
+                FeaturePreprocessing::Numeric { bin_boundaries } => {
+                    let bins = column
+                        .iter()
+                        .map(|value| infer_numeric_bin(*value, bin_boundaries))
+                        .collect();
+                    feature_columns.push(InferenceFeatureColumn::Numeric(column));
+                    binned_feature_columns.push(InferenceBinnedColumn::Numeric(bins));
+                }
+            }
+        }
+
+        Ok(Self {
+            feature_columns,
+            binned_feature_columns,
+            n_rows,
+        })
+    }
+}
+
+fn infer_numeric_bin(value: f64, boundaries: &[NumericBinBoundary]) -> u16 {
+    boundaries
+        .iter()
+        .find(|boundary| value <= boundary.upper_bound)
+        .map_or_else(
+            || boundaries.last().map_or(0, |boundary| boundary.bin),
+            |boundary| boundary.bin,
+        )
+}
+
+impl TableAccess for InferenceTable {
+    fn n_rows(&self) -> usize {
+        self.n_rows
+    }
+
+    fn n_features(&self) -> usize {
+        self.feature_columns.len()
+    }
+
+    fn canaries(&self) -> usize {
+        0
+    }
+
+    fn binned_feature_count(&self) -> usize {
+        self.binned_feature_columns.len()
+    }
+
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        match &self.feature_columns[feature_index] {
+            InferenceFeatureColumn::Numeric(values) => values[row_index],
+            InferenceFeatureColumn::Binary(values) => f64::from(u8::from(values[row_index])),
+        }
+    }
+
+    fn is_binary_feature(&self, index: usize) -> bool {
+        matches!(
+            self.feature_columns[index],
+            InferenceFeatureColumn::Binary(_)
+        )
+    }
+
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        match &self.binned_feature_columns[feature_index] {
+            InferenceBinnedColumn::Numeric(values) => values[row_index],
+            InferenceBinnedColumn::Binary(values) => u16::from(values[row_index]),
+        }
+    }
+
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        match &self.binned_feature_columns[feature_index] {
+            InferenceBinnedColumn::Numeric(_) => None,
+            InferenceBinnedColumn::Binary(values) => Some(values[row_index]),
+        }
+    }
+
+    fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        BinnedColumnKind::Real {
+            source_index: index,
+        }
+    }
+
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        matches!(
+            self.binned_feature_columns[index],
+            InferenceBinnedColumn::Binary(_)
+        )
+    }
+
+    fn target_value(&self, _row_index: usize) -> f64 {
+        0.0
+    }
 }
 
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
@@ -359,6 +701,34 @@ impl Model {
         }
     }
 
+    pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_rows(rows, self.feature_preprocessing())?;
+        Ok(self.predict_table(&table))
+    }
+
+    pub fn predict_named_columns(
+        &self,
+        columns: BTreeMap<String, Vec<f64>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_named_columns(columns, self.feature_preprocessing())?;
+        Ok(self.predict_table(&table))
+    }
+
+    pub fn predict_sparse_binary_columns(
+        &self,
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_sparse_binary_columns(
+            n_rows,
+            n_features,
+            columns,
+            self.feature_preprocessing(),
+        )?;
+        Ok(self.predict_table(&table))
+    }
+
     pub fn algorithm(&self) -> TrainAlgorithm {
         match self {
             Model::TargetMean(_)
@@ -464,6 +834,7 @@ impl Model {
 mod tests {
     use super::*;
     use forestfire_data::DenseTable;
+    use std::collections::BTreeMap;
 
     #[test]
     fn unified_train_dispatches_regression_cart() {
@@ -983,6 +1354,78 @@ mod tests {
         assert_eq!(model.tree_type(), restored.tree_type());
         assert_eq!(model.criterion(), restored.criterion());
         assert_eq!(model.predict_table(&table), restored.predict_table(&table));
+    }
+
+    #[test]
+    fn model_predicts_from_raw_rows_without_building_a_training_table() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let preds = model
+            .predict_rows(vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ])
+            .unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn model_predicts_from_named_columns() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let preds = model
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 0.0, 1.0, 1.0]),
+                ("f1".to_string(), vec![0.0, 1.0, 0.0, 1.0]),
+            ]))
+            .unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

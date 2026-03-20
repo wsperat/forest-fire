@@ -142,6 +142,29 @@ def test_predict_accepts_feature_only_table(
     assert np.array_equal(model.predict(feature_table), y)
 
 
+def test_predict_accepts_named_feature_dict(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    preds = model.predict({"f0": [0.0, 0.0, 1.0, 1.0], "f1": [0.0, 1.0, 0.0, 1.0]})
+
+    assert np.array_equal(preds, y)
+
+
+def test_predict_accepts_single_named_feature_row(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    pred = model.predict({"f0": 1.0, "f1": 1.0})
+
+    assert pred.shape == (1,)
+    assert pred[0] == 1.0
+
+
 def test_train_id3_classifier(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
