@@ -788,13 +788,16 @@ task benchmark-training
 task benchmark-prediction
 ```
 
-The training and prediction benchmark scripts live in the dedicated [benchmark/](/Users/waltersperat/Desktop/Personal/forest-fire/benchmark) workspace and compare ForestFire against sklearn, LightGBM, and XGBoost for random-forest-style models. Extra-trees runs are benchmarked for ForestFire, sklearn, and LightGBM; XGBoost is recorded as unsupported there because it does not expose a direct extra-trees random-forest mode.
+The training and prediction benchmark scripts live in `benchmark/` and use the root `benchmark` dependency group to compare ForestFire against sklearn, LightGBM, and XGBoost for random-forest-style models. Extra-trees runs are benchmarked for ForestFire, sklearn, and LightGBM; XGBoost is recorded as unsupported there because it does not expose a direct extra-trees random-forest mode.
 
 Artifacts are written to:
 
 - [docs/benchmarks/inference_benchmark_results.json](docs/benchmarks/inference_benchmark_results.json)
 - [docs/benchmarks/training_benchmark_results.json](docs/benchmarks/training_benchmark_results.json)
 - [docs/benchmarks/prediction_benchmark_results.json](docs/benchmarks/prediction_benchmark_results.json)
+- [docs/benchmarks/training_library_comparison.png](docs/benchmarks/training_library_comparison.png)
+- [docs/benchmarks/prediction_library_comparison.png](docs/benchmarks/prediction_library_comparison.png)
+- [docs/benchmarks/predict_proba_library_comparison.png](docs/benchmarks/predict_proba_library_comparison.png)
 - [docs/benchmarks/cart_runtime.png](docs/benchmarks/cart_runtime.png)
 - [docs/benchmarks/cart_speedup.png](docs/benchmarks/cart_speedup.png)
 - [docs/benchmarks/oblivious_runtime.png](docs/benchmarks/oblivious_runtime.png)

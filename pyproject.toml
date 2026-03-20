@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["bindings/python", "benchmark"]
+members = ["bindings/python"]
 
 [dependency-groups]
 dev = [
@@ -18,6 +18,12 @@ dev = [
     "ruff>=0.12,<1",
     "yamlfix>=1.17,<2",
     "yamllint>=1.37,<2",
+]
+benchmark = [
+    "matplotlib>=3.10,<4",
+    "scikit-learn>=1.6,<2",
+    "lightgbm>=4.6,<5",
+    "xgboost>=2.1,<3",
 ]
 
 [tool.isort]

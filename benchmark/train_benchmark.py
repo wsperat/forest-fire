@@ -12,6 +12,8 @@ from common import (
     ensure_output_dir,
     format_result_line,
     generate_dataset,
+    log,
+    plot_library_comparison,
 )
 
 
@@ -30,17 +32,17 @@ def parse_args() -> BenchmarkConfig:
         choices=("classification", "regression"),
         default="classification",
     )
-    parser.add_argument("--train-rows", type=int, default=50_000)
-    parser.add_argument("--predict-rows", type=int, default=10_000)
+    parser.add_argument("--train-rows", type=int, default=10_000)
+    parser.add_argument("--predict-rows", type=int, default=5_000)
     parser.add_argument("--n-features", type=int, default=32)
-    parser.add_argument("--n-estimators", type=int, default=200)
+    parser.add_argument("--n-estimators", type=int, default=100)
     parser.add_argument("--max-depth", type=int, default=8)
     parser.add_argument("--min-samples-split", type=int, default=2)
     parser.add_argument("--min-samples-leaf", type=int, default=1)
     parser.add_argument("--max-features", type=str, default="sqrt")
     parser.add_argument("--physical-cores", type=int, default=1)
-    parser.add_argument("--warmup-runs", type=int, default=1)
-    parser.add_argument("--measurement-runs", type=int, default=3)
+    parser.add_argument("--warmup-runs", type=int, default=0)
+    parser.add_argument("--measurement-runs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
     raw = parser.parse_args()
     return BenchmarkConfig(
@@ -65,6 +67,12 @@ def parse_args() -> BenchmarkConfig:
 def main() -> None:
     config = parse_args()
     ensure_output_dir(config.output_dir)
+    log(
+        "training benchmark start | "
+        f"family={config.family} | problem={config.problem} | "
+        f"train_rows={config.train_rows} | features={config.n_features} | "
+        f"estimators={config.n_estimators}"
+    )
     X_train, y_train, _ = generate_dataset(
         config.problem,
         config.train_rows,
@@ -72,9 +80,11 @@ def main() -> None:
         config.n_features,
         config.seed,
     )
+    log("dataset generated")
 
     results: list[BenchmarkResult] = []
     for backend, fitter in BACKEND_FITTERS.items():
+        log(f"fitting backend={backend}")
         try:
             fit_seconds = average_runtime(
                 lambda: fitter(config, X_train, y_train),
@@ -116,7 +126,20 @@ def main() -> None:
         print(format_result_line(result))
         results.append(result)
 
+    log("writing training benchmark json")
     dump_results(config.output_dir / "training_benchmark_results.json", results)
+    log("writing training comparison plot")
+    plot_library_comparison(
+        results,
+        metric="fit_seconds",
+        title=(
+            f"Training benchmark | {config.family} | {config.problem} | "
+            f"{config.train_rows:,} rows | {config.n_estimators} estimators"
+        ),
+        ylabel="fit time (seconds)",
+        output_path=config.output_dir / "training_library_comparison.png",
+    )
+    log("training benchmark complete")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ from common import (
     ensure_output_dir,
     format_result_line,
     generate_dataset,
+    log,
+    plot_library_comparison,
 )
 
 
@@ -30,17 +32,17 @@ def parse_args() -> BenchmarkConfig:
         choices=("classification", "regression"),
         default="classification",
     )
-    parser.add_argument("--train-rows", type=int, default=50_000)
-    parser.add_argument("--predict-rows", type=int, default=20_000)
+    parser.add_argument("--train-rows", type=int, default=10_000)
+    parser.add_argument("--predict-rows", type=int, default=10_000)
     parser.add_argument("--n-features", type=int, default=32)
-    parser.add_argument("--n-estimators", type=int, default=200)
+    parser.add_argument("--n-estimators", type=int, default=100)
     parser.add_argument("--max-depth", type=int, default=8)
     parser.add_argument("--min-samples-split", type=int, default=2)
     parser.add_argument("--min-samples-leaf", type=int, default=1)
     parser.add_argument("--max-features", type=str, default="sqrt")
     parser.add_argument("--physical-cores", type=int, default=1)
     parser.add_argument("--warmup-runs", type=int, default=1)
-    parser.add_argument("--measurement-runs", type=int, default=5)
+    parser.add_argument("--measurement-runs", type=int, default=3)
     parser.add_argument("--seed", type=int, default=7)
     raw = parser.parse_args()
     return BenchmarkConfig(
@@ -65,6 +67,12 @@ def parse_args() -> BenchmarkConfig:
 def main() -> None:
     config = parse_args()
     ensure_output_dir(config.output_dir)
+    log(
+        "prediction benchmark start | "
+        f"family={config.family} | problem={config.problem} | "
+        f"train_rows={config.train_rows} | predict_rows={config.predict_rows} | "
+        f"features={config.n_features} | estimators={config.n_estimators}"
+    )
     X_train, y_train, X_predict = generate_dataset(
         config.problem,
         config.train_rows,
@@ -72,11 +80,14 @@ def main() -> None:
         config.n_features,
         config.seed,
     )
+    log("dataset generated")
 
     results: list[BenchmarkResult] = []
     for backend, fitter in BACKEND_FITTERS.items():
+        log(f"fitting backend={backend}")
         try:
             model = fitter(config, X_train, y_train)
+            log(f"predicting backend={backend}")
             predict_seconds = average_runtime(
                 lambda: model.predict(X_predict),
                 config.warmup_runs,
@@ -84,6 +95,7 @@ def main() -> None:
             )
             predict_proba_seconds = None
             if config.problem == "classification" and hasattr(model, "predict_proba"):
+                log(f"predict_proba backend={backend}")
                 predict_proba_seconds = average_runtime(
                     lambda: model.predict_proba(X_predict),
                     config.warmup_runs,
@@ -125,7 +137,32 @@ def main() -> None:
         print(format_result_line(result))
         results.append(result)
 
+    log("writing prediction benchmark json")
     dump_results(config.output_dir / "prediction_benchmark_results.json", results)
+    log("writing prediction comparison plot")
+    plot_library_comparison(
+        results,
+        metric="predict_seconds",
+        title=(
+            f"Prediction benchmark | {config.family} | {config.problem} | "
+            f"{config.predict_rows:,} rows | {config.n_estimators} estimators"
+        ),
+        ylabel="predict time (seconds)",
+        output_path=config.output_dir / "prediction_library_comparison.png",
+    )
+    if config.problem == "classification":
+        log("writing predict_proba comparison plot")
+        plot_library_comparison(
+            results,
+            metric="predict_proba_seconds",
+            title=(
+                f"Predict_proba benchmark | {config.family} | {config.problem} | "
+                f"{config.predict_rows:,} rows | {config.n_estimators} estimators"
+            ),
+            ylabel="predict_proba time (seconds)",
+            output_path=config.output_dir / "predict_proba_library_comparison.png",
+        )
+    log("prediction benchmark complete")
 
 
 if __name__ == "__main__":

@@ -8,8 +8,10 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
 
+os.environ.setdefault("MPLCONFIGDIR", ".cache/matplotlib")
 os.environ.setdefault("XDG_CACHE_HOME", ".cache")
 
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 
@@ -311,3 +313,64 @@ def format_result_line(result: BenchmarkResult) -> str:
     if result.note:
         fields.append(result.note)
     return " | ".join(fields)
+
+
+def log(message: str) -> None:
+    print(f"[benchmark] {message}", flush=True)
+
+
+def successful_results(
+    results: list[BenchmarkResult], metric: str
+) -> list[BenchmarkResult]:
+    return [
+        result
+        for result in results
+        if result.status == "ok" and getattr(result, metric) is not None
+    ]
+
+
+def plot_library_comparison(
+    results: list[BenchmarkResult],
+    metric: str,
+    title: str,
+    ylabel: str,
+    output_path: Path,
+) -> None:
+    filtered = successful_results(results, metric)
+    if not filtered:
+        return
+
+    backends = [result.backend for result in filtered]
+    values = [float(getattr(result, metric)) for result in filtered]
+    colors = [
+        {
+            "forestfire": "#d55e00",
+            "sklearn": "#0072b2",
+            "lightgbm": "#009e73",
+            "xgboost": "#cc79a7",
+        }.get(backend, "#4c4c4c")
+        for backend in backends
+    ]
+
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    positions = np.arange(len(filtered))
+    bars = ax.bar(positions, values, color=colors)
+    ax.set_xticks(positions, backends)
+    ax.set_yscale("log")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, axis="y", which="both", alpha=0.3)
+
+    for bar, value in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            value,
+            f"{value:.4f}s",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
