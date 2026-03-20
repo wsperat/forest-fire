@@ -132,7 +132,7 @@ fn build_inference_input(x: &Bound<PyAny>) -> PyResult<InferenceInput> {
         return Ok(InferenceInput::NamedColumns(columns));
     }
 
-    Ok(InferenceInput::Rows(extract_matrix(x)?))
+    Ok(InferenceInput::Rows(extract_rows_or_single_row(x)?))
 }
 
 fn is_scipy_sparse_matrix(x: &Bound<PyAny>) -> PyResult<bool> {
@@ -495,6 +495,16 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
     }
 
     extract_matrix_from_rows(x)
+}
+
+fn extract_rows_or_single_row(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
+    match extract_matrix(x) {
+        Ok(rows) => Ok(rows),
+        Err(matrix_error) => match extract_vector(x) {
+            Ok(row) => Ok(vec![row]),
+            Err(_) => Err(matrix_error),
+        },
+    }
 }
 
 fn extract_named_columns(x: &Bound<PyAny>) -> PyResult<BTreeMap<String, Vec<f64>>> {

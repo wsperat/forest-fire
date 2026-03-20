@@ -901,6 +901,64 @@ def test_optimized_predict_proba_accepts_named_feature_dict(
     assert np.array_equal(np.argmax(proba, axis=1), y.astype(int))
 
 
+def test_predict_accepts_single_row_python_list() -> None:
+    X = np.array([[0.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0])
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    pred = model.predict([1.0, 1.0])
+    proba = model.predict_proba([1.0, 1.0])
+
+    assert pred.shape == (1,)
+    assert np.array_equal(pred, np.array([1.0]))
+    assert proba.shape == (1, 2)
+    assert np.allclose(proba.sum(axis=1), 1.0)
+
+
+def test_predict_accepts_single_row_numpy_vector() -> None:
+    X = np.array([[0.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0])
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    pred = model.predict(np.array([1.0, 1.0]))
+    proba = model.predict_proba(np.array([1.0, 1.0]))
+
+    assert pred.shape == (1,)
+    assert np.array_equal(pred, np.array([1.0]))
+    assert proba.shape == (1, 2)
+    assert np.allclose(proba.sum(axis=1), 1.0)
+
+
+def test_optimized_predict_accepts_single_row_python_list() -> None:
+    X = np.array([[0.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0])
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    pred = optimized.predict([1.0, 1.0])
+    proba = optimized.predict_proba([1.0, 1.0])
+
+    assert pred.shape == (1,)
+    assert np.array_equal(pred, np.array([1.0]))
+    assert proba.shape == (1, 2)
+    assert np.allclose(proba.sum(axis=1), 1.0)
+
+
+def test_optimized_predict_accepts_single_row_numpy_vector() -> None:
+    X = np.array([[0.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0])
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    pred = optimized.predict(np.array([1.0, 1.0]))
+    proba = optimized.predict_proba(np.array([1.0, 1.0]))
+
+    assert pred.shape == (1,)
+    assert np.array_equal(pred, np.array([1.0]))
+    assert proba.shape == (1, 2)
+    assert np.allclose(proba.sum(axis=1), 1.0)
+
+
 def test_optimize_inference_rejects_zero_physical_cores() -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
