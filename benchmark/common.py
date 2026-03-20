@@ -130,7 +130,7 @@ def generate_dataset(
     return X[:train_rows], y[:train_rows], X[train_rows:]
 
 
-def sklearn_max_features(problem: str, max_features: str) -> str | float | int:
+def sklearn_max_features(problem: str, max_features: str) -> str | float | int | None:
     if max_features in {"sqrt", "log2"}:
         return max_features
     if max_features == "all":
@@ -154,7 +154,7 @@ def lightgbm_feature_fraction(n_features: int, max_features: str) -> float:
     if max_features == "all":
         return 1.0
     if max_features == "sqrt":
-        return min(1.0, np.sqrt(n_features) / n_features)
+        return float(min(1.0, np.sqrt(n_features) / n_features))
     if max_features == "third":
         return min(1.0, max(1, n_features // 3) / n_features)
     return min(1.0, int(max_features) / n_features)

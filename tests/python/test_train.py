@@ -1230,7 +1230,9 @@ def test_random_forest_tree_introspection_accepts_tree_index() -> None:
 @pytest.mark.parametrize("tree_type", ["cart", "id3"])
 def test_model_to_dataframe_exposes_standard_tree_rows(tree_type: str) -> None:
     try:
-        import polars as frame_lib
+        import importlib
+
+        frame_lib = importlib.import_module("polars")
 
         expected_type = frame_lib.DataFrame
     except ModuleNotFoundError:
@@ -1260,7 +1262,9 @@ def test_model_to_dataframe_exposes_standard_tree_rows(tree_type: str) -> None:
 
 def test_model_to_dataframe_exposes_oblivious_tree_rows() -> None:
     try:
-        import polars as frame_lib
+        import importlib
+
+        frame_lib = importlib.import_module("polars")
 
         expected_type = frame_lib.DataFrame
     except ModuleNotFoundError:
@@ -1286,7 +1290,9 @@ def test_model_to_dataframe_exposes_oblivious_tree_rows() -> None:
 
 def test_random_forest_to_dataframe_supports_tree_index_filtering() -> None:
     try:
-        import polars as frame_lib
+        import importlib
+
+        frame_lib = importlib.import_module("polars")
 
         expected_type = frame_lib.DataFrame
     except ModuleNotFoundError:
@@ -1320,11 +1326,15 @@ def test_random_forest_to_dataframe_supports_tree_index_filtering() -> None:
 
 
 def test_optimized_model_to_dataframe_matches_base_model() -> None:
+    pa: object
     try:
-        import polars as pl
+        import importlib
+
+        pl = importlib.import_module("polars")
     except ModuleNotFoundError:
         pl = None
-    pa = pytest.importorskip("pyarrow") if pl is None else None
+    if pl is None:
+        pa = pytest.importorskip("pyarrow")
     X = np.array([[0.0], [0.0], [1.0], [1.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
     model = train(X, y, task="classification", tree_type="oblivious", canaries=0)
@@ -1339,6 +1349,7 @@ def test_optimized_model_to_dataframe_matches_base_model() -> None:
         assert isinstance(base_df, pl.DataFrame)
         assert base_df.equals(optimized_df)
     else:
+        assert hasattr(pa, "Table")
         assert isinstance(base_df, pa.Table)
         assert base_df.equals(optimized_df)
 
