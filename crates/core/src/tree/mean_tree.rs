@@ -1,14 +1,18 @@
-use crate::Criterion;
+use crate::ir::{LeafPayload, NodeTreeNode, TrainingMetadata, TreeDefinition, criterion_name};
+use crate::{Criterion, FeaturePreprocessing, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 /// The simplest possible "tree":
 /// it stores only one global target statistic and predicts that for every row.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TargetMeanTree {
     pub mean: f64,
     criterion: Criterion,
+    num_features: usize,
+    feature_preprocessing: Vec<FeaturePreprocessing>,
+    training_canaries: usize,
 }
 
 #[derive(Debug)]
@@ -50,6 +54,9 @@ pub fn train_target_mean_with_criterion(
     Ok(TargetMeanTree {
         mean: prediction,
         criterion,
+        num_features: train_set.n_features(),
+        feature_preprocessing: capture_feature_preprocessing(train_set),
+        training_canaries: train_set.canaries(),
     })
 }
 
@@ -66,6 +73,41 @@ impl TargetMeanTree {
     /// Convenience: predict for a table (ignores features).
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         self.predict_many(table.n_rows())
+    }
+
+    pub(crate) fn num_features(&self) -> usize {
+        self.num_features
+    }
+
+    pub(crate) fn feature_preprocessing(&self) -> &[FeaturePreprocessing] {
+        &self.feature_preprocessing
+    }
+
+    pub(crate) fn training_metadata(&self) -> TrainingMetadata {
+        TrainingMetadata {
+            algorithm: "dt".to_string(),
+            task: "regression".to_string(),
+            tree_type: "target_mean".to_string(),
+            criterion: criterion_name(self.criterion).to_string(),
+            canaries: self.training_canaries,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            class_labels: None,
+        }
+    }
+
+    pub(crate) fn to_ir_tree(&self) -> TreeDefinition {
+        TreeDefinition::NodeTree {
+            tree_id: 0,
+            weight: 1.0,
+            root_node_id: 0,
+            nodes: vec![NodeTreeNode::Leaf {
+                node_id: 0,
+                depth: 0,
+                leaf: LeafPayload::RegressionValue { value: self.mean },
+            }],
+        }
     }
 }
 
@@ -84,6 +126,7 @@ fn median(values: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Model;
     use forestfire_data::DenseTable;
 
     #[test]
@@ -121,5 +164,36 @@ mod tests {
 
         let err = train_target_mean(&table).unwrap_err();
         assert!(matches!(err, ModelError::EmptyTarget));
+    }
+
+    #[test]
+    fn manually_built_target_mean_model_serializes() {
+        let model = Model::TargetMean(TargetMeanTree {
+            mean: 3.5,
+            criterion: Criterion::Mean,
+            num_features: 2,
+            feature_preprocessing: vec![
+                FeaturePreprocessing::Binary,
+                FeaturePreprocessing::Numeric {
+                    bin_boundaries: vec![
+                        crate::NumericBinBoundary {
+                            bin: 0,
+                            upper_bound: 1.0,
+                        },
+                        crate::NumericBinBoundary {
+                            bin: 511,
+                            upper_bound: 10.0,
+                        },
+                    ],
+                },
+            ],
+            training_canaries: 1,
+        });
+
+        let json = model.serialize().unwrap();
+
+        assert!(json.contains("\"tree_type\":\"target_mean\""));
+        assert!(json.contains("\"canaries\":1"));
+        assert!(json.contains("\"prediction_kind\":\"regression_value\""));
     }
 }

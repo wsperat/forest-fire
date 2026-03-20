@@ -139,6 +139,7 @@ clf = train(
     physical_cores=4,
 )
 pred = clf.predict(table)        # -> NumPy array [n_samples]
+ir_json = clf.to_ir_json()       # -> inference-complete JSON IR
 ```
 
 # Train Interface
@@ -255,6 +256,23 @@ Why parallelism is chosen per tree type:
 - `id3`, `c45`, `cart`: feature scoring is independent at a node, so node-local feature parallelism is the cheapest win
 - `oblivious`: depth-wise shared splits make per-level feature scoring the natural strategy
 - `target_mean`: there is not enough work to justify thread-pool overhead
+
+## IR Export
+
+Trained models can export a versioned JSON IR with `model.to_ir_json()` in Python or
+`model.to_ir_json()` / `model.to_ir_json_pretty()` in Rust.
+
+Why the IR exists:
+- it captures inference semantics in a stable, explicit format instead of relying on trainer internals
+- it serializes training-time numeric bin boundaries, which is required because current tree splits operate on binned feature ids
+- it distinguishes the implemented structural forms directly: `node_tree` and `oblivious_levels`
+
+Current IR v1 scope:
+- algorithm: `dt`
+- tasks: `regression`, `classification`
+- tree types: `target_mean`, `id3`, `c45`, `cart`, `oblivious`
+- split semantics: boolean tests, numeric bin thresholds, and binned multiway splits
+- missing values and categorical preprocessing are declared unsupported
 
 ## Data rationale
 

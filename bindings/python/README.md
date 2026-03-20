@@ -29,6 +29,7 @@ model = train(
     physical_cores=4,
 )
 preds = model.predict(X)
+ir_json = model.to_ir_json()
 ```
 
 ## Why the API looks like this
@@ -84,6 +85,16 @@ Training parallelism is feature-parallel by tree type:
 - `id3`, `c45`, and `cart` score features in parallel at each node
 - `oblivious` scores features in parallel at each tree level
 - `target_mean` is effectively sequential because there is too little work to parallelize meaningfully
+
+## IR export
+
+`Model.to_ir_json()` exports the first version of the library’s internal serialization format.
+
+The exported IR is meant to be inference-complete for the features the library actually supports today:
+- it records the chosen `algorithm`, `task`, `tree_type`, and `criterion`
+- it serializes training-time numeric bin boundaries so split semantics are portable
+- it exports either `node_tree` or `oblivious_levels` explicitly
+- it marks missing values and categorical preprocessing as unsupported in v1 instead of implying behavior that does not exist
 
 ## Build & install (dev)
 ```bash

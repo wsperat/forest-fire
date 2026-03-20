@@ -1,10 +1,13 @@
-use forestfire_data::TableAccess;
+use forestfire_data::{TableAccess, numeric_bin_boundaries};
 use rayon::ThreadPoolBuilder;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+pub mod ir;
 pub mod tree;
 
+pub use ir::ModelPackageIr;
 pub use tree::classifier::DecisionTreeAlgorithm;
 pub use tree::classifier::DecisionTreeClassifier;
 pub use tree::classifier::DecisionTreeError;
@@ -50,6 +53,28 @@ pub enum TreeType {
     C45,
     Cart,
     Oblivious,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputFeatureKind {
+    Numeric,
+    Binary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NumericBinBoundary {
+    pub bin: u16,
+    pub upper_bound: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FeaturePreprocessing {
+    Numeric {
+        bin_boundaries: Vec<NumericBinBoundary>,
+    },
+    Binary,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -142,6 +167,26 @@ impl Parallelism {
     pub(crate) fn enabled(self) -> bool {
         self.thread_count > 1
     }
+}
+
+pub(crate) fn capture_feature_preprocessing(table: &dyn TableAccess) -> Vec<FeaturePreprocessing> {
+    (0..table.n_features())
+        .map(|feature_index| {
+            if table.is_binary_feature(feature_index) {
+                FeaturePreprocessing::Binary
+            } else {
+                let values = (0..table.n_rows())
+                    .map(|row_index| table.feature_value(feature_index, row_index))
+                    .collect::<Vec<_>>();
+                FeaturePreprocessing::Numeric {
+                    bin_boundaries: numeric_bin_boundaries(&values)
+                        .into_iter()
+                        .map(|(bin, upper_bound)| NumericBinBoundary { bin, upper_bound })
+                        .collect(),
+                }
+            }
+        })
+        .collect()
 }
 
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
@@ -355,6 +400,42 @@ impl Model {
         match self {
             Model::TargetMean(model) => Some(model.mean),
             Model::DecisionTreeClassifier(_) | Model::DecisionTreeRegressor(_) => None,
+        }
+    }
+
+    pub fn to_ir(&self) -> ModelPackageIr {
+        ir::model_to_ir(self)
+    }
+
+    pub fn to_ir_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.to_ir())
+    }
+
+    pub fn to_ir_json_pretty(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.to_ir())
+    }
+
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        self.to_ir_json()
+    }
+
+    pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
+        self.to_ir_json_pretty()
+    }
+
+    pub(crate) fn num_features(&self) -> usize {
+        match self {
+            Model::TargetMean(model) => model.num_features(),
+            Model::DecisionTreeClassifier(model) => model.num_features(),
+            Model::DecisionTreeRegressor(model) => model.num_features(),
+        }
+    }
+
+    pub(crate) fn feature_preprocessing(&self) -> &[FeaturePreprocessing] {
+        match self {
+            Model::TargetMean(model) => model.feature_preprocessing(),
+            Model::DecisionTreeClassifier(model) => model.feature_preprocessing(),
+            Model::DecisionTreeRegressor(model) => model.feature_preprocessing(),
         }
     }
 }
@@ -704,5 +785,147 @@ mod tests {
             single_core.predict_table(&table),
             overprovisioned.predict_table(&table)
         );
+    }
+
+    #[test]
+    fn ir_exports_target_mean_with_training_binning() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![1.0, 10.0],
+                vec![0.0, 20.0],
+                vec![1.0, 30.0],
+            ],
+            vec![1.0, 3.0, 5.0, 7.0],
+            2,
+        )
+        .unwrap();
+
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::TargetMean,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let ir = model.to_ir();
+
+        assert_eq!(ir.ir_version, "1.0.0");
+        assert_eq!(ir.model.algorithm, "dt");
+        assert_eq!(ir.model.tree_type, "target_mean");
+        assert_eq!(ir.input_schema.feature_count, 2);
+        assert_eq!(ir.training_metadata.canaries, 2);
+        assert!(matches!(
+            &ir.preprocessing.numeric_binning.features[0],
+            ir::FeatureBinning::Binary { feature_index: 0 }
+        ));
+        assert!(matches!(
+            &ir.preprocessing.numeric_binning.features[1],
+            ir::FeatureBinning::Numeric {
+                feature_index: 1,
+                ..
+            }
+        ));
+        let ir::TreeDefinition::NodeTree { nodes, .. } = &ir.model.trees[0] else {
+            panic!("target mean should export as a node tree");
+        };
+        let ir::NodeTreeNode::Leaf { leaf, .. } = &nodes[0] else {
+            panic!("target mean tree should contain a single leaf");
+        };
+        assert!(
+            matches!(leaf, ir::LeafPayload::RegressionValue { value } if (*value - 4.0).abs() < 1e-12)
+        );
+    }
+
+    #[test]
+    fn ir_exports_classifier_with_multiway_postprocessing() {
+        let table = DenseTable::with_canaries(
+            vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0]],
+            vec![2.0, 4.0, 6.0, 8.0],
+            0,
+        )
+        .unwrap();
+
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Id3,
+                criterion: Criterion::Entropy,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let ir = model.to_ir();
+
+        assert_eq!(ir.model.representation, "node_tree");
+        assert_eq!(ir.output_schema.class_order, Some(vec![2.0, 4.0, 6.0, 8.0]));
+        assert!(matches!(
+            &ir.postprocessing.steps[0],
+            ir::PostprocessingStep::MapClassIndexToLabel { labels }
+                if labels == &vec![2.0, 4.0, 6.0, 8.0]
+        ));
+        let ir::TreeDefinition::NodeTree { nodes, .. } = &ir.model.trees[0] else {
+            panic!("id3 should export as a node tree");
+        };
+        assert!(
+            nodes
+                .iter()
+                .any(|node| matches!(node, ir::NodeTreeNode::MultiwayBranch { .. }))
+        );
+    }
+
+    #[test]
+    fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 1.0, 1.0, 2.0],
+            0,
+        )
+        .unwrap();
+
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let ir = model.to_ir();
+
+        let ir::TreeDefinition::ObliviousLevels {
+            depth,
+            leaf_indexing,
+            leaves,
+            ..
+        } = &ir.model.trees[0]
+        else {
+            panic!("oblivious regressor should export as oblivious_levels");
+        };
+
+        assert_eq!(*depth, 2);
+        assert_eq!(leaf_indexing.bit_order, "msb_first");
+        assert_eq!(leaves.len(), 4);
+
+        let json = model.to_ir_json().unwrap();
+        let parsed: ModelPackageIr = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model.tree_type, "oblivious");
     }
 }

@@ -818,6 +818,63 @@ fn sparse_binary_column_from_values(values: &[f64]) -> SparseBinaryColumn {
     }
 }
 
+pub fn numeric_bin_boundaries(values: &[f64]) -> Vec<(u16, f64)> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranked_values: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+    ranked_values.sort_by(|left, right| left.1.total_cmp(&right.1));
+
+    let unique_value_count = ranked_values
+        .iter()
+        .map(|(_row_idx, value)| *value)
+        .fold(Vec::<f64>::new(), |mut unique_values, value| {
+            let is_new_value = unique_values
+                .last()
+                .is_none_or(|last_value| last_value.total_cmp(&value) != Ordering::Equal);
+            if is_new_value {
+                unique_values.push(value);
+            }
+            unique_values
+        })
+        .len();
+
+    let max_bin = (NUMERIC_BINS - 1) as u16;
+    let mut unique_rank = 0usize;
+    let mut start = 0usize;
+    let mut boundaries = Vec::new();
+
+    while start < ranked_values.len() {
+        let current_value = ranked_values[start].1;
+        let end = ranked_values[start..]
+            .iter()
+            .position(|(_row_idx, value)| value.total_cmp(&current_value) != Ordering::Equal)
+            .map_or(ranked_values.len(), |offset| start + offset);
+
+        let bin = if unique_value_count == 1 {
+            0
+        } else {
+            ((unique_rank * usize::from(max_bin)) / (unique_value_count - 1)) as u16
+        };
+
+        if let Some((last_bin, last_upper_bound)) = boundaries.last_mut() {
+            if *last_bin == bin {
+                *last_upper_bound = current_value;
+            } else {
+                boundaries.push((bin, current_value));
+            }
+        } else {
+            boundaries.push((bin, current_value));
+        }
+
+        unique_rank += 1;
+        start = end;
+    }
+
+    boundaries
+}
+
 fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
     if values.is_empty() {
         return Vec::new();
@@ -1146,6 +1203,13 @@ mod tests {
                 .count();
             assert_eq!(canary_true_count, real_true_count);
         }
+    }
+
+    #[test]
+    fn numeric_bin_boundaries_capture_training_bin_upper_bounds() {
+        let boundaries = numeric_bin_boundaries(&[1.0, 1.0, 2.0, 10.0]);
+
+        assert_eq!(boundaries, vec![(0, 1.0), (255, 2.0), (511, 10.0)]);
     }
 
     fn binned_snapshot(table: &DenseTable) -> Vec<u16> {

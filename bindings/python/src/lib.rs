@@ -498,6 +498,26 @@ impl PyModel {
     fn mean_(&self) -> Option<f64> {
         self.inner.mean_value()
     }
+
+    #[pyo3(signature = (pretty=false))]
+    fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.to_ir_json_pretty()
+        } else {
+            self.inner.to_ir_json()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.serialize_pretty()
+        } else {
+            self.inner.serialize()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
 }
 
 #[pymethods]
