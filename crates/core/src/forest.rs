@@ -1,5 +1,9 @@
+use crate::bootstrap::BootstrapSampler;
 use crate::ir::TrainingMetadata;
-use crate::{Criterion, FeaturePreprocessing, Model, PredictError, Task, TreeType};
+use crate::{
+    Criterion, FeaturePreprocessing, Model, Parallelism, PredictError, Task, TrainConfig,
+    TrainError, TreeType, capture_feature_preprocessing, training,
+};
 use forestfire_data::TableAccess;
 
 #[derive(Debug, Clone)]
@@ -10,6 +14,11 @@ pub struct RandomForest {
     trees: Vec<Model>,
     num_features: usize,
     feature_preprocessing: Vec<FeaturePreprocessing>,
+}
+
+struct SampledTable<'a> {
+    base: &'a dyn TableAccess,
+    row_indices: Vec<usize>,
 }
 
 impl RandomForest {
@@ -29,6 +38,44 @@ impl RandomForest {
             num_features,
             feature_preprocessing,
         }
+    }
+
+    pub(crate) fn train(
+        train_set: &dyn TableAccess,
+        config: TrainConfig,
+        criterion: Criterion,
+        parallelism: Parallelism,
+    ) -> Result<Self, TrainError> {
+        let n_trees = config.n_trees.unwrap_or(10);
+        if n_trees == 0 {
+            return Err(TrainError::InvalidTreeCount(n_trees));
+        }
+
+        let sampler = BootstrapSampler::new(train_set.n_rows());
+        let feature_preprocessing = capture_feature_preprocessing(train_set);
+        let mut trees = Vec::with_capacity(n_trees);
+
+        for tree_index in 0..n_trees {
+            let sampled_rows = sampler.sample(tree_index as u64);
+            let sampled_table = SampledTable::new(train_set, sampled_rows);
+            let tree = training::train_single_model(
+                &sampled_table,
+                config.task,
+                config.tree_type,
+                criterion,
+                parallelism,
+            )?;
+            trees.push(tree);
+        }
+
+        Ok(Self::new(
+            config.task,
+            criterion,
+            config.tree_type,
+            trees,
+            train_set.n_features(),
+            feature_preprocessing,
+        ))
     }
 
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
@@ -143,5 +190,68 @@ impl RandomForest {
                 class_labels[best_index]
             })
             .collect()
+    }
+}
+
+impl<'a> SampledTable<'a> {
+    fn new(base: &'a dyn TableAccess, row_indices: Vec<usize>) -> Self {
+        Self { base, row_indices }
+    }
+
+    fn resolve_row(&self, row_index: usize) -> usize {
+        self.row_indices[row_index]
+    }
+}
+
+impl TableAccess for SampledTable<'_> {
+    fn n_rows(&self) -> usize {
+        self.row_indices.len()
+    }
+
+    fn n_features(&self) -> usize {
+        self.base.n_features()
+    }
+
+    fn canaries(&self) -> usize {
+        self.base.canaries()
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        self.base.numeric_bin_cap()
+    }
+
+    fn binned_feature_count(&self) -> usize {
+        self.base.binned_feature_count()
+    }
+
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        self.base
+            .feature_value(feature_index, self.resolve_row(row_index))
+    }
+
+    fn is_binary_feature(&self, index: usize) -> bool {
+        self.base.is_binary_feature(index)
+    }
+
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        self.base
+            .binned_value(feature_index, self.resolve_row(row_index))
+    }
+
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        self.base
+            .binned_boolean_value(feature_index, self.resolve_row(row_index))
+    }
+
+    fn binned_column_kind(&self, index: usize) -> forestfire_data::BinnedColumnKind {
+        self.base.binned_column_kind(index)
+    }
+
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        self.base.is_binary_binned_feature(index)
+    }
+
+    fn target_value(&self, row_index: usize) -> f64 {
+        self.base.target_value(self.resolve_row(row_index))
     }
 }

@@ -240,7 +240,7 @@ def test_predict_proba_rejects_regression_models(
         model.predict_proba(X)
 
 
-def test_train_random_forest_classifier_shell_matches_single_tree_without_bootstrap(
+def test_train_random_forest_classifier_is_serialized_as_an_ensemble(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
     X, y = and_data
@@ -253,22 +253,22 @@ def test_train_random_forest_classifier_shell_matches_single_tree_without_bootst
         canaries=0,
         n_trees=3,
     )
-    tree = train(
-        X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
-    )
 
     assert forest.algorithm == "rf"
     assert forest.task == "classification"
     assert forest.criterion == "gini"
     assert forest.tree_type == "cart"
-    assert np.array_equal(forest.predict(X), tree.predict(X))
-    assert np.allclose(forest.predict_proba(X), tree.predict_proba(X))
+    assert np.array_equal(forest.predict(X), y)
+    assert np.allclose(forest.predict_proba(X).sum(axis=1), 1.0)
+
+    serialized = json.loads(forest.serialize())
+    assert serialized["model"]["is_ensemble"] is True
+    assert len(serialized["model"]["trees"]) == 3
 
 
-def test_train_random_forest_regressor_shell_matches_single_tree_without_bootstrap(
-    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
-) -> None:
-    X, y = toy_data
+def test_train_random_forest_regressor_bootstrap_averages_predictions() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 0.0, 0.0, 100.0])
     forest = train(
         X,
         y,
@@ -276,15 +276,44 @@ def test_train_random_forest_regressor_shell_matches_single_tree_without_bootstr
         task="regression",
         tree_type="cart",
         canaries=0,
-        n_trees=3,
+        n_trees=5,
     )
     tree = train(X, y, algorithm="dt", task="regression", tree_type="cart", canaries=0)
+    forest_preds = forest.predict(X)
+    tree_preds = tree.predict(X)
 
     assert forest.algorithm == "rf"
     assert forest.task == "regression"
     assert forest.criterion == "mean"
     assert forest.tree_type == "cart"
-    assert np.allclose(forest.predict(X), tree.predict(X))
+    assert forest_preds.shape == tree_preds.shape
+    assert np.all(np.isfinite(forest_preds))
+    assert not np.allclose(forest_preds, tree_preds)
+
+
+def test_train_random_forest_classifier_bootstrap_changes_probability_estimates() -> (
+    None
+):
+    X = np.array([[0.0], [0.0], [0.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    forest = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=5,
+    )
+    tree = train(
+        X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
+    )
+
+    forest_proba = forest.predict_proba(X)
+    tree_proba = tree.predict_proba(X)
+
+    assert np.allclose(forest_proba.sum(axis=1), 1.0)
+    assert not np.allclose(forest_proba, tree_proba)
 
 
 def test_random_forest_rejects_zero_trees(

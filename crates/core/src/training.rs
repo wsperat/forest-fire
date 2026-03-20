@@ -28,7 +28,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     })
 }
 
-fn train_single_model(
+pub(crate) fn train_single_model(
     train_set: &dyn TableAccess,
     task: Task,
     tree_type: TreeType,
@@ -138,29 +138,20 @@ fn train_random_forest(
     parallelism: Parallelism,
     n_trees: usize,
 ) -> Result<Model, TrainError> {
-    if n_trees == 0 {
-        return Err(TrainError::InvalidTreeCount(n_trees));
-    }
-
-    let mut trees = Vec::with_capacity(n_trees);
-    for _ in 0..n_trees {
-        trees.push(train_single_model(
-            train_set,
+    RandomForest::train(
+        train_set,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Rf,
             task,
             tree_type,
             criterion,
-            parallelism,
-        )?);
-    }
-
-    Ok(Model::RandomForest(RandomForest::new(
-        task,
+            physical_cores: None,
+            n_trees: Some(n_trees),
+        },
         criterion,
-        tree_type,
-        trees,
-        train_set.n_features(),
-        crate::capture_feature_preprocessing(train_set),
-    )))
+        parallelism,
+    )
+    .map(Model::RandomForest)
 }
 
 fn resolve_criterion(

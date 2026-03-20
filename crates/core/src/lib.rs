@@ -13,6 +13,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use wide::{u16x8, u32x8};
 
+mod bootstrap;
 mod forest;
 pub mod ir;
 mod training;
