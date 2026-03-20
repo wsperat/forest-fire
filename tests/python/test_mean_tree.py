@@ -373,6 +373,22 @@ def test_train_oblivious_classifier(
     assert np.array_equal(model.predict(X), y)
 
 
+def test_train_randomized_classifier(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(
+        X, y, algorithm="dt", task="classification", tree_type="randomized", canaries=0
+    )
+
+    assert model.algorithm == "dt"
+    assert model.task == "classification"
+    assert model.criterion == "gini"
+    assert model.tree_type == "randomized"
+    assert model.mean_ is None
+    assert np.array_equal(model.predict(X), y)
+
+
 def test_train_cart_regressor() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
     y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
@@ -417,15 +433,41 @@ def test_train_oblivious_regressor() -> None:
     assert np.array_equal(model.predict(X), y)
 
 
+def test_train_randomized_regressor() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
+
+    model = train(
+        X,
+        y,
+        algorithm="dt",
+        task="regression",
+        tree_type="randomized",
+        canaries=0,
+        bins=64,
+    )
+
+    assert model.algorithm == "dt"
+    assert model.task == "regression"
+    assert model.criterion == "mean"
+    assert model.tree_type == "randomized"
+    assert model.mean_ is None
+    preds = model.predict(X)
+    baseline = np.full_like(y, fill_value=np.mean(y))
+    assert np.sum((preds - y) ** 2) < np.sum((baseline - y) ** 2)
+
+
 @pytest.mark.parametrize(
     ("task", "tree_type", "expected_criterion"),
     [
         ("regression", "target_mean", "mean"),
         ("regression", "cart", "mean"),
+        ("regression", "randomized", "mean"),
         ("regression", "oblivious", "mean"),
         ("classification", "id3", "entropy"),
         ("classification", "c45", "entropy"),
         ("classification", "cart", "gini"),
+        ("classification", "randomized", "gini"),
         ("classification", "oblivious", "gini"),
     ],
 )

@@ -545,9 +545,10 @@ fn parse_tree_type(tree_type: &str) -> PyResult<TreeType> {
         "id3" => Ok(TreeType::Id3),
         "c45" => Ok(TreeType::C45),
         "cart" => Ok(TreeType::Cart),
+        "randomized" => Ok(TreeType::Randomized),
         "oblivious" => Ok(TreeType::Oblivious),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported tree_type '{}'. Expected one of: target_mean, id3, c45, cart, oblivious",
+            "Unsupported tree_type '{}'. Expected one of: target_mean, id3, c45, cart, randomized, oblivious",
             tree_type
         ))),
     }
@@ -633,6 +634,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
         TreeType::Id3 => "id3",
         TreeType::C45 => "c45",
         TreeType::Cart => "cart",
+        TreeType::Randomized => "randomized",
         TreeType::Oblivious => "oblivious",
     }
 }

@@ -5,6 +5,8 @@ use crate::ir::{
 };
 use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -13,6 +15,7 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegressionTreeAlgorithm {
     Cart,
+    Randomized,
     Oblivious,
 }
 
@@ -194,6 +197,37 @@ pub(crate) fn train_oblivious_regressor_with_criterion_and_parallelism(
     )
 }
 
+pub fn train_randomized_regressor(
+    train_set: &dyn TableAccess,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_randomized_regressor_with_criterion(train_set, Criterion::Mean)
+}
+
+pub fn train_randomized_regressor_with_criterion(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_randomized_regressor_with_criterion_and_parallelism(
+        train_set,
+        criterion,
+        Parallelism::sequential(),
+    )
+}
+
+pub(crate) fn train_randomized_regressor_with_criterion_and_parallelism(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_regressor(
+        train_set,
+        RegressionTreeAlgorithm::Randomized,
+        criterion,
+        parallelism,
+        RegressionTreeOptions::default(),
+    )
+}
+
 fn train_regressor(
     train_set: &dyn TableAccess,
     algorithm: RegressionTreeAlgorithm,
@@ -216,6 +250,21 @@ fn train_regressor(
                 criterion,
                 parallelism,
                 options,
+                algorithm,
+            };
+            let root = build_node(&context, &mut nodes, &all_rows, 0);
+            RegressionTreeStructure::Standard { nodes, root }
+        }
+        RegressionTreeAlgorithm::Randomized => {
+            let mut nodes = Vec::new();
+            let all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
+            let context = BuildContext {
+                table: train_set,
+                targets: &targets,
+                criterion,
+                parallelism,
+                options,
+                algorithm,
             };
             let root = build_node(&context, &mut nodes, &all_rows, 0);
             RegressionTreeStructure::Standard { nodes, root }
@@ -310,6 +359,7 @@ impl DecisionTreeRegressor {
             task: "regression".to_string(),
             tree_type: match self.algorithm {
                 RegressionTreeAlgorithm::Cart => "cart".to_string(),
+                RegressionTreeAlgorithm::Randomized => "randomized".to_string(),
                 RegressionTreeAlgorithm::Oblivious => "oblivious".to_string(),
             },
             criterion: criterion_name(self.criterion).to_string(),
@@ -539,6 +589,7 @@ struct BuildContext<'a> {
     criterion: Criterion,
     parallelism: Parallelism,
     options: RegressionTreeOptions,
+    algorithm: RegressionTreeAlgorithm,
 }
 
 fn finite_targets(train_set: &dyn TableAccess) -> Result<Vec<f64>, RegressionTreeError> {
@@ -585,6 +636,7 @@ fn build_node(
                     rows,
                     context.criterion,
                     context.options.min_samples_leaf,
+                    context.algorithm,
                 )
             })
             .max_by(|left, right| left.score.total_cmp(&right.score))
@@ -598,6 +650,7 @@ fn build_node(
                     rows,
                     context.criterion,
                     context.options.min_samples_leaf,
+                    context.algorithm,
                 )
             })
             .max_by(|left, right| left.score.total_cmp(&right.score))
@@ -732,9 +785,20 @@ fn score_split(
     rows: &[usize],
     criterion: Criterion,
     min_samples_leaf: usize,
+    algorithm: RegressionTreeAlgorithm,
 ) -> Option<RegressionSplitCandidate> {
     if table.is_binary_binned_feature(feature_index) {
         return score_binary_split(
+            table,
+            targets,
+            feature_index,
+            rows,
+            criterion,
+            min_samples_leaf,
+        );
+    }
+    if matches!(algorithm, RegressionTreeAlgorithm::Randomized) {
+        return score_randomized_split(
             table,
             targets,
             feature_index,
@@ -772,6 +836,46 @@ fn score_split(
             })
         })
         .max_by(|left, right| left.score.total_cmp(&right.score))
+}
+
+fn score_randomized_split(
+    table: &dyn TableAccess,
+    targets: &[f64],
+    feature_index: usize,
+    rows: &[usize],
+    criterion: Criterion,
+    min_samples_leaf: usize,
+) -> Option<RegressionSplitCandidate> {
+    let candidate_thresholds = rows
+        .iter()
+        .map(|row_idx| table.binned_value(feature_index, *row_idx))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let threshold_bin =
+        choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
+
+    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = rows
+        .iter()
+        .copied()
+        .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
+
+    if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
+        return None;
+    }
+
+    let parent_loss = regression_loss(rows, targets, criterion);
+    let score = parent_loss
+        - (regression_loss(&left_rows, targets, criterion)
+            + regression_loss(&right_rows, targets, criterion));
+
+    Some(RegressionSplitCandidate {
+        feature_index,
+        threshold_bin,
+        score,
+        left_rows,
+        right_rows,
+    })
 }
 
 fn score_oblivious_split(
@@ -967,6 +1071,27 @@ fn score_binary_split(
     })
 }
 
+fn choose_random_threshold(
+    candidate_thresholds: &[u16],
+    feature_index: usize,
+    rows: &[usize],
+    salt: u64,
+) -> Option<u16> {
+    if candidate_thresholds.is_empty() {
+        return None;
+    }
+
+    let mut seed = salt ^ ((feature_index as u64) << 32) ^ (rows.len() as u64);
+    for row_idx in rows {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add((*row_idx as u64) + 1);
+    }
+    let mut rng = StdRng::seed_from_u64(seed);
+    let selected = rng.gen_range(0..candidate_thresholds.len());
+    candidate_thresholds.get(selected).copied()
+}
+
 fn score_binary_oblivious_split(
     table: &dyn TableAccess,
     targets: &[f64],
@@ -1073,6 +1198,34 @@ mod tests {
         assert_eq!(model.algorithm(), RegressionTreeAlgorithm::Cart);
         assert_eq!(model.criterion(), Criterion::Mean);
         assert_eq!(preds, table_targets(&table));
+    }
+
+    #[test]
+    fn randomized_regressor_fits_basic_numeric_pattern() {
+        let table = quadratic_table();
+        let model = train_randomized_regressor(&table).unwrap();
+        let preds = model.predict_table(&table);
+        let targets = table_targets(&table);
+        let target_mean = targets.iter().sum::<f64>() / targets.len() as f64;
+        let baseline_sse = targets
+            .iter()
+            .map(|target| {
+                let diff = target - target_mean;
+                diff * diff
+            })
+            .sum::<f64>();
+        let model_sse = preds
+            .iter()
+            .zip(targets.iter())
+            .map(|(pred, target)| {
+                let diff = pred - target;
+                diff * diff
+            })
+            .sum::<f64>();
+
+        assert_eq!(model.algorithm(), RegressionTreeAlgorithm::Randomized);
+        assert_eq!(model.criterion(), Criterion::Mean);
+        assert!(model_sse < baseline_sse);
     }
 
     #[test]
@@ -1190,6 +1343,39 @@ mod tests {
             feature_preprocessing: preprocessing.clone(),
             training_canaries: 0,
         });
+        let randomized = Model::DecisionTreeRegressor(DecisionTreeRegressor {
+            algorithm: RegressionTreeAlgorithm::Randomized,
+            criterion: Criterion::Median,
+            structure: RegressionTreeStructure::Standard {
+                nodes: vec![
+                    RegressionNode::Leaf {
+                        value: -1.0,
+                        sample_count: 2,
+                        variance: Some(0.25),
+                    },
+                    RegressionNode::Leaf {
+                        value: 2.5,
+                        sample_count: 3,
+                        variance: Some(1.0),
+                    },
+                    RegressionNode::BinarySplit {
+                        feature_index: 0,
+                        threshold_bin: 0,
+                        left_child: 0,
+                        right_child: 1,
+                        sample_count: 5,
+                        impurity: 3.5,
+                        gain: 0.8,
+                        variance: Some(0.7),
+                    },
+                ],
+                root: 2,
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing.clone(),
+            training_canaries: 0,
+        });
         let oblivious = Model::DecisionTreeRegressor(DecisionTreeRegressor {
             algorithm: RegressionTreeAlgorithm::Oblivious,
             criterion: Criterion::Median,
@@ -1211,7 +1397,11 @@ mod tests {
             training_canaries: 0,
         });
 
-        for (tree_type, model) in [("cart", cart), ("oblivious", oblivious)] {
+        for (tree_type, model) in [
+            ("cart", cart),
+            ("randomized", randomized),
+            ("oblivious", oblivious),
+        ] {
             let json = model.serialize().unwrap();
             assert!(json.contains(&format!("\"tree_type\":\"{tree_type}\"")));
             assert!(json.contains("\"task\":\"regression\""));

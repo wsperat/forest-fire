@@ -548,7 +548,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
         (
             TrainAlgorithm::Dt,
             Task::Classification,
-            TreeType::Id3 | TreeType::C45 | TreeType::Cart,
+            TreeType::Id3 | TreeType::C45 | TreeType::Cart | TreeType::Randomized,
             TreeDefinition::NodeTree {
                 nodes,
                 root_node_id,
@@ -566,6 +566,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                         TreeType::Id3 => DecisionTreeAlgorithm::Id3,
                         TreeType::C45 => DecisionTreeAlgorithm::C45,
                         TreeType::Cart => DecisionTreeAlgorithm::Cart,
+                        TreeType::Randomized => DecisionTreeAlgorithm::Randomized,
                         TreeType::TargetMean | TreeType::Oblivious => unreachable!(),
                     },
                     criterion,
@@ -610,7 +611,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
         (
             TrainAlgorithm::Dt,
             Task::Regression,
-            TreeType::Cart,
+            TreeType::Cart | TreeType::Randomized,
             TreeDefinition::NodeTree {
                 nodes,
                 root_node_id,
@@ -618,7 +619,11 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             },
         ) => Ok(Model::DecisionTreeRegressor(
             DecisionTreeRegressor::from_ir_parts(
-                RegressionTreeAlgorithm::Cart,
+                match tree_type {
+                    TreeType::Cart => RegressionTreeAlgorithm::Cart,
+                    TreeType::Randomized => RegressionTreeAlgorithm::Randomized,
+                    _ => unreachable!(),
+                },
                 criterion,
                 RegressionTreeStructure::Standard {
                     nodes: rebuild_regressor_nodes(nodes)?,
@@ -727,6 +732,7 @@ fn parse_tree_type(value: &str) -> Result<TreeType, IrError> {
         "id3" => Ok(TreeType::Id3),
         "c45" => Ok(TreeType::C45),
         "cart" => Ok(TreeType::Cart),
+        "randomized" => Ok(TreeType::Randomized),
         "oblivious" => Ok(TreeType::Oblivious),
         _ => Err(IrError::UnsupportedTreeType(value.to_string())),
     }
@@ -1293,7 +1299,7 @@ fn required_capabilities(model: &Model, representation: &str) -> Vec<String> {
         TreeType::TargetMean => {
             capabilities.push("constant_leaf_prediction".to_string());
         }
-        TreeType::Cart | TreeType::Oblivious => {
+        TreeType::Cart | TreeType::Randomized | TreeType::Oblivious => {
             capabilities.push("numeric_bin_threshold_splits".to_string());
         }
     }
@@ -1340,6 +1346,7 @@ pub(crate) fn tree_type_name(tree_type: TreeType) -> &'static str {
         TreeType::Id3 => "id3",
         TreeType::C45 => "c45",
         TreeType::Cart => "cart",
+        TreeType::Randomized => "randomized",
         TreeType::Oblivious => "oblivious",
     }
 }

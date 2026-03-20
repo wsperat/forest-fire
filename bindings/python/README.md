@@ -62,7 +62,7 @@ train(
 
 - `algorithm="dt"`
 - `task="regression" | "classification"`
-- `tree_type="target_mean" | "id3" | "c45" | "cart" | "oblivious"`
+- `tree_type="target_mean" | "id3" | "c45" | "cart" | "randomized" | "oblivious"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 
 ### Why these parameters exist
@@ -322,8 +322,8 @@ Current IR v1 intentionally marks these as unsupported rather than pretending th
 
 ## Current support matrix
 
-- regression: `target_mean`, `cart`, `oblivious`
-- classification: `id3`, `c45`, `cart`, `oblivious`
+- regression: `target_mean`, `cart`, `randomized`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
 
 ## Development
 

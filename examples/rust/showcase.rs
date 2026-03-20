@@ -39,6 +39,7 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
         (TreeType::TargetMean, Criterion::Median),
         (TreeType::Cart, Criterion::Mean),
         (TreeType::Cart, Criterion::Median),
+        (TreeType::Randomized, Criterion::Mean),
         (TreeType::Oblivious, Criterion::Mean),
     ];
 
@@ -68,6 +69,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
         (TreeType::C45, Criterion::Entropy),
         (TreeType::Cart, Criterion::Gini),
         (TreeType::Cart, Criterion::Entropy),
+        (TreeType::Randomized, Criterion::Gini),
         (TreeType::Oblivious, Criterion::Gini),
     ];
 

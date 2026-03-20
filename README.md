@@ -678,8 +678,8 @@ It is generated from the Rust IR types and checked in as a contract artifact. Th
 
 ### Tasks and tree types
 
-- `task="regression"` with `tree_type="target_mean" | "cart" | "oblivious"`
-- `task="classification"` with `tree_type="id3" | "c45" | "cart" | "oblivious"`
+- `task="regression"` with `tree_type="target_mean" | "cart" | "randomized" | "oblivious"`
+- `task="classification"` with `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 
 ### Python input types
 

@@ -588,6 +588,7 @@ dependencies = [
  "forestfire-data",
  "num_cpus",
  "polars",
+ "rand",
  "rayon",
  "schemars",
  "serde",

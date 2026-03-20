@@ -6,6 +6,8 @@ use crate::ir::{
 };
 use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -16,6 +18,7 @@ pub enum DecisionTreeAlgorithm {
     Id3,
     C45,
     Cart,
+    Randomized,
     Oblivious,
 }
 
@@ -240,6 +243,33 @@ pub(crate) fn train_oblivious_with_criterion_and_parallelism(
     )
 }
 
+pub fn train_randomized(
+    train_set: &dyn TableAccess,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_randomized_with_criterion(train_set, Criterion::Gini)
+}
+
+pub fn train_randomized_with_criterion(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_randomized_with_criterion_and_parallelism(train_set, criterion, Parallelism::sequential())
+}
+
+pub(crate) fn train_randomized_with_criterion_and_parallelism(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<DecisionTreeClassifier, DecisionTreeError> {
+    train_classifier(
+        train_set,
+        DecisionTreeAlgorithm::Randomized,
+        criterion,
+        parallelism,
+        DecisionTreeOptions::default(),
+    )
+}
+
 fn train_classifier(
     train_set: &dyn TableAccess,
     algorithm: DecisionTreeAlgorithm,
@@ -387,6 +417,7 @@ impl DecisionTreeClassifier {
                 DecisionTreeAlgorithm::Id3 => crate::TreeType::Id3,
                 DecisionTreeAlgorithm::C45 => crate::TreeType::C45,
                 DecisionTreeAlgorithm::Cart => crate::TreeType::Cart,
+                DecisionTreeAlgorithm::Randomized => crate::TreeType::Randomized,
                 DecisionTreeAlgorithm::Oblivious => crate::TreeType::Oblivious,
             })
             .to_string(),
@@ -1061,6 +1092,7 @@ fn score_split(
             score_multiway_split(context, feature_index, rows, MultiwayMetric::GainRatio)
         }
         DecisionTreeAlgorithm::Cart => score_cart_split(context, feature_index, rows),
+        DecisionTreeAlgorithm::Randomized => score_randomized_split(context, feature_index, rows),
         DecisionTreeAlgorithm::Oblivious => None,
     }
 }
@@ -1184,6 +1216,51 @@ fn score_cart_split(
             })
         })
         .max_by(|left, right| split_score(left).total_cmp(&split_score(right)))
+}
+
+fn score_randomized_split(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    rows: &[usize],
+) -> Option<SplitCandidate> {
+    if context.table.is_binary_binned_feature(feature_index) {
+        return score_binary_cart_split(context, feature_index, rows);
+    }
+
+    let candidate_thresholds = rows
+        .iter()
+        .map(|row_idx| context.table.binned_value(feature_index, *row_idx))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let threshold_bin =
+        choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xC1A551F1u64)?;
+
+    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = rows
+        .iter()
+        .copied()
+        .partition(|row_idx| context.table.binned_value(feature_index, *row_idx) <= threshold_bin);
+
+    if left_rows.len() < context.min_samples_leaf || right_rows.len() < context.min_samples_leaf {
+        return None;
+    }
+
+    let parent_counts = class_counts(rows, context.class_indices, context.num_classes);
+    let parent_impurity = classification_impurity(&parent_counts, rows.len(), context.criterion);
+    let left_counts = class_counts(&left_rows, context.class_indices, context.num_classes);
+    let right_counts = class_counts(&right_rows, context.class_indices, context.num_classes);
+    let weighted_impurity = (left_rows.len() as f64 / rows.len() as f64)
+        * classification_impurity(&left_counts, left_rows.len(), context.criterion)
+        + (right_rows.len() as f64 / rows.len() as f64)
+            * classification_impurity(&right_counts, right_rows.len(), context.criterion);
+
+    Some(SplitCandidate::Binary {
+        feature_index,
+        score: parent_impurity - weighted_impurity,
+        threshold_bin,
+        left_rows,
+        right_rows,
+    })
 }
 
 fn score_binary_cart_split(
@@ -1323,6 +1400,27 @@ fn split_score(candidate: &SplitCandidate) -> f64 {
     }
 }
 
+fn choose_random_threshold(
+    candidate_thresholds: &[u16],
+    feature_index: usize,
+    rows: &[usize],
+    salt: u64,
+) -> Option<u16> {
+    if candidate_thresholds.is_empty() {
+        return None;
+    }
+
+    let mut seed = salt ^ ((feature_index as u64) << 32) ^ (rows.len() as u64);
+    for row_idx in rows {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add((*row_idx as u64) + 1);
+    }
+    let mut rng = StdRng::seed_from_u64(seed);
+    let selected = rng.gen_range(0..candidate_thresholds.len());
+    candidate_thresholds.get(selected).copied()
+}
+
 fn split_feature_index(candidate: &SplitCandidate) -> usize {
     match candidate {
         SplitCandidate::Multiway { feature_index, .. }
@@ -1448,6 +1546,16 @@ mod tests {
         let model = train_cart(&table).unwrap();
 
         assert_eq!(model.algorithm(), DecisionTreeAlgorithm::Cart);
+        assert_eq!(model.criterion(), Criterion::Gini);
+        assert_eq!(model.predict_table(&table), table_targets(&table));
+    }
+
+    #[test]
+    fn randomized_fits_basic_boolean_pattern() {
+        let table = and_table();
+        let model = train_randomized(&table).unwrap();
+
+        assert_eq!(model.algorithm(), DecisionTreeAlgorithm::Randomized);
         assert_eq!(model.criterion(), Criterion::Gini);
         assert_eq!(model.predict_table(&table), table_targets(&table));
     }
@@ -1653,6 +1761,40 @@ mod tests {
             feature_preprocessing: preprocessing.clone(),
             training_canaries: 0,
         });
+        let randomized = Model::DecisionTreeClassifier(DecisionTreeClassifier {
+            algorithm: DecisionTreeAlgorithm::Randomized,
+            criterion: Criterion::Entropy,
+            class_labels: class_labels.clone(),
+            structure: TreeStructure::Standard {
+                nodes: vec![
+                    TreeNode::Leaf {
+                        class_index: 0,
+                        sample_count: 3,
+                        class_counts: vec![3, 0],
+                    },
+                    TreeNode::Leaf {
+                        class_index: 1,
+                        sample_count: 2,
+                        class_counts: vec![0, 2],
+                    },
+                    TreeNode::BinarySplit {
+                        feature_index: 0,
+                        threshold_bin: 0,
+                        left_child: 0,
+                        right_child: 1,
+                        sample_count: 5,
+                        impurity: 0.48,
+                        gain: 0.2,
+                        class_counts: vec![3, 2],
+                    },
+                ],
+                root: 2,
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing.clone(),
+            training_canaries: 0,
+        });
         let oblivious = Model::DecisionTreeClassifier(DecisionTreeClassifier {
             algorithm: DecisionTreeAlgorithm::Oblivious,
             criterion: Criterion::Gini,
@@ -1679,6 +1821,7 @@ mod tests {
             ("id3", id3),
             ("c45", c45),
             ("cart", cart),
+            ("randomized", randomized),
             ("oblivious", oblivious),
         ] {
             let json = model.serialize().unwrap();

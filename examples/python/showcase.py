@@ -40,6 +40,7 @@ def show_regression_models() -> None:
         ("target_mean", "median"),
         ("cart", "mean"),
         ("cart", "median"),
+        ("randomized", "mean"),
         ("oblivious", "mean"),
     ]
 
@@ -65,6 +66,7 @@ def show_classification_models() -> None:
         ("c45", "entropy"),
         ("cart", "gini"),
         ("cart", "entropy"),
+        ("randomized", "gini"),
         ("oblivious", "gini"),
     ]
 
