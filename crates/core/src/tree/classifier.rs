@@ -335,6 +335,12 @@ impl DecisionTreeClassifier {
             .collect()
     }
 
+    pub fn predict_proba_table(&self, table: &dyn TableAccess) -> Vec<Vec<f64>> {
+        (0..table.n_rows())
+            .map(|row_idx| self.predict_proba_row(table, row_idx))
+            .collect()
+    }
+
     fn predict_row(&self, table: &dyn TableAccess, row_idx: usize) -> f64 {
         match &self.structure {
             TreeStructure::Standard { nodes, root } => {
@@ -389,6 +395,64 @@ impl DecisionTreeClassifier {
                 });
 
                 self.class_labels[leaf_class_indices[leaf_index]]
+            }
+        }
+    }
+
+    fn predict_proba_row(&self, table: &dyn TableAccess, row_idx: usize) -> Vec<f64> {
+        match &self.structure {
+            TreeStructure::Standard { nodes, root } => {
+                let mut node_index = *root;
+
+                loop {
+                    match &nodes[node_index] {
+                        TreeNode::Leaf { class_counts, .. } => {
+                            return normalized_class_probabilities(class_counts);
+                        }
+                        TreeNode::MultiwaySplit {
+                            feature_index,
+                            branches,
+                            class_counts,
+                            ..
+                        } => {
+                            let bin = table.binned_value(*feature_index, row_idx);
+                            if let Some((_, child_index)) =
+                                branches.iter().find(|(branch_bin, _)| *branch_bin == bin)
+                            {
+                                node_index = *child_index;
+                            } else {
+                                return normalized_class_probabilities(class_counts);
+                            }
+                        }
+                        TreeNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            left_child,
+                            right_child,
+                            ..
+                        } => {
+                            let bin = table.binned_value(*feature_index, row_idx);
+                            node_index = if bin <= *threshold_bin {
+                                *left_child
+                            } else {
+                                *right_child
+                            };
+                        }
+                    }
+                }
+            }
+            TreeStructure::Oblivious {
+                splits,
+                leaf_class_counts,
+                ..
+            } => {
+                let leaf_index = splits.iter().fold(0usize, |leaf_index, split| {
+                    let go_right =
+                        table.binned_value(split.feature_index, row_idx) > split.threshold_bin;
+                    (leaf_index << 1) | usize::from(go_right)
+                });
+
+                normalized_class_probabilities(&leaf_class_counts[leaf_index])
             }
         }
     }
@@ -604,6 +668,18 @@ impl DecisionTreeClassifier {
             training_canaries,
         }
     }
+}
+
+fn normalized_class_probabilities(class_counts: &[usize]) -> Vec<f64> {
+    let total = class_counts.iter().sum::<usize>();
+    if total == 0 {
+        return vec![0.0; class_counts.len()];
+    }
+
+    class_counts
+        .iter()
+        .map(|count| *count as f64 / total as f64)
+        .collect()
 }
 
 fn standard_node_depths(nodes: &[TreeNode], root: usize) -> Vec<usize> {

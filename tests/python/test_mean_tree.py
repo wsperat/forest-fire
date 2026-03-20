@@ -163,6 +163,37 @@ def test_train_cart_classifier(
     assert np.array_equal(model.predict(X), y)
 
 
+def test_predict_proba_returns_class_probabilities(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, _y = and_data
+    model = train(
+        X,
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+    )
+
+    proba = model.predict_proba(X)
+
+    assert proba.shape == (4, 2)
+    assert np.allclose(proba.sum(axis=1), 1.0)
+    assert np.array_equal(
+        proba, np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    )
+
+
+def test_predict_proba_rejects_regression_models(
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = toy_data
+    model = train(X, y, task="regression", tree_type="cart", canaries=0)
+
+    with pytest.raises(ValueError, match="only available for classification models"):
+        model.predict_proba(X)
+
+
 def test_predict_accepts_feature_only_table(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -290,6 +321,16 @@ def test_optimized_inference_accepts_named_feature_dict(
     preds = optimized.predict({"f0": [0.0, 0.0, 1.0, 1.0], "f1": [0.0, 1.0, 0.0, 1.0]})
 
     assert np.array_equal(preds, y)
+
+
+def test_optimized_predict_proba_matches_base_model(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert np.allclose(optimized.predict_proba(X), model.predict_proba(X))
 
 
 def test_optimize_inference_rejects_zero_physical_cores() -> None:

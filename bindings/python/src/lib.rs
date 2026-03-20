@@ -3,7 +3,7 @@ use forestfire_core::{
     TreeType, train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
-use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::types::{PyBytes, PyDict, PyType};
 use pyo3::{Bound, prelude::*};
 use std::collections::BTreeMap;
@@ -171,6 +171,31 @@ where
     Ok(predictions)
 }
 
+fn predict_proba_lazyframe_in_batches<F>(
+    x: &Bound<PyAny>,
+    predict_batch: F,
+) -> PyResult<Vec<Vec<f64>>>
+where
+    F: Fn(InferenceInput) -> PyResult<Vec<Vec<f64>>>,
+{
+    let mut predictions = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let sliced = x.call_method1("slice", (offset, LAZYFRAME_PREDICT_BATCH_ROWS))?;
+        let batch = sliced.call_method0("collect")?;
+        let height = row_count(&batch)?;
+        if height == 0 {
+            break;
+        }
+        predictions.extend(predict_batch(build_inference_input(&batch)?)?);
+        if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+            break;
+        }
+        offset += height;
+    }
+    Ok(predictions)
+}
+
 fn predict_input_with_model(model: &Model, input: InferenceInput) -> PyResult<Vec<f64>> {
     match input {
         InferenceInput::Rows(rows) => model.predict_rows(rows),
@@ -181,6 +206,20 @@ fn predict_input_with_model(model: &Model, input: InferenceInput) -> PyResult<Ve
             columns,
         } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
         InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    }
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+fn predict_proba_input_with_model(model: &Model, input: InferenceInput) -> PyResult<Vec<Vec<f64>>> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_proba_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_proba_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_proba_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => model.predict_proba_table(&table),
     }
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
@@ -198,6 +237,23 @@ fn predict_input_with_optimized_model(
             columns,
         } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
         InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    }
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+fn predict_proba_input_with_optimized_model(
+    model: &CoreOptimizedModel,
+    input: InferenceInput,
+) -> PyResult<Vec<Vec<f64>>> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_proba_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_proba_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_proba_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => model.predict_proba_table(&table),
     }
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
@@ -689,6 +745,22 @@ impl PyModel {
         Ok(PyArray1::from_vec(py, preds))
     }
 
+    fn predict_proba<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let preds = if is_polars_lazyframe(x)? {
+            predict_proba_lazyframe_in_batches(x, |input| {
+                predict_proba_input_with_model(&self.inner, input)
+            })?
+        } else {
+            predict_proba_input_with_model(&self.inner, build_inference_input(x)?)?
+        };
+        PyArray2::from_vec2(py, &preds)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
     #[pyo3(signature = (physical_cores=None))]
     fn optimize_inference(&self, physical_cores: Option<usize>) -> PyResult<PyOptimizedModel> {
         let inner = self
@@ -771,6 +843,22 @@ impl PyOptimizedModel {
             predict_input_with_optimized_model(&self.inner, build_inference_input(x)?)?
         };
         Ok(PyArray1::from_vec(py, preds))
+    }
+
+    fn predict_proba<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let preds = if is_polars_lazyframe(x)? {
+            predict_proba_lazyframe_in_batches(x, |input| {
+                predict_proba_input_with_optimized_model(&self.inner, input)
+            })?
+        } else {
+            predict_proba_input_with_optimized_model(&self.inner, build_inference_input(x)?)?
+        };
+        PyArray2::from_vec2(py, &preds)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
     }
 
     #[getter]

@@ -181,6 +181,7 @@ impl Error for TrainError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PredictError {
+    ProbabilityPredictionRequiresClassification,
     RaggedRows {
         row: usize,
         expected: usize,
@@ -216,6 +217,10 @@ pub enum PredictError {
 impl Display for PredictError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            PredictError::ProbabilityPredictionRequiresClassification => write!(
+                f,
+                "predict_proba is only available for classification models."
+            ),
             PredictError::RaggedRows {
                 row,
                 expected,
@@ -944,6 +949,42 @@ impl OptimizedModel {
         } else {
             Ok(self.predict_table(&table))
         }
+    }
+
+    pub fn predict_proba_table(
+        &self,
+        table: &dyn TableAccess,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
+        self.source_model.predict_proba_table(table)
+    }
+
+    pub fn predict_proba_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, PredictError> {
+        let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
+        self.predict_proba_table(&table)
+    }
+
+    pub fn predict_proba_named_columns(
+        &self,
+        columns: BTreeMap<String, Vec<f64>>,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
+        let table =
+            InferenceTable::from_named_columns(columns, self.source_model.feature_preprocessing())?;
+        self.predict_proba_table(&table)
+    }
+
+    pub fn predict_proba_sparse_binary_columns(
+        &self,
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
+        let table = InferenceTable::from_sparse_binary_columns(
+            n_rows,
+            n_features,
+            columns,
+            self.source_model.feature_preprocessing(),
+        )?;
+        self.predict_proba_table(&table)
     }
 
     pub fn predict_sparse_binary_columns(
@@ -1919,12 +1960,37 @@ impl Model {
         Ok(self.predict_table(&table))
     }
 
+    pub fn predict_proba_table(
+        &self,
+        table: &dyn TableAccess,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
+        match self {
+            Model::DecisionTreeClassifier(model) => Ok(model.predict_proba_table(table)),
+            Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => {
+                Err(PredictError::ProbabilityPredictionRequiresClassification)
+            }
+        }
+    }
+
+    pub fn predict_proba_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, PredictError> {
+        let table = InferenceTable::from_rows(rows, self.feature_preprocessing())?;
+        self.predict_proba_table(&table)
+    }
+
     pub fn predict_named_columns(
         &self,
         columns: BTreeMap<String, Vec<f64>>,
     ) -> Result<Vec<f64>, PredictError> {
         let table = InferenceTable::from_named_columns(columns, self.feature_preprocessing())?;
         Ok(self.predict_table(&table))
+    }
+
+    pub fn predict_proba_named_columns(
+        &self,
+        columns: BTreeMap<String, Vec<f64>>,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
+        let table = InferenceTable::from_named_columns(columns, self.feature_preprocessing())?;
+        self.predict_proba_table(&table)
     }
 
     pub fn predict_sparse_binary_columns(
@@ -1940,6 +2006,21 @@ impl Model {
             self.feature_preprocessing(),
         )?;
         Ok(self.predict_table(&table))
+    }
+
+    pub fn predict_proba_sparse_binary_columns(
+        &self,
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
+        let table = InferenceTable::from_sparse_binary_columns(
+            n_rows,
+            n_features,
+            columns,
+            self.feature_preprocessing(),
+        )?;
+        self.predict_proba_table(&table)
     }
 
     #[cfg(feature = "polars")]

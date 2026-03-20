@@ -7,6 +7,7 @@ The Python package is built around five objects:
 - `Table` for validated training data
 - `train(...)` for fitting
 - `Model.predict(...)` for inference
+- `Model.predict_proba(...)` for classification probabilities
 - `Model.optimize_inference(...)` for optimized inference runtimes
 - `Model.serialize(...)` / `Model.deserialize(...)` for portability
 
@@ -33,8 +34,10 @@ model = train(
 )
 
 preds = model.predict(X)
+proba = model.predict_proba(X)
 fast_model = model.optimize_inference(physical_cores=4)
 fast_preds = fast_model.predict(X)
+fast_proba = fast_model.predict_proba(X)
 compiled = fast_model.serialize_compiled()
 restored_fast = fast_model.deserialize_compiled(compiled, physical_cores=4)
 serialized = model.serialize(pretty=True)
@@ -143,7 +146,7 @@ This controls CPU usage during fitting. The library uses physical cores as the p
 
 `Table` is the public container for validated training data. You can pass raw data directly to `train(...)`, but building a `Table` explicitly is useful when you want preprocessing and validation separated from fitting.
 
-`Table` is intentionally training-oriented. For inference, the intended path is to pass raw arrays, dicts, dataframes, lazyframes, or sparse matrices directly to `predict(...)`.
+`Table` is intentionally training-oriented. For inference, the intended path is to pass raw arrays, dicts, dataframes, lazyframes, or sparse matrices directly to `predict(...)` or `predict_proba(...)`.
 
 `Table` chooses between:
 
