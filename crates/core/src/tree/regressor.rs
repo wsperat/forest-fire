@@ -887,6 +887,9 @@ fn mean(rows: &[usize], targets: &[f64]) -> f64 {
 }
 
 fn median(rows: &[usize], targets: &[f64]) -> f64 {
+    if rows.is_empty() {
+        return 0.0;
+    }
     let mut values: Vec<f64> = rows.iter().map(|row_idx| targets[*row_idx]).collect();
     values.sort_by(|left, right| left.total_cmp(right));
 

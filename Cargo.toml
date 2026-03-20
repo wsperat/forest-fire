@@ -3,6 +3,7 @@ members = [
   "crates/core",
   "crates/data",
   "crates/inference",
+  "examples/rust",
 # "crates/exporters/onnx",
 # "crates/exporters/compiled",
   "bindings/python", # PyO3 binding crate (must contain its own Cargo.toml)

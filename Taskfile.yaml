@@ -19,6 +19,7 @@ tasks:
         uv run isort --check-only
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - >-
@@ -31,6 +32,7 @@ tasks:
         uv run ruff format --check
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
@@ -41,6 +43,7 @@ tasks:
         uv run isort
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - >-
@@ -53,6 +56,7 @@ tasks:
         uv run ruff format
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - uv run yamlfix Taskfile.yaml .pre-commit-config.yaml .github/workflows
@@ -78,13 +82,33 @@ tasks:
     desc: Run Python tests
     deps: [python-ext-develop]
     cmds: [uv run pytest]
+  python-examples:
+    desc: Run Python examples
+    deps: [python-ext-develop]
+    cmds:
+      - uv run python examples/python/mean_tree.py
+      - uv run python examples/python/showcase.py
+  rust-examples:
+    desc: Run Rust examples
+    deps: [rust-toolchain]
+    cmds:
+      - cargo run -p forestfire-rust-examples --bin mean_tree
+      - cargo run -p forestfire-rust-examples --bin showcase
+  examples:
+    desc: Run Python and Rust examples
+    cmds: [task python-examples, task rust-examples]
   lock-check:
     desc: Verify lock file is up-to-date
     cmds: [uv lock --locked]
   check:
     desc: Run Python checks and tests
     deps: [install]
-    cmds: [task lock-check, task lint-check-only, task mypy, task test]
+    cmds:
+      - task lock-check
+      - task lint-check-only
+      - task mypy
+      - task test
+      - task examples
   rust-toolchain:
     desc: Ensure Rust formatting and lint tools are available
     cmds:

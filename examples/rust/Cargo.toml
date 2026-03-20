@@ -1,0 +1,17 @@
+[package]
+name = "forestfire-rust-examples"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+forestfire-core = { path = "../../crates/core" }
+forestfire-data = { path = "../../crates/data" }
+
+[[bin]]
+name = "mean_tree"
+path = "mean_tree.rs"
+
+[[bin]]
+name = "showcase"
+path = "showcase.rs"
