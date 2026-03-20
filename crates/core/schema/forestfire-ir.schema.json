@@ -1075,6 +1075,7 @@
       "required": [
         "algorithm",
         "canaries",
+        "compute_oob",
         "criterion",
         "task",
         "tree_type"
@@ -1097,6 +1098,9 @@
             "type": "number",
             "format": "double"
           }
+        },
+        "compute_oob": {
+          "type": "boolean"
         },
         "criterion": {
           "type": "string"
@@ -1140,6 +1144,13 @@
           ],
           "format": "uint",
           "minimum": 0.0
+        },
+        "oob_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
         },
         "seed": {
           "type": [

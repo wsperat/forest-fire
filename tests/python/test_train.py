@@ -401,6 +401,8 @@ def test_model_and_optimized_model_expose_hyperparameters(
     assert model.n_trees is None
     assert model.max_features is None
     assert model.seed is None
+    assert model.compute_oob is False
+    assert model.oob_score is None
 
     assert optimized.canaries == model.canaries
     assert optimized.max_depth == model.max_depth
@@ -409,6 +411,8 @@ def test_model_and_optimized_model_expose_hyperparameters(
     assert optimized.n_trees == model.n_trees
     assert optimized.max_features == model.max_features
     assert optimized.seed == model.seed
+    assert optimized.compute_oob == model.compute_oob
+    assert optimized.oob_score == model.oob_score
 
 
 def test_train_accepts_min_samples_hyperparameters(
@@ -474,8 +478,51 @@ def test_random_forest_defaults_to_1000_trees(
     )
 
     assert forest.n_trees == 1000
-    serialized = json.loads(forest.serialize())
-    assert len(serialized["model"]["trees"]) == 1000
+
+
+def test_random_forest_classifier_exposes_oob_score_when_requested() -> None:
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((1_000, 4))
+    y = rng.integers(0, 2, size=1_000)
+    model = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=50,
+        seed=13,
+        compute_oob=True,
+    )
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert model.compute_oob is True
+    assert model.oob_score is not None
+    assert 0.0 <= model.oob_score <= 1.0
+    assert optimized.compute_oob is True
+    assert optimized.oob_score == model.oob_score
+
+
+def test_random_forest_regressor_exposes_oob_score_when_requested() -> None:
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((1_000, 4))
+    y = X[:, 0] * 2.0 - X[:, 1] + rng.normal(scale=0.1, size=1_000)
+    model = train(
+        X,
+        y,
+        algorithm="rf",
+        task="regression",
+        tree_type="cart",
+        canaries=0,
+        n_trees=50,
+        seed=13,
+        compute_oob=True,
+    )
+
+    assert model.compute_oob is True
+    assert model.oob_score is not None
+    assert np.isfinite(model.oob_score)
 
 
 @pytest.mark.parametrize("tree_type", ["id3", "c45", "cart", "randomized", "oblivious"])

@@ -59,6 +59,7 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -96,6 +97,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -138,6 +140,7 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -193,6 +196,7 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )?;
 

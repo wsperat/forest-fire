@@ -562,12 +562,14 @@ impl DecisionTreeClassifier {
             .to_string(),
             criterion: criterion_name(self.criterion).to_string(),
             canaries: self.training_canaries,
+            compute_oob: false,
             max_depth: Some(self.options.max_depth),
             min_samples_split: Some(self.options.min_samples_split),
             min_samples_leaf: Some(self.options.min_samples_leaf),
             n_trees: None,
             max_features: self.options.max_features,
             seed: None,
+            oob_score: None,
             class_labels: Some(self.class_labels.clone()),
         }
     }

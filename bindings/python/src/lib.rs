@@ -1006,7 +1006,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -1024,6 +1024,7 @@ fn train(
     n_trees: Option<usize>,
     max_features: Option<&Bound<PyAny>>,
     seed: Option<u64>,
+    compute_oob: bool,
 ) -> PyResult<PyModel> {
     let task_was_auto = task == "auto";
     let resolved_task = resolve_task(x, y, task)?;
@@ -1040,6 +1041,7 @@ fn train(
         n_trees,
         max_features: parse_max_features(max_features)?,
         seed,
+        compute_oob,
     };
     let model = train_model(&table, config)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
@@ -1152,6 +1154,16 @@ impl PyModel {
     #[getter]
     fn seed(&self) -> Option<u64> {
         self.inner.seed()
+    }
+
+    #[getter]
+    fn compute_oob(&self) -> bool {
+        self.inner.compute_oob()
+    }
+
+    #[getter]
+    fn oob_score(&self) -> Option<f64> {
+        self.inner.oob_score()
     }
 
     #[pyo3(signature = (pretty=false))]
@@ -1282,6 +1294,16 @@ impl PyOptimizedModel {
     #[getter]
     fn seed(&self) -> Option<u64> {
         self.inner.seed()
+    }
+
+    #[getter]
+    fn compute_oob(&self) -> bool {
+        self.inner.compute_oob()
+    }
+
+    #[getter]
+    fn oob_score(&self) -> Option<f64> {
+        self.inner.oob_score()
     }
 
     #[pyo3(signature = (pretty=false))]

@@ -44,6 +44,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             min_samples_leaf,
             config.max_features,
             config.seed,
+            config.compute_oob,
         ),
     })
 }
@@ -210,6 +211,7 @@ fn train_random_forest(
     min_samples_leaf: usize,
     max_features: crate::MaxFeatures,
     seed: Option<u64>,
+    compute_oob: bool,
 ) -> Result<Model, TrainError> {
     RandomForest::train(
         train_set,
@@ -225,6 +227,7 @@ fn train_random_forest(
             n_trees: Some(n_trees),
             max_features,
             seed,
+            compute_oob,
         },
         criterion,
         parallelism,

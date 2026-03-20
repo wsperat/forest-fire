@@ -140,6 +140,7 @@ pub struct TrainConfig {
     pub n_trees: Option<usize>,
     pub max_features: MaxFeatures,
     pub seed: Option<u64>,
+    pub compute_oob: bool,
 }
 
 impl Default for TrainConfig {
@@ -156,6 +157,7 @@ impl Default for TrainConfig {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         }
     }
 }
@@ -1167,6 +1169,14 @@ impl OptimizedModel {
 
     pub fn seed(&self) -> Option<u64> {
         self.source_model.seed()
+    }
+
+    pub fn compute_oob(&self) -> bool {
+        self.source_model.compute_oob()
+    }
+
+    pub fn oob_score(&self) -> Option<f64> {
+        self.source_model.oob_score()
     }
 
     pub fn to_ir(&self) -> ModelPackageIr {
@@ -2416,6 +2426,14 @@ impl Model {
 
     pub fn seed(&self) -> Option<u64> {
         self.training_metadata().seed
+    }
+
+    pub fn compute_oob(&self) -> bool {
+        self.training_metadata().compute_oob
+    }
+
+    pub fn oob_score(&self) -> Option<f64> {
+        self.training_metadata().oob_score
     }
 
     pub fn to_ir(&self) -> ModelPackageIr {

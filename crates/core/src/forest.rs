@@ -13,10 +13,17 @@ pub struct RandomForest {
     criterion: Criterion,
     tree_type: TreeType,
     trees: Vec<Model>,
+    compute_oob: bool,
+    oob_score: Option<f64>,
     max_features: usize,
     seed: Option<u64>,
     num_features: usize,
     feature_preprocessing: Vec<FeaturePreprocessing>,
+}
+
+struct TrainedTree {
+    model: Model,
+    oob_rows: Vec<usize>,
 }
 
 struct SampledTable<'a> {
@@ -34,6 +41,8 @@ impl RandomForest {
         criterion: Criterion,
         tree_type: TreeType,
         trees: Vec<Model>,
+        compute_oob: bool,
+        oob_score: Option<f64>,
         max_features: usize,
         seed: Option<u64>,
         num_features: usize,
@@ -44,6 +53,8 @@ impl RandomForest {
             criterion,
             tree_type,
             trees,
+            compute_oob,
+            oob_score,
             max_features,
             seed,
             num_features,
@@ -76,11 +87,11 @@ impl RandomForest {
             thread_count: parallelism.thread_count,
         };
         let per_tree_parallelism = Parallelism::sequential();
-        let train_tree = |tree_index: usize| -> Result<Model, TrainError> {
+        let train_tree = |tree_index: usize| -> Result<TrainedTree, TrainError> {
             let tree_seed = mix_seed(base_seed, tree_index as u64);
-            let sampled_rows = sampler.sample(tree_seed);
+            let (sampled_rows, oob_rows) = sampler.sample_with_oob(tree_seed);
             let sampled_table = SampledTable::new(&train_set, sampled_rows);
-            training::train_single_model_with_feature_subset(
+            let model = training::train_single_model_with_feature_subset(
                 &sampled_table,
                 config.task,
                 config.tree_type,
@@ -91,9 +102,10 @@ impl RandomForest {
                 config.min_samples_leaf.unwrap_or(1),
                 Some(max_features),
                 tree_seed,
-            )
+            )?;
+            Ok(TrainedTree { model, oob_rows })
         };
-        let trees = if tree_parallelism.enabled() {
+        let trained_trees = if tree_parallelism.enabled() {
             (0..n_trees)
                 .into_par_iter()
                 .map(train_tree)
@@ -103,12 +115,20 @@ impl RandomForest {
                 .map(train_tree)
                 .collect::<Result<Vec<_>, _>>()?
         };
+        let oob_score = if config.compute_oob {
+            compute_oob_score(config.task, &trained_trees, &train_set)
+        } else {
+            None
+        };
+        let trees = trained_trees.into_iter().map(|tree| tree.model).collect();
 
         Ok(Self::new(
             config.task,
             criterion,
             config.tree_type,
             trees,
+            config.compute_oob,
+            oob_score,
             max_features,
             config.seed,
             train_set.n_features(),
@@ -181,6 +201,8 @@ impl RandomForest {
         metadata.n_trees = Some(self.trees.len());
         metadata.max_features = Some(self.max_features);
         metadata.seed = self.seed;
+        metadata.compute_oob = self.compute_oob;
+        metadata.oob_score = self.oob_score;
         metadata
     }
 
@@ -189,6 +211,10 @@ impl RandomForest {
             Task::Classification => self.trees[0].class_labels(),
             Task::Regression => None,
         }
+    }
+
+    pub fn oob_score(&self) -> Option<f64> {
+        self.oob_score
     }
 
     fn predict_regression_table(&self, table: &dyn TableAccess) -> Vec<f64> {
@@ -236,6 +262,114 @@ impl RandomForest {
 
 fn mix_seed(base_seed: u64, value: u64) -> u64 {
     base_seed ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17)
+}
+
+fn compute_oob_score(
+    task: Task,
+    trained_trees: &[TrainedTree],
+    train_set: &dyn TableAccess,
+) -> Option<f64> {
+    match task {
+        Task::Classification => compute_classification_oob_score(trained_trees, train_set),
+        Task::Regression => compute_regression_oob_score(trained_trees, train_set),
+    }
+}
+
+fn compute_classification_oob_score(
+    trained_trees: &[TrainedTree],
+    train_set: &dyn TableAccess,
+) -> Option<f64> {
+    let class_labels = trained_trees.first()?.model.class_labels()?;
+    let mut totals = vec![vec![0.0; class_labels.len()]; train_set.n_rows()];
+    let mut counts = vec![0usize; train_set.n_rows()];
+
+    for tree in trained_trees {
+        if tree.oob_rows.is_empty() {
+            continue;
+        }
+        let oob_table = SampledTable::new(train_set, tree.oob_rows.clone());
+        let probabilities = tree
+            .model
+            .predict_proba_table(&oob_table)
+            .expect("classification tree supports predict_proba");
+        for (&row_index, row_probs) in tree.oob_rows.iter().zip(probabilities.iter()) {
+            for (total, prob) in totals[row_index].iter_mut().zip(row_probs.iter()) {
+                *total += *prob;
+            }
+            counts[row_index] += 1;
+        }
+    }
+
+    let mut correct = 0usize;
+    let mut covered = 0usize;
+    for row_index in 0..train_set.n_rows() {
+        if counts[row_index] == 0 {
+            continue;
+        }
+        covered += 1;
+        let predicted = totals[row_index]
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by(|(li, lv), (ri, rv)| lv.total_cmp(rv).then_with(|| ri.cmp(li)))
+            .map(|(index, _)| class_labels[index])
+            .expect("classification probability row is non-empty");
+        if predicted
+            .total_cmp(&train_set.target_value(row_index))
+            .is_eq()
+        {
+            correct += 1;
+        }
+    }
+
+    (covered > 0).then_some(correct as f64 / covered as f64)
+}
+
+fn compute_regression_oob_score(
+    trained_trees: &[TrainedTree],
+    train_set: &dyn TableAccess,
+) -> Option<f64> {
+    let mut totals = vec![0.0; train_set.n_rows()];
+    let mut counts = vec![0usize; train_set.n_rows()];
+
+    for tree in trained_trees {
+        if tree.oob_rows.is_empty() {
+            continue;
+        }
+        let oob_table = SampledTable::new(train_set, tree.oob_rows.clone());
+        let predictions = tree.model.predict_table(&oob_table);
+        for (&row_index, prediction) in tree.oob_rows.iter().zip(predictions.iter().copied()) {
+            totals[row_index] += prediction;
+            counts[row_index] += 1;
+        }
+    }
+
+    let covered_rows: Vec<usize> = counts
+        .iter()
+        .enumerate()
+        .filter_map(|(row_index, count)| (*count > 0).then_some(row_index))
+        .collect();
+    if covered_rows.is_empty() {
+        return None;
+    }
+
+    let mean_target = covered_rows
+        .iter()
+        .map(|row_index| train_set.target_value(*row_index))
+        .sum::<f64>()
+        / covered_rows.len() as f64;
+    let mut residual_sum = 0.0;
+    let mut total_sum = 0.0;
+    for row_index in covered_rows {
+        let actual = train_set.target_value(row_index);
+        let prediction = totals[row_index] / counts[row_index] as f64;
+        residual_sum += (actual - prediction).powi(2);
+        total_sum += (actual - mean_target).powi(2);
+    }
+    if total_sum == 0.0 {
+        return None;
+    }
+    Some(1.0 - residual_sum / total_sum)
 }
 
 impl<'a> SampledTable<'a> {

@@ -51,6 +51,7 @@ fn unified_train_dispatches_regression_cart() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -143,6 +144,7 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap_err();
@@ -194,6 +196,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Mean,
         ),
@@ -213,6 +216,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Mean,
         ),
@@ -232,6 +236,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Mean,
         ),
@@ -251,6 +256,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Entropy,
         ),
@@ -270,6 +276,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Entropy,
         ),
@@ -289,6 +296,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Gini,
         ),
@@ -308,6 +316,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Gini,
         ),
@@ -327,6 +336,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                compute_oob: false,
             },
             Criterion::Gini,
         ),
@@ -382,6 +392,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -397,6 +408,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -412,6 +424,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     ] {
         let single_core = train(&regression_table, config).unwrap();
@@ -449,6 +462,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -464,6 +478,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -479,6 +494,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -494,6 +510,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -509,6 +526,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     ] {
         let single_core = train(&classification_table, config).unwrap();
@@ -585,6 +603,7 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -604,6 +623,7 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -644,6 +664,7 @@ fn ir_exports_regression_tree_with_training_binning() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -702,6 +723,7 @@ fn ir_exports_classifier_with_multiway_postprocessing() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -755,6 +777,7 @@ fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -810,6 +833,7 @@ fn serialized_model_round_trips_through_deserialize() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -853,6 +877,7 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -902,6 +927,7 @@ fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -950,6 +976,7 @@ fn optimized_oblivious_model_matches_base_on_large_batch() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -989,6 +1016,7 @@ fn optimized_cart_model_batch_and_single_row_predictions_match() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1031,6 +1059,7 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1076,6 +1105,7 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1127,6 +1157,7 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1176,6 +1207,7 @@ fn optimized_model_rejects_zero_physical_cores() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1217,6 +1249,7 @@ fn model_predicts_from_raw_rows_without_building_a_training_table() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1262,6 +1295,7 @@ fn model_predicts_from_named_columns() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1305,6 +1339,7 @@ fn model_rejects_missing_named_feature() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1345,6 +1380,7 @@ fn model_rejects_unexpected_named_feature() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1389,6 +1425,7 @@ fn model_rejects_invalid_binary_value_during_inference() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1434,6 +1471,7 @@ fn model_predicts_from_sparse_binary_columns() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1475,6 +1513,7 @@ fn model_predicts_from_polars_dataframe() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1519,6 +1558,7 @@ fn model_predicts_from_polars_lazyframe() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1563,6 +1603,7 @@ fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1629,6 +1670,7 @@ fn model_rejects_polars_nulls() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap();
@@ -1674,6 +1716,7 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap()
@@ -1717,6 +1760,7 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            compute_oob: false,
         },
     )
     .unwrap()

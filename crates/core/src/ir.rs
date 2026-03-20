@@ -308,6 +308,7 @@ pub struct TrainingMetadata {
     pub tree_type: String,
     pub criterion: String,
     pub canaries: usize,
+    pub compute_oob: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,6 +321,8 @@ pub struct TrainingMetadata {
     pub max_features: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oob_score: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_labels: Option<Vec<f64>>,
 }
@@ -555,6 +558,8 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             criterion,
             tree_type,
             trees,
+            ir.training_metadata.compute_oob,
+            ir.training_metadata.oob_score,
             ir.training_metadata
                 .max_features
                 .unwrap_or(num_features.max(1)),

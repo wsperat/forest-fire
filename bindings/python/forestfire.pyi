@@ -36,6 +36,7 @@ def train(
     n_trees: int | None = None,
     max_features: str | int | None = None,
     seed: int | None = None,
+    compute_oob: bool = False,
 ) -> "Model": ...
 
 class OptimizedModel:
@@ -50,6 +51,8 @@ class OptimizedModel:
     n_trees: int | None
     max_features: int | None
     seed: int | None
+    compute_oob: bool
+    oob_score: float | None
 
     @classmethod
     def deserialize_compiled(
@@ -75,6 +78,8 @@ class Model:
     n_trees: int | None
     max_features: int | None
     seed: int | None
+    compute_oob: bool
+    oob_score: float | None
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model": ...
