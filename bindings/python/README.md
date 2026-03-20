@@ -61,6 +61,7 @@ train(
     n_trees=None,
     max_features=None,
     seed=None,
+    compute_oob=False,
 )
 ```
 
@@ -142,6 +143,20 @@ Why this is the default:
 #### `physical_cores`
 
 This controls CPU usage during fitting. The library uses physical cores as the public knob because split scoring is memory-sensitive and that tends to be a more honest resource limit than logical threads.
+
+#### `compute_oob`
+
+This is only meaningful for `algorithm="rf"`.
+
+When enabled, the forest keeps track of each tree’s out-of-bag rows and exposes:
+
+- `model.compute_oob`
+- `model.oob_score`
+
+Current meaning of `oob_score`:
+
+- classification: OOB accuracy
+- regression: OOB `R^2`
 
 ## Tables and input handling
 
@@ -255,6 +270,114 @@ Rows are independent at prediction time, so the optimized runtime parallelizes a
 ### Why the IR stays the same
 
 `OptimizedModel` delegates serialization and IR export to the original semantic model. That keeps portability stable: optimization changes execution strategy, not model meaning.
+
+## Tree introspection
+
+Both `Model` and `OptimizedModel` expose:
+
+- `tree_count`
+- `tree_structure(tree_index=0)`
+- `tree_prediction_stats(tree_index=0)`
+- `tree_node(node_index, tree_index=0)` for standard trees
+- `tree_level(level_index, tree_index=0)` for oblivious trees
+- `tree_leaf(leaf_index, tree_index=0)` for all trees
+
+These methods work for:
+
+- standalone decision trees
+- forests via `tree_index`
+- optimized models, which delegate to the same semantic tree information as the base model
+
+### `tree_structure(...)`
+
+Returns a Python `dict` with:
+
+- `representation`
+- `node_count`
+- `internal_node_count`
+- `leaf_count`
+- `actual_depth`
+- `shortest_path`
+- `longest_path`
+- `average_path`
+
+For standard trees, the path metrics are measured from the root to the leaves actually present after training. For oblivious trees, every leaf is at the same depth, so shortest, longest, and average path are identical.
+
+### `tree_prediction_stats(...)`
+
+Returns a Python `dict` with:
+
+- `count`
+- `unique_count`
+- `min`
+- `max`
+- `mean`
+- `std_dev`
+- `histogram`
+
+`histogram` is a list of `{ "prediction": ..., "count": ... }` entries over leaf prediction values.
+
+For classification trees, prediction values are the stored class labels of the leaves. For regression trees, they are the stored numeric leaf values.
+
+### `tree_node(...)`, `tree_level(...)`, and `tree_leaf(...)`
+
+These expose the same semantic records that appear in IR export:
+
+- standard trees use `tree_node(...)` to inspect splits, child links, unmatched leaves for multiway nodes, and node stats
+- oblivious trees use `tree_level(...)` to inspect one shared split per depth
+- all trees use `tree_leaf(...)` to inspect leaf payloads and stats
+
+Returned records include the learned cutoff information and whatever training stats are available there, such as sample counts, impurity, gain, class counts, or variance.
+
+### Examples
+
+Standard tree:
+
+```python
+model = train(X, y, task="classification", tree_type="cart")
+
+summary = model.tree_structure()
+root = model.tree_node(0)
+leaf = model.tree_leaf(0)
+
+print(summary["actual_depth"])
+print(root["split"])
+print(leaf["leaf"])
+```
+
+Oblivious tree:
+
+```python
+model = train(X, y, task="classification", tree_type="oblivious")
+
+summary = model.tree_structure()
+level0 = model.tree_level(0)
+leaf0 = model.tree_leaf(0)
+
+print(summary["representation"])
+print(level0["split"])
+print(leaf0["stats"])
+```
+
+Forest:
+
+```python
+forest = train(X, y, algorithm="rf", task="classification", tree_type="cart")
+
+print(forest.tree_count)
+print(forest.tree_structure(tree_index=3))
+print(forest.tree_node(0, tree_index=3))
+```
+
+### How it works
+
+The introspection API is IR-backed:
+
+- standard trees are exposed as `node_tree`
+- oblivious trees are exposed as `oblivious_levels`
+- optimized models reuse the same semantic representation as the source model
+
+So introspection reflects the actual learned tree semantics, not a separate debugging-only view.
 
 ## Benchmarks
 

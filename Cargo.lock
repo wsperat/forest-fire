@@ -621,6 +621,8 @@ dependencies = [
  "forestfire-data",
  "numpy",
  "pyo3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

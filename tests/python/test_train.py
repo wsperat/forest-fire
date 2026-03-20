@@ -1137,6 +1137,96 @@ def test_compiled_optimized_model_rejects_invalid_bytes() -> None:
         OptimizedModel.deserialize_compiled(b"not-a-compiled-artifact")
 
 
+@pytest.mark.parametrize("tree_type", ["id3", "c45", "cart", "randomized"])
+def test_standard_tree_introspection_exposes_structure_and_nodes(
+    tree_type: str,
+) -> None:
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    model = train(X, y, task="classification", tree_type=tree_type, canaries=0)
+
+    structure = model.tree_structure()
+    stats = model.tree_prediction_stats()
+    root = model.tree_node(0)
+    first_leaf = model.tree_leaf(0)
+
+    assert model.tree_count == 1
+    assert structure["representation"] == "node_tree"
+    assert structure["leaf_count"] >= 2
+    assert structure["actual_depth"] >= 1
+    assert structure["shortest_path"] <= structure["longest_path"]
+    assert stats["count"] >= 2
+    assert stats["unique_count"] >= 1
+    assert root["kind"] in {"binary_branch", "multiway_branch", "leaf"}
+    assert first_leaf["leaf"]["prediction_kind"] == "class_index"
+
+
+def test_oblivious_tree_introspection_exposes_levels_and_leaves() -> None:
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    model = train(X, y, task="classification", tree_type="oblivious", canaries=0)
+
+    structure = model.tree_structure()
+    level = model.tree_level(0)
+    leaf = model.tree_leaf(0)
+
+    assert structure["representation"] == "oblivious_levels"
+    assert structure["actual_depth"] >= 1
+    assert structure["shortest_path"] == structure["longest_path"]
+    assert level["split"]["split_type"] in {"numeric_bin_threshold", "boolean_test"}
+    assert leaf["leaf"]["prediction_kind"] == "class_index"
+
+
+@pytest.mark.parametrize("tree_type", ["cart", "randomized", "oblivious"])
+def test_regression_tree_prediction_stats_are_numeric(tree_type: str) -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0])
+    model = train(X, y, task="regression", tree_type=tree_type, canaries=0)
+
+    stats = model.tree_prediction_stats()
+
+    assert stats["count"] >= 2
+    assert np.isfinite(stats["min"])
+    assert np.isfinite(stats["max"])
+    assert np.isfinite(stats["mean"])
+    assert np.isfinite(stats["std_dev"])
+
+
+def test_optimized_tree_introspection_matches_base_model() -> None:
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    model = train(X, y, task="classification", tree_type="oblivious", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert optimized.tree_count == model.tree_count
+    assert optimized.tree_structure() == model.tree_structure()
+    assert optimized.tree_prediction_stats() == model.tree_prediction_stats()
+    assert optimized.tree_level(0) == model.tree_level(0)
+    assert optimized.tree_leaf(0) == model.tree_leaf(0)
+
+
+def test_random_forest_tree_introspection_accepts_tree_index() -> None:
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    forest = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=3,
+        seed=7,
+    )
+
+    structure = forest.tree_structure(tree_index=1)
+    node = forest.tree_node(0, tree_index=1)
+
+    assert forest.tree_count == 3
+    assert structure["leaf_count"] >= 1
+    assert node["kind"] in {"binary_branch", "multiway_branch", "leaf"}
+
+
 def test_train_id3_classifier(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:

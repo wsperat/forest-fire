@@ -156,6 +156,7 @@ train(
     n_trees=None,
     max_features=None,
     seed=None,
+    compute_oob=False,
 )
 ```
 
@@ -293,6 +294,88 @@ Behavior:
 - `None` uses all detected physical cores
 - oversized values are capped
 - `0` is rejected
+
+#### `compute_oob`
+
+Default:
+
+- `False`
+
+Why it exists:
+
+- Random forests can estimate generalization quality from out-of-bag rows without needing a separate validation split.
+
+Behavior:
+
+- only meaningful for `algorithm="rf"`
+- classification forests expose OOB accuracy
+- regression forests expose OOB `R^2`
+- non-forest models always report `compute_oob=False` and `oob_score=None`
+
+## Tree introspection
+
+Tree models expose a small introspection API on both `Model` and `OptimizedModel`.
+
+Available members:
+
+- `tree_count`
+- `tree_structure(tree_index=0)`
+- `tree_prediction_stats(tree_index=0)`
+- `tree_node(node_index, tree_index=0)` for standard trees
+- `tree_level(level_index, tree_index=0)` for oblivious trees
+- `tree_leaf(leaf_index, tree_index=0)` for all trees
+
+What it is for:
+
+- understanding realized tree shape after training
+- inspecting cutoffs and leaf payloads
+- summarizing the distribution of prediction values stored in leaves
+- inspecting one tree at a time inside a forest
+
+What `tree_structure(...)` returns:
+
+- `representation`: `"node_tree"` or `"oblivious_levels"`
+- `node_count`
+- `internal_node_count`
+- `leaf_count`
+- `actual_depth`
+- `shortest_path`
+- `longest_path`
+- `average_path`
+
+What `tree_prediction_stats(...)` returns:
+
+- `count`
+- `unique_count`
+- `min`
+- `max`
+- `mean`
+- `std_dev`
+- `histogram`
+
+How it works:
+
+- introspection is derived from the semantic IR, not from a separate debug-only format
+- standard trees are inspected through exported nodes
+- oblivious trees are inspected through exported levels and leaves
+- optimized models delegate to the same semantic model, so introspection matches the original model exactly
+- forests use `tree_index` to inspect a specific constituent tree
+
+Python example:
+
+```python
+model = train(X, y, task="classification", tree_type="cart")
+
+summary = model.tree_structure()
+stats = model.tree_prediction_stats()
+root = model.tree_node(0)
+leaf = model.tree_leaf(0)
+
+print(summary["leaf_count"], summary["actual_depth"])
+print(stats["histogram"])
+print(root["kind"])
+print(leaf["leaf"])
+```
 
 ## Table system
 

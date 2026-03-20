@@ -296,6 +296,16 @@ fn decoded_predictions<'py>(
     Ok(PyArray1::from_vec(py, preds).into_any())
 }
 
+fn to_python_json_value<'py, T: serde::Serialize>(
+    py: Python<'py>,
+    value: &T,
+) -> PyResult<Bound<'py, PyAny>> {
+    let json = py.import("json")?;
+    let serialized = serde_json::to_string(value)
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    json.getattr("loads")?.call1((serialized,))
+}
+
 fn build_sparse_training_table(
     x: &Bound<PyAny>,
     y: &Bound<PyAny>,
@@ -1089,6 +1099,79 @@ impl PyModel {
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
     }
 
+    #[getter]
+    fn tree_count(&self) -> usize {
+        self.inner.tree_count()
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_structure<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let summary = self
+            .inner
+            .tree_structure(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &summary)
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_prediction_stats<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let stats = self
+            .inner
+            .tree_prediction_stats(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &stats)
+    }
+
+    #[pyo3(signature = (node_index, tree_index=0))]
+    fn tree_node<'py>(
+        &self,
+        py: Python<'py>,
+        node_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node = self
+            .inner
+            .tree_node(tree_index, node_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &node)
+    }
+
+    #[pyo3(signature = (level_index, tree_index=0))]
+    fn tree_level<'py>(
+        &self,
+        py: Python<'py>,
+        level_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let level = self
+            .inner
+            .tree_level(tree_index, level_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &level)
+    }
+
+    #[pyo3(signature = (leaf_index, tree_index=0))]
+    fn tree_leaf<'py>(
+        &self,
+        py: Python<'py>,
+        leaf_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let leaf = self
+            .inner
+            .tree_leaf(tree_index, leaf_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &leaf)
+    }
+
     #[pyo3(signature = (physical_cores=None))]
     fn optimize_inference(&self, physical_cores: Option<usize>) -> PyResult<PyOptimizedModel> {
         let inner = self
@@ -1239,6 +1322,79 @@ impl PyOptimizedModel {
         };
         PyArray2::from_vec2(py, &preds)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[getter]
+    fn tree_count(&self) -> usize {
+        self.inner.tree_count()
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_structure<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let summary = self
+            .inner
+            .tree_structure(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &summary)
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_prediction_stats<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let stats = self
+            .inner
+            .tree_prediction_stats(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &stats)
+    }
+
+    #[pyo3(signature = (node_index, tree_index=0))]
+    fn tree_node<'py>(
+        &self,
+        py: Python<'py>,
+        node_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node = self
+            .inner
+            .tree_node(tree_index, node_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &node)
+    }
+
+    #[pyo3(signature = (level_index, tree_index=0))]
+    fn tree_level<'py>(
+        &self,
+        py: Python<'py>,
+        level_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let level = self
+            .inner
+            .tree_level(tree_index, level_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &level)
+    }
+
+    #[pyo3(signature = (leaf_index, tree_index=0))]
+    fn tree_leaf<'py>(
+        &self,
+        py: Python<'py>,
+        leaf_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let leaf = self
+            .inner
+            .tree_leaf(tree_index, leaf_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &leaf)
     }
 
     #[getter]
