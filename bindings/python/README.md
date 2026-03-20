@@ -2,11 +2,12 @@
 
 Python bindings for the unified ForestFire training interface.
 
-The Python package is built around four objects:
+The Python package is built around five objects:
 
 - `Table` for validated training data
 - `train(...)` for fitting
 - `Model.predict(...)` for inference
+- `Model.optimize_inference(...)` for optimized inference runtimes
 - `Model.serialize(...)` / `Model.deserialize(...)` for portability
 
 ## Quickstart
@@ -30,7 +31,9 @@ model = train(
     physical_cores=4,
 )
 
-preds = model.predict(table)
+preds = model.predict(X)
+fast_model = model.optimize_inference(physical_cores=4)
+fast_preds = fast_model.predict(X)
 serialized = model.serialize(pretty=True)
 restored = model.deserialize(serialized)
 ir_json = model.to_ir_json(pretty=True)
@@ -111,6 +114,8 @@ This controls CPU usage during fitting. The library uses physical cores as the p
 
 `Table` is the public container for validated training data. You can pass raw data directly to `train(...)`, but building a `Table` explicitly is useful when you want preprocessing and validation separated from fitting.
 
+`Table` is intentionally training-oriented. For inference, the intended path is to pass raw arrays, dicts, dataframes, lazyframes, or sparse matrices directly to `predict(...)`.
+
 `Table` chooses between:
 
 - `DenseTable` for mixed numeric/binary data
@@ -135,6 +140,40 @@ This controls CPU usage during fitting. The library uses physical cores as the p
 `SparseTable` is binary-only. Internally it stores, per feature, the row positions where the value is `1`. That keeps memory proportional to the number of positive entries rather than the full dense shape.
 
 SciPy sparse matrices are converted into this representation by reading their shape and nonzero coordinates. They are not densified first.
+
+## Optimized inference
+
+Use:
+
+- `fast_model = model.optimize_inference(physical_cores=None)`
+
+The returned `OptimizedModel` predicts the same values and serializes to the same IR as the original `Model`. It is a prediction-optimized runtime view over the same trained model, not a different model artifact.
+
+### What it changes internally
+
+- standard trees are converted into compact prediction-only node layouts
+- binary splits pick the next child by array index instead of repeated branching
+- multiway classifier splits use a dense bin lookup table instead of scanning the branch list
+- oblivious trees are evaluated from compact level arrays into a leaf index
+- row batches are scored in parallel across the requested physical cores
+
+### Where it helps most
+
+- large prediction batches
+- deeper trees
+- multiway classifiers
+- repeated scoring of the same model
+
+### Where it helps less
+
+- tiny batches
+- `target_mean`
+- very shallow trees
+- workloads dominated by input conversion instead of traversal
+
+### Why the IR stays the same
+
+`OptimizedModel` delegates serialization and IR export to the original semantic model. That keeps portability stable: optimization changes execution strategy, not model meaning.
 
 ## Serialization and IR
 

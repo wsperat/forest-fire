@@ -6,7 +6,7 @@
 ForestFire is a tree-learning library with a Rust core and a Python API. The current implementation is centered around three ideas:
 
 - one unified `train(...)` interface instead of learner-specific entrypoints
-- one unified `Table` abstraction that chooses the right internal layout automatically
+- one unified training `Table` abstraction that chooses the right internal layout automatically
 - one explicit JSON IR for serialization, portability, and future runtime/export work
 
 ## What exists today
@@ -18,6 +18,7 @@ ForestFire is a tree-learning library with a Rust core and a Python API. The cur
 - Criterion selection via `gini`, `entropy`, `mean`, `median`, or `auto`
 - Canary-based automatic growth stopping
 - Physical-core-aware parallel training
+- Optimized inference runtimes via `optimize_inference(...)`
 - JSON serialization, deserialization, and formal JSON Schema for the IR
 - Python ingestion from NumPy, pandas, polars, pyarrow, and SciPy
 
@@ -44,7 +45,9 @@ model = train(
     physical_cores=4,
 )
 
-preds = model.predict(table)
+preds = model.predict(X)
+fast_model = model.optimize_inference(physical_cores=4)
+fast_preds = fast_model.predict(X)
 serialized = model.serialize(pretty=True)
 restored = model.deserialize(serialized)
 ir_json = model.to_ir_json(pretty=True)
@@ -78,11 +81,14 @@ fn main() -> Result<()> {
         },
     )?;
 
-    let preds = model.predict_table(&table);
+    let preds = model.predict_rows(x.clone())?;
+    let fast_model = model.optimize_inference(Some(4))?;
+    let fast_preds = fast_model.predict_rows(x.clone())?;
     let serialized = model.serialize_pretty()?;
     let restored = forestfire_core::Model::deserialize(&serialized)?;
 
-    assert_eq!(preds, restored.predict_table(&table));
+    assert_eq!(preds, fast_preds);
+    assert_eq!(preds, restored.predict_rows(x)?);
     Ok(())
 }
 ```
@@ -120,10 +126,11 @@ The intended user flow is:
 1. give the library a feature matrix and target
 2. let `Table` decide how to represent the data
 3. call the unified `train(...)` entrypoint
-4. use `predict(...)`
-5. serialize the result to the JSON IR when you need a portable artifact
+4. use `predict(...)` on raw inference data
+5. optionally call `optimize_inference(...)` when scoring is performance-critical
+6. serialize the result to the JSON IR when you need a portable artifact
 
-That is why the API is organized around `Table`, `train`, `predict`, and `serialize`, rather than around many learner-specific classes.
+That is why the API is organized around `Table`, `train`, `predict`, `optimize_inference`, and `serialize`, rather than around many learner-specific classes.
 
 ## Training interface
 
@@ -254,6 +261,8 @@ Behavior:
 
 Training always goes through a `Table`. That layer is responsible for validation, preprocessing, and choosing the backing memory layout.
 
+Inference is different: users are expected to pass raw rows, named columns, arrays, dataframes, or sparse matrices directly to `predict(...)`. `Table` is primarily the training-side abstraction.
+
 ### `Table`
 
 `Table` is the public wrapper. It inspects the feature matrix and chooses:
@@ -315,6 +324,67 @@ That means:
 - split semantics stay the same across dense and sparse storage
 - dense binary columns and sparse binary columns both use the binary split path
 - `SparseTable` changes storage and access cost, not the public learner API
+
+## Inference optimization
+
+ForestFire now exposes a second inference form:
+
+- Rust: `model.optimize_inference(Some(physical_cores))?`
+- Python: `model.optimize_inference(physical_cores=...)`
+
+This produces an optimized runtime object that preserves exactly the same semantics, predictions, and JSON IR as the original model. The optimized object is prediction-only. Serialization still comes from the same underlying model representation, which is why optimized and non-optimized models export the same IR.
+
+### What is optimized
+
+The optimized runtime does a few different things:
+
+- standard trees are converted into prediction-only node layouts
+- binary splits use array-indexed child selection instead of repeated `if/else` branching
+- multiway classifier splits precompute a dense bin-to-child lookup table, replacing per-row linear search over branches
+- oblivious trees are stored as compact per-level feature and threshold arrays, then evaluated by accumulating the leaf index directly
+- raw inference inputs are converted into a row-major binned matrix, which improves cache locality during repeated row traversal
+- batch prediction is parallelized across rows with a dedicated Rayon thread pool created by `optimize_inference(...)`
+
+### Why this is faster
+
+These optimizations target the main sources of inference cost:
+
+- branch prediction misses from irregular tree traversal
+- pointer chasing through training-oriented tree structures
+- repeated branch scans for multiway splits
+- poor memory locality when scoring many rows
+- leaving CPU cores idle on embarrassingly parallel batch prediction
+
+The optimized runtime does not change the model. It changes only how that same model is laid out and executed.
+
+### Where it helps the most
+
+The biggest gains usually come from:
+
+- large prediction batches, where row-parallel execution can keep all requested cores busy
+- deeper standard trees, where branch-reduced traversal matters more
+- classifier trees with multiway nodes, because the dense child lookup avoids repeated branch search
+- repeated scoring workloads, where the one-time optimization cost is amortized across many predictions
+- dense numeric or mixed tabular batches, where traversal cost dominates once preprocessing has been done
+
+### Where it helps less
+
+The gains are usually smaller for:
+
+- tiny prediction batches, where thread-pool and preprocessing overhead dominate
+- `target_mean`, because its inference path is already trivial
+- very shallow trees, where there is little branch structure to optimize away
+- cases where input coercion dominates total latency more than model traversal does
+
+### Why this also matters for future GPU work
+
+The optimized runtime is intentionally flatter than the training structures:
+
+- standard trees become simple prediction nodes
+- oblivious trees become level arrays plus leaf arrays
+- inference inputs become compact binned matrices
+
+That is a better starting point for future compiled CPU kernels and GPU kernels than the richer training-time representation. The IR does not need to change for that work, because the optimized runtime is just another execution strategy for the same exported model.
 
 ## Serialization and IR
 
