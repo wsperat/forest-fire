@@ -548,3 +548,17 @@ def test_model_serialize_alias_matches_ir_json() -> None:
     model = train(X, y)
 
     assert json.loads(model.serialize()) == json.loads(model.to_ir_json())
+
+
+def test_model_deserialize_round_trip() -> None:
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 0.0, 0.0, 1.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=1)
+    restored = type(model).deserialize(model.serialize())
+
+    assert restored.algorithm == model.algorithm
+    assert restored.task == model.task
+    assert restored.tree_type == model.tree_type
+    assert restored.criterion == model.criterion
+    assert np.array_equal(restored.predict(X), model.predict(X))

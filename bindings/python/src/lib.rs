@@ -3,7 +3,7 @@ use forestfire_core::{
 };
 use forestfire_data::{Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyType};
 use pyo3::{Bound, prelude::*};
 
 #[pyclass(name = "Model")]
@@ -464,6 +464,13 @@ fn train(
 
 #[pymethods]
 impl PyModel {
+    #[classmethod]
+    fn deserialize(_cls: &Bound<PyType>, serialized: &str) -> PyResult<Self> {
+        let inner = Model::deserialize(serialized)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(Self { inner })
+    }
+
     fn predict<'py>(
         &self,
         py: Python<'py>,

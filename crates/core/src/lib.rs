@@ -7,6 +7,7 @@ use std::fmt::{Display, Formatter};
 pub mod ir;
 pub mod tree;
 
+pub use ir::IrError;
 pub use ir::ModelPackageIr;
 pub use tree::classifier::DecisionTreeAlgorithm;
 pub use tree::classifier::DecisionTreeClassifier;
@@ -421,6 +422,12 @@ impl Model {
 
     pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
         self.to_ir_json_pretty()
+    }
+
+    pub fn deserialize(serialized: &str) -> Result<Self, IrError> {
+        let ir: ModelPackageIr =
+            serde_json::from_str(serialized).map_err(|err| IrError::Json(err.to_string()))?;
+        ir::model_from_ir(ir)
     }
 
     pub(crate) fn num_features(&self) -> usize {
@@ -927,5 +934,41 @@ mod tests {
         let json = model.to_ir_json().unwrap();
         let parsed: ModelPackageIr = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.model.tree_type, "oblivious");
+    }
+
+    #[test]
+    fn serialized_model_round_trips_through_deserialize() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            2,
+        )
+        .unwrap();
+
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let serialized = model.serialize().unwrap();
+        let restored = Model::deserialize(&serialized).unwrap();
+
+        assert_eq!(model.algorithm(), restored.algorithm());
+        assert_eq!(model.task(), restored.task());
+        assert_eq!(model.tree_type(), restored.tree_type());
+        assert_eq!(model.criterion(), restored.criterion());
+        assert_eq!(model.predict_table(&table), restored.predict_table(&table));
     }
 }

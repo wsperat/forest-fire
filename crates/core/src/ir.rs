@@ -1,8 +1,19 @@
+use crate::tree::classifier::{
+    DecisionTreeAlgorithm, DecisionTreeClassifier, DecisionTreeOptions,
+    ObliviousSplit as ClassifierObliviousSplit, TreeNode as ClassifierTreeNode,
+    TreeStructure as ClassifierTreeStructure,
+};
+use crate::tree::mean_tree::TargetMeanTree;
+use crate::tree::regressor::{
+    DecisionTreeRegressor, ObliviousSplit as RegressorObliviousSplit, RegressionNode,
+    RegressionTreeAlgorithm, RegressionTreeOptions, RegressionTreeStructure,
+};
 use crate::{
     FeaturePreprocessing, InputFeatureKind, Model, NumericBinBoundary, Task, TrainAlgorithm,
     TreeType,
 };
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 
 const IR_VERSION: &str = "1.0.0";
 const FORMAT_NAME: &str = "forestfire-ir";
@@ -314,6 +325,72 @@ pub struct Compatibility {
     pub required_capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrError {
+    UnsupportedIrVersion(String),
+    UnsupportedFormatName(String),
+    UnsupportedAlgorithm(String),
+    UnsupportedTask(String),
+    UnsupportedTreeType(String),
+    InvalidTreeCount(usize),
+    UnsupportedRepresentation(String),
+    InvalidFeatureCount { schema: usize, preprocessing: usize },
+    MissingClassLabels,
+    InvalidLeaf(String),
+    InvalidNode(String),
+    InvalidPreprocessing(String),
+    InvalidInferenceOption(String),
+    Json(String),
+}
+
+impl Display for IrError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IrError::UnsupportedIrVersion(version) => {
+                write!(f, "Unsupported IR version: {}.", version)
+            }
+            IrError::UnsupportedFormatName(name) => {
+                write!(f, "Unsupported IR format: {}.", name)
+            }
+            IrError::UnsupportedAlgorithm(algorithm) => {
+                write!(f, "Unsupported algorithm: {}.", algorithm)
+            }
+            IrError::UnsupportedTask(task) => write!(f, "Unsupported task: {}.", task),
+            IrError::UnsupportedTreeType(tree_type) => {
+                write!(f, "Unsupported tree type: {}.", tree_type)
+            }
+            IrError::InvalidTreeCount(count) => {
+                write!(f, "Expected exactly one tree in the IR, found {}.", count)
+            }
+            IrError::UnsupportedRepresentation(representation) => {
+                write!(f, "Unsupported tree representation: {}.", representation)
+            }
+            IrError::InvalidFeatureCount {
+                schema,
+                preprocessing,
+            } => write!(
+                f,
+                "Input schema declares {} features, but preprocessing declares {}.",
+                schema, preprocessing
+            ),
+            IrError::MissingClassLabels => {
+                write!(f, "Classification IR requires explicit class labels.")
+            }
+            IrError::InvalidLeaf(message) => write!(f, "Invalid leaf payload: {}.", message),
+            IrError::InvalidNode(message) => write!(f, "Invalid tree node: {}.", message),
+            IrError::InvalidPreprocessing(message) => {
+                write!(f, "Invalid preprocessing section: {}.", message)
+            }
+            IrError::InvalidInferenceOption(message) => {
+                write!(f, "Invalid inference options: {}.", message)
+            }
+            IrError::Json(message) => write!(f, "Invalid JSON: {}.", message),
+        }
+    }
+}
+
+impl std::error::Error for IrError {}
+
 pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
     let tree = match model {
         Model::TargetMean(target_mean) => target_mean.to_ir_tree(),
@@ -391,6 +468,566 @@ pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
             },
         },
     }
+}
+
+pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
+    validate_ir_header(&ir)?;
+    validate_inference_options(&ir.inference_options)?;
+
+    if ir.model.trees.len() != 1 {
+        return Err(IrError::InvalidTreeCount(ir.model.trees.len()));
+    }
+
+    let algorithm = parse_algorithm(&ir.model.algorithm)?;
+    let task = parse_task(&ir.model.task)?;
+    let tree_type = parse_tree_type(&ir.model.tree_type)?;
+    let criterion = parse_criterion(&ir.training_metadata.criterion)?;
+    let feature_preprocessing = feature_preprocessing_from_ir(&ir)?;
+    let num_features = ir.input_schema.feature_count;
+    let options = tree_options(&ir.training_metadata);
+    let training_canaries = ir.training_metadata.canaries;
+    let deserialized_class_labels = classification_labels(&ir).ok();
+    let tree = ir
+        .model
+        .trees
+        .into_iter()
+        .next()
+        .expect("validated single tree");
+
+    match (algorithm, task, tree_type, tree) {
+        (
+            TrainAlgorithm::Dt,
+            Task::Regression,
+            TreeType::TargetMean,
+            TreeDefinition::NodeTree { nodes, .. },
+        ) => {
+            let mean = extract_target_mean_leaf(&nodes)?;
+            Ok(Model::TargetMean(TargetMeanTree::from_ir_parts(
+                mean,
+                criterion,
+                num_features,
+                feature_preprocessing,
+                training_canaries,
+            )))
+        }
+        (
+            TrainAlgorithm::Dt,
+            Task::Classification,
+            TreeType::Id3 | TreeType::C45 | TreeType::Cart,
+            TreeDefinition::NodeTree {
+                nodes,
+                root_node_id,
+                ..
+            },
+        ) => {
+            let class_labels = deserialized_class_labels.ok_or(IrError::MissingClassLabels)?;
+            let structure = ClassifierTreeStructure::Standard {
+                nodes: rebuild_classifier_nodes(nodes, &class_labels)?,
+                root: root_node_id,
+            };
+            Ok(Model::DecisionTreeClassifier(
+                DecisionTreeClassifier::from_ir_parts(
+                    match tree_type {
+                        TreeType::Id3 => DecisionTreeAlgorithm::Id3,
+                        TreeType::C45 => DecisionTreeAlgorithm::C45,
+                        TreeType::Cart => DecisionTreeAlgorithm::Cart,
+                        TreeType::TargetMean | TreeType::Oblivious => unreachable!(),
+                    },
+                    criterion,
+                    class_labels,
+                    structure,
+                    options,
+                    num_features,
+                    feature_preprocessing,
+                    training_canaries,
+                ),
+            ))
+        }
+        (
+            TrainAlgorithm::Dt,
+            Task::Classification,
+            TreeType::Oblivious,
+            TreeDefinition::ObliviousLevels { levels, leaves, .. },
+        ) => {
+            let class_labels = deserialized_class_labels.ok_or(IrError::MissingClassLabels)?;
+            let structure = ClassifierTreeStructure::Oblivious {
+                splits: rebuild_classifier_oblivious_splits(levels)?,
+                leaf_class_indices: rebuild_classifier_leaf_indices(leaves, &class_labels)?,
+            };
+            Ok(Model::DecisionTreeClassifier(
+                DecisionTreeClassifier::from_ir_parts(
+                    DecisionTreeAlgorithm::Oblivious,
+                    criterion,
+                    class_labels,
+                    structure,
+                    options,
+                    num_features,
+                    feature_preprocessing,
+                    training_canaries,
+                ),
+            ))
+        }
+        (
+            TrainAlgorithm::Dt,
+            Task::Regression,
+            TreeType::Cart,
+            TreeDefinition::NodeTree {
+                nodes,
+                root_node_id,
+                ..
+            },
+        ) => Ok(Model::DecisionTreeRegressor(
+            DecisionTreeRegressor::from_ir_parts(
+                RegressionTreeAlgorithm::Cart,
+                criterion,
+                RegressionTreeStructure::Standard {
+                    nodes: rebuild_regressor_nodes(nodes)?,
+                    root: root_node_id,
+                },
+                RegressionTreeOptions {
+                    max_depth: options.max_depth,
+                    min_samples_split: options.min_samples_split,
+                    min_samples_leaf: options.min_samples_leaf,
+                },
+                num_features,
+                feature_preprocessing,
+                training_canaries,
+            ),
+        )),
+        (
+            TrainAlgorithm::Dt,
+            Task::Regression,
+            TreeType::Oblivious,
+            TreeDefinition::ObliviousLevels { levels, leaves, .. },
+        ) => Ok(Model::DecisionTreeRegressor(
+            DecisionTreeRegressor::from_ir_parts(
+                RegressionTreeAlgorithm::Oblivious,
+                criterion,
+                RegressionTreeStructure::Oblivious {
+                    splits: rebuild_regressor_oblivious_splits(levels)?,
+                    leaf_values: rebuild_regressor_leaf_values(leaves)?,
+                },
+                RegressionTreeOptions {
+                    max_depth: options.max_depth,
+                    min_samples_split: options.min_samples_split,
+                    min_samples_leaf: options.min_samples_leaf,
+                },
+                num_features,
+                feature_preprocessing,
+                training_canaries,
+            ),
+        )),
+        (_, _, _, tree) => Err(IrError::UnsupportedRepresentation(match tree {
+            TreeDefinition::NodeTree { .. } => "node_tree".to_string(),
+            TreeDefinition::ObliviousLevels { .. } => "oblivious_levels".to_string(),
+        })),
+    }
+}
+
+fn validate_ir_header(ir: &ModelPackageIr) -> Result<(), IrError> {
+    if ir.ir_version != IR_VERSION {
+        return Err(IrError::UnsupportedIrVersion(ir.ir_version.clone()));
+    }
+    if ir.format_name != FORMAT_NAME {
+        return Err(IrError::UnsupportedFormatName(ir.format_name.clone()));
+    }
+    if ir.model.supports_missing {
+        return Err(IrError::InvalidInferenceOption(
+            "missing values are not supported in IR v1".to_string(),
+        ));
+    }
+    if ir.model.supports_categorical {
+        return Err(IrError::InvalidInferenceOption(
+            "categorical features are not supported in IR v1".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_inference_options(options: &InferenceOptions) -> Result<(), IrError> {
+    if options.threshold_comparison != "leq_left_gt_right" {
+        return Err(IrError::InvalidInferenceOption(format!(
+            "unsupported threshold comparison '{}'",
+            options.threshold_comparison
+        )));
+    }
+    if options.nan_policy != "not_supported" {
+        return Err(IrError::InvalidInferenceOption(format!(
+            "unsupported nan policy '{}'",
+            options.nan_policy
+        )));
+    }
+    Ok(())
+}
+
+fn parse_algorithm(value: &str) -> Result<TrainAlgorithm, IrError> {
+    match value {
+        "dt" => Ok(TrainAlgorithm::Dt),
+        _ => Err(IrError::UnsupportedAlgorithm(value.to_string())),
+    }
+}
+
+fn parse_task(value: &str) -> Result<Task, IrError> {
+    match value {
+        "regression" => Ok(Task::Regression),
+        "classification" => Ok(Task::Classification),
+        _ => Err(IrError::UnsupportedTask(value.to_string())),
+    }
+}
+
+fn parse_tree_type(value: &str) -> Result<TreeType, IrError> {
+    match value {
+        "target_mean" => Ok(TreeType::TargetMean),
+        "id3" => Ok(TreeType::Id3),
+        "c45" => Ok(TreeType::C45),
+        "cart" => Ok(TreeType::Cart),
+        "oblivious" => Ok(TreeType::Oblivious),
+        _ => Err(IrError::UnsupportedTreeType(value.to_string())),
+    }
+}
+
+fn parse_criterion(value: &str) -> Result<crate::Criterion, IrError> {
+    match value {
+        "gini" => Ok(crate::Criterion::Gini),
+        "entropy" => Ok(crate::Criterion::Entropy),
+        "mean" => Ok(crate::Criterion::Mean),
+        "median" => Ok(crate::Criterion::Median),
+        "auto" => Ok(crate::Criterion::Auto),
+        _ => Err(IrError::InvalidInferenceOption(format!(
+            "unsupported criterion '{}'",
+            value
+        ))),
+    }
+}
+
+fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
+    DecisionTreeOptions {
+        max_depth: training.max_depth.unwrap_or(8),
+        min_samples_split: training.min_samples_split.unwrap_or(2),
+        min_samples_leaf: training.min_samples_leaf.unwrap_or(1),
+    }
+}
+
+fn feature_preprocessing_from_ir(
+    ir: &ModelPackageIr,
+) -> Result<Vec<FeaturePreprocessing>, IrError> {
+    let mut features: Vec<Option<FeaturePreprocessing>> = vec![None; ir.input_schema.feature_count];
+
+    for feature in &ir.preprocessing.numeric_binning.features {
+        match feature {
+            FeatureBinning::Numeric {
+                feature_index,
+                boundaries,
+            } => {
+                let slot = features.get_mut(*feature_index).ok_or_else(|| {
+                    IrError::InvalidFeatureCount {
+                        schema: ir.input_schema.feature_count,
+                        preprocessing: feature_index + 1,
+                    }
+                })?;
+                *slot = Some(FeaturePreprocessing::Numeric {
+                    bin_boundaries: boundaries.clone(),
+                });
+            }
+            FeatureBinning::Binary { feature_index } => {
+                let slot = features.get_mut(*feature_index).ok_or_else(|| {
+                    IrError::InvalidFeatureCount {
+                        schema: ir.input_schema.feature_count,
+                        preprocessing: feature_index + 1,
+                    }
+                })?;
+                *slot = Some(FeaturePreprocessing::Binary);
+            }
+        }
+    }
+
+    if features.len() != ir.input_schema.feature_count {
+        return Err(IrError::InvalidFeatureCount {
+            schema: ir.input_schema.feature_count,
+            preprocessing: features.len(),
+        });
+    }
+
+    features
+        .into_iter()
+        .map(|feature| {
+            feature.ok_or_else(|| {
+                IrError::InvalidPreprocessing(
+                    "every feature must have a preprocessing entry".to_string(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn classification_labels(ir: &ModelPackageIr) -> Result<Vec<f64>, IrError> {
+    ir.output_schema
+        .class_order
+        .clone()
+        .or_else(|| ir.training_metadata.class_labels.clone())
+        .ok_or(IrError::MissingClassLabels)
+}
+
+fn extract_target_mean_leaf(nodes: &[NodeTreeNode]) -> Result<f64, IrError> {
+    if nodes.len() != 1 {
+        return Err(IrError::InvalidNode(
+            "target_mean expects a single leaf node".to_string(),
+        ));
+    }
+    match &nodes[0] {
+        NodeTreeNode::Leaf {
+            leaf: LeafPayload::RegressionValue { value },
+            ..
+        } => Ok(*value),
+        _ => Err(IrError::InvalidLeaf(
+            "target_mean leaf must be regression_value".to_string(),
+        )),
+    }
+}
+
+fn classifier_class_index(leaf: &LeafPayload, class_labels: &[f64]) -> Result<usize, IrError> {
+    match leaf {
+        LeafPayload::ClassIndex {
+            class_index,
+            class_value,
+        } => {
+            let Some(expected) = class_labels.get(*class_index) else {
+                return Err(IrError::InvalidLeaf(format!(
+                    "class index {} out of bounds",
+                    class_index
+                )));
+            };
+            if expected.total_cmp(class_value).is_ne() {
+                return Err(IrError::InvalidLeaf(format!(
+                    "class value {} does not match class order entry {}",
+                    class_value, expected
+                )));
+            }
+            Ok(*class_index)
+        }
+        LeafPayload::RegressionValue { .. } => Err(IrError::InvalidLeaf(
+            "expected class_index leaf".to_string(),
+        )),
+    }
+}
+
+fn rebuild_classifier_nodes(
+    nodes: Vec<NodeTreeNode>,
+    class_labels: &[f64],
+) -> Result<Vec<ClassifierTreeNode>, IrError> {
+    let mut rebuilt = vec![None; nodes.len()];
+    for node in nodes {
+        match node {
+            NodeTreeNode::Leaf { node_id, leaf, .. } => {
+                let class_index = classifier_class_index(&leaf, class_labels)?;
+                assign_node(
+                    &mut rebuilt,
+                    node_id,
+                    ClassifierTreeNode::Leaf { class_index },
+                )?;
+            }
+            NodeTreeNode::BinaryBranch {
+                node_id,
+                split,
+                children,
+                ..
+            } => {
+                let (feature_index, threshold_bin) = classifier_binary_split(split)?;
+                assign_node(
+                    &mut rebuilt,
+                    node_id,
+                    ClassifierTreeNode::BinarySplit {
+                        feature_index,
+                        threshold_bin,
+                        left_child: children.left,
+                        right_child: children.right,
+                    },
+                )?;
+            }
+            NodeTreeNode::MultiwayBranch {
+                node_id,
+                split,
+                branches,
+                unmatched_leaf,
+                ..
+            } => {
+                let fallback_class_index = classifier_class_index(&unmatched_leaf, class_labels)?;
+                assign_node(
+                    &mut rebuilt,
+                    node_id,
+                    ClassifierTreeNode::MultiwaySplit {
+                        feature_index: split.feature_index,
+                        fallback_class_index,
+                        branches: branches
+                            .into_iter()
+                            .map(|branch| (branch.bin, branch.child))
+                            .collect(),
+                    },
+                )?;
+            }
+        }
+    }
+    collect_nodes(rebuilt)
+}
+
+fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNode>, IrError> {
+    let mut rebuilt = vec![None; nodes.len()];
+    for node in nodes {
+        match node {
+            NodeTreeNode::Leaf {
+                node_id,
+                leaf: LeafPayload::RegressionValue { value },
+                ..
+            } => {
+                assign_node(&mut rebuilt, node_id, RegressionNode::Leaf { value })?;
+            }
+            NodeTreeNode::Leaf { .. } => {
+                return Err(IrError::InvalidLeaf(
+                    "regression trees require regression_value leaves".to_string(),
+                ));
+            }
+            NodeTreeNode::BinaryBranch {
+                node_id,
+                split,
+                children,
+                ..
+            } => {
+                let (feature_index, threshold_bin) = regressor_binary_split(split)?;
+                assign_node(
+                    &mut rebuilt,
+                    node_id,
+                    RegressionNode::BinarySplit {
+                        feature_index,
+                        threshold_bin,
+                        left_child: children.left,
+                        right_child: children.right,
+                    },
+                )?;
+            }
+            NodeTreeNode::MultiwayBranch { .. } => {
+                return Err(IrError::InvalidNode(
+                    "regression trees do not support multiway branches".to_string(),
+                ));
+            }
+        }
+    }
+    collect_nodes(rebuilt)
+}
+
+fn rebuild_classifier_oblivious_splits(
+    levels: Vec<ObliviousLevel>,
+) -> Result<Vec<ClassifierObliviousSplit>, IrError> {
+    let mut rebuilt = Vec::with_capacity(levels.len());
+    for level in levels {
+        rebuilt.push(match level.split {
+            ObliviousSplit::NumericBinThreshold {
+                feature_index,
+                threshold_bin,
+                ..
+            } => ClassifierObliviousSplit {
+                feature_index,
+                threshold_bin,
+            },
+            ObliviousSplit::BooleanTest { feature_index, .. } => ClassifierObliviousSplit {
+                feature_index,
+                threshold_bin: 0,
+            },
+        });
+    }
+    Ok(rebuilt)
+}
+
+fn rebuild_regressor_oblivious_splits(
+    levels: Vec<ObliviousLevel>,
+) -> Result<Vec<RegressorObliviousSplit>, IrError> {
+    let mut rebuilt = Vec::with_capacity(levels.len());
+    for level in levels {
+        rebuilt.push(match level.split {
+            ObliviousSplit::NumericBinThreshold {
+                feature_index,
+                threshold_bin,
+                ..
+            } => RegressorObliviousSplit {
+                feature_index,
+                threshold_bin,
+            },
+            ObliviousSplit::BooleanTest { feature_index, .. } => RegressorObliviousSplit {
+                feature_index,
+                threshold_bin: 0,
+            },
+        });
+    }
+    Ok(rebuilt)
+}
+
+fn rebuild_classifier_leaf_indices(
+    leaves: Vec<IndexedLeaf>,
+    class_labels: &[f64],
+) -> Result<Vec<usize>, IrError> {
+    let mut rebuilt = vec![None; leaves.len()];
+    for indexed_leaf in leaves {
+        let class_index = classifier_class_index(&indexed_leaf.leaf, class_labels)?;
+        assign_node(&mut rebuilt, indexed_leaf.leaf_index, class_index)?;
+    }
+    collect_nodes(rebuilt)
+}
+
+fn rebuild_regressor_leaf_values(leaves: Vec<IndexedLeaf>) -> Result<Vec<f64>, IrError> {
+    let mut rebuilt = vec![None; leaves.len()];
+    for indexed_leaf in leaves {
+        let value = match indexed_leaf.leaf {
+            LeafPayload::RegressionValue { value } => value,
+            LeafPayload::ClassIndex { .. } => {
+                return Err(IrError::InvalidLeaf(
+                    "regression oblivious leaves require regression_value".to_string(),
+                ));
+            }
+        };
+        assign_node(&mut rebuilt, indexed_leaf.leaf_index, value)?;
+    }
+    collect_nodes(rebuilt)
+}
+
+fn classifier_binary_split(split: BinarySplit) -> Result<(usize, u16), IrError> {
+    match split {
+        BinarySplit::NumericBinThreshold {
+            feature_index,
+            threshold_bin,
+            ..
+        } => Ok((feature_index, threshold_bin)),
+        BinarySplit::BooleanTest { feature_index, .. } => Ok((feature_index, 0)),
+    }
+}
+
+fn regressor_binary_split(split: BinarySplit) -> Result<(usize, u16), IrError> {
+    classifier_binary_split(split)
+}
+
+fn assign_node<T>(slots: &mut [Option<T>], index: usize, value: T) -> Result<(), IrError> {
+    let Some(slot) = slots.get_mut(index) else {
+        return Err(IrError::InvalidNode(format!(
+            "node index {} is out of bounds",
+            index
+        )));
+    };
+    if slot.is_some() {
+        return Err(IrError::InvalidNode(format!(
+            "duplicate node index {}",
+            index
+        )));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+fn collect_nodes<T>(slots: Vec<Option<T>>) -> Result<Vec<T>, IrError> {
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(index, slot)| {
+            slot.ok_or_else(|| IrError::InvalidNode(format!("missing node index {}", index)))
+        })
+        .collect()
 }
 
 fn input_schema(model: &Model) -> InputSchema {

@@ -68,7 +68,7 @@ pub struct DecisionTreeRegressor {
 }
 
 #[derive(Debug, Clone)]
-enum RegressionTreeStructure {
+pub(crate) enum RegressionTreeStructure {
     Standard {
         nodes: Vec<RegressionNode>,
         root: usize,
@@ -80,7 +80,7 @@ enum RegressionTreeStructure {
 }
 
 #[derive(Debug, Clone)]
-enum RegressionNode {
+pub(crate) enum RegressionNode {
     Leaf {
         value: f64,
     },
@@ -93,9 +93,9 @@ enum RegressionNode {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ObliviousSplit {
-    feature_index: usize,
-    threshold_bin: u16,
+pub(crate) struct ObliviousSplit {
+    pub(crate) feature_index: usize,
+    pub(crate) threshold_bin: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -374,6 +374,26 @@ impl DecisionTreeRegressor {
                     })
                     .collect(),
             },
+        }
+    }
+
+    pub(crate) fn from_ir_parts(
+        algorithm: RegressionTreeAlgorithm,
+        criterion: Criterion,
+        structure: RegressionTreeStructure,
+        options: RegressionTreeOptions,
+        num_features: usize,
+        feature_preprocessing: Vec<FeaturePreprocessing>,
+        training_canaries: usize,
+    ) -> Self {
+        Self {
+            algorithm,
+            criterion,
+            structure,
+            options,
+            num_features,
+            feature_preprocessing,
+            training_canaries,
         }
     }
 }

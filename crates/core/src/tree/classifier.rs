@@ -70,7 +70,7 @@ pub struct DecisionTreeClassifier {
 }
 
 #[derive(Debug, Clone)]
-enum TreeStructure {
+pub(crate) enum TreeStructure {
     Standard {
         nodes: Vec<TreeNode>,
         root: usize,
@@ -82,13 +82,13 @@ enum TreeStructure {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ObliviousSplit {
-    feature_index: usize,
-    threshold_bin: u16,
+pub(crate) struct ObliviousSplit {
+    pub(crate) feature_index: usize,
+    pub(crate) threshold_bin: u16,
 }
 
 #[derive(Debug, Clone)]
-enum TreeNode {
+pub(crate) enum TreeNode {
     Leaf {
         class_index: usize,
     },
@@ -475,6 +475,29 @@ impl DecisionTreeClassifier {
         LeafPayload::ClassIndex {
             class_index,
             class_value: self.class_labels[class_index],
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_ir_parts(
+        algorithm: DecisionTreeAlgorithm,
+        criterion: Criterion,
+        class_labels: Vec<f64>,
+        structure: TreeStructure,
+        options: DecisionTreeOptions,
+        num_features: usize,
+        feature_preprocessing: Vec<FeaturePreprocessing>,
+        training_canaries: usize,
+    ) -> Self {
+        Self {
+            algorithm,
+            criterion,
+            class_labels,
+            structure,
+            options,
+            num_features,
+            feature_preprocessing,
+            training_canaries,
         }
     }
 }

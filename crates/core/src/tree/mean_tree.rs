@@ -109,6 +109,22 @@ impl TargetMeanTree {
             }],
         }
     }
+
+    pub(crate) fn from_ir_parts(
+        mean: f64,
+        criterion: Criterion,
+        num_features: usize,
+        feature_preprocessing: Vec<FeaturePreprocessing>,
+        training_canaries: usize,
+    ) -> Self {
+        Self {
+            mean,
+            criterion,
+            num_features,
+            feature_preprocessing,
+            training_canaries,
+        }
+    }
 }
 
 fn median(values: &[f64]) -> f64 {
