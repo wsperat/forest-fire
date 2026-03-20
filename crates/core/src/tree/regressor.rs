@@ -126,11 +126,18 @@ struct RegressionSplitCandidate {
 
 #[derive(Debug, Clone)]
 struct ObliviousLeafState {
-    rows: Vec<usize>,
+    start: usize,
+    end: usize,
     value: f64,
     variance: Option<f64>,
     sum: f64,
     sum_sq: f64,
+}
+
+impl ObliviousLeafState {
+    fn len(&self) -> usize {
+        self.end - self.start
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -746,12 +753,13 @@ fn train_oblivious_structure(
     parallelism: Parallelism,
     options: RegressionTreeOptions,
 ) -> RegressionTreeStructure {
-    let all_rows: Vec<usize> = (0..table.n_rows()).collect();
-    let (root_sum, root_sum_sq) = sum_stats(&all_rows, targets);
+    let mut row_indices: Vec<usize> = (0..table.n_rows()).collect();
+    let (root_sum, root_sum_sq) = sum_stats(&row_indices, targets);
     let mut leaves = vec![ObliviousLeafState {
-        value: regression_value_from_stats(&all_rows, targets, criterion, root_sum),
-        variance: variance_from_stats(all_rows.len(), root_sum, root_sum_sq),
-        rows: all_rows,
+        start: 0,
+        end: row_indices.len(),
+        value: regression_value_from_stats(&row_indices, targets, criterion, root_sum),
+        variance: variance_from_stats(row_indices.len(), root_sum, root_sum_sq),
         sum: root_sum,
         sum_sq: root_sum_sq,
     }];
@@ -760,7 +768,7 @@ fn train_oblivious_structure(
     for depth in 0..options.max_depth {
         if leaves
             .iter()
-            .all(|leaf| leaf.rows.len() < options.min_samples_split)
+            .all(|leaf| leaf.len() < options.min_samples_split)
         {
             break;
         }
@@ -775,6 +783,7 @@ fn train_oblivious_structure(
                 .filter_map(|feature_index| {
                     score_oblivious_split(
                         table,
+                        &row_indices,
                         targets,
                         feature_index,
                         &leaves,
@@ -789,6 +798,7 @@ fn train_oblivious_structure(
                 .filter_map(|feature_index| {
                     score_oblivious_split(
                         table,
+                        &row_indices,
                         targets,
                         feature_index,
                         &leaves,
@@ -806,26 +816,22 @@ fn train_oblivious_structure(
             break;
         }
 
-        leaves = leaves
-            .into_iter()
-            .flat_map(|leaf| {
-                split_oblivious_leaf(
-                    table,
-                    targets,
-                    leaf,
-                    best_split.feature_index,
-                    best_split.threshold_bin,
-                    criterion,
-                )
-            })
-            .collect();
+        leaves = split_oblivious_leaves_in_place(
+            table,
+            &mut row_indices,
+            targets,
+            leaves,
+            best_split.feature_index,
+            best_split.threshold_bin,
+            criterion,
+        );
         splits.push(ObliviousSplit {
             feature_index: best_split.feature_index,
             threshold_bin: best_split.threshold_bin,
             sample_count: table.n_rows(),
             impurity: leaves
                 .iter()
-                .map(|leaf| leaf_regression_loss(leaf, targets, criterion))
+                .map(|leaf| leaf_regression_loss(leaf, &row_indices, targets, criterion))
                 .sum(),
             gain: best_split.score,
         });
@@ -834,7 +840,7 @@ fn train_oblivious_structure(
     RegressionTreeStructure::Oblivious {
         splits,
         leaf_values: leaves.iter().map(|leaf| leaf.value).collect(),
-        leaf_sample_counts: leaves.iter().map(|leaf| leaf.rows.len()).collect(),
+        leaf_sample_counts: leaves.iter().map(ObliviousLeafState::len).collect(),
         leaf_variances: leaves.iter().map(|leaf| leaf.variance).collect(),
     }
 }
@@ -954,6 +960,7 @@ fn score_randomized_split(
 
 fn score_oblivious_split(
     table: &dyn TableAccess,
+    row_indices: &[usize],
     targets: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -964,6 +971,7 @@ fn score_oblivious_split(
         if matches!(criterion, Criterion::Mean) {
             if let Some(candidate) = score_binary_oblivious_split_mean_fast(
                 table,
+                row_indices,
                 targets,
                 feature_index,
                 leaves,
@@ -974,6 +982,7 @@ fn score_oblivious_split(
         }
         return score_binary_oblivious_split(
             table,
+            row_indices,
             targets,
             feature_index,
             leaves,
@@ -984,6 +993,7 @@ fn score_oblivious_split(
     if matches!(criterion, Criterion::Mean) {
         if let Some(candidate) = score_numeric_oblivious_split_mean_fast(
             table,
+            row_indices,
             targets,
             feature_index,
             leaves,
@@ -992,27 +1002,30 @@ fn score_oblivious_split(
             return Some(candidate);
         }
     }
-    let feature_value = |row_idx: usize| table.binned_value(feature_index, row_idx);
     let candidate_thresholds = leaves
         .iter()
-        .flat_map(|leaf| leaf.rows.iter().map(|row_idx| feature_value(*row_idx)))
+        .flat_map(|leaf| {
+            row_indices[leaf.start..leaf.end]
+                .iter()
+                .map(|row_idx| table.binned_value(feature_index, *row_idx))
+        })
         .collect::<BTreeSet<_>>();
 
     candidate_thresholds
         .into_iter()
         .filter_map(|threshold_bin| {
             let score = leaves.iter().fold(0.0, |score, leaf| {
-                let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = leaf
-                    .rows
-                    .iter()
-                    .copied()
-                    .partition(|row_idx| feature_value(*row_idx) <= threshold_bin);
+                let leaf_rows = &row_indices[leaf.start..leaf.end];
+                let (left_rows, right_rows): (Vec<usize>, Vec<usize>) =
+                    leaf_rows.iter().copied().partition(|row_idx| {
+                        table.binned_value(feature_index, *row_idx) <= threshold_bin
+                    });
 
                 if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
                     return score;
                 }
 
-                score + regression_loss(&leaf.rows, targets, criterion)
+                score + regression_loss(leaf_rows, targets, criterion)
                     - (regression_loss(&left_rows, targets, criterion)
                         + regression_loss(&right_rows, targets, criterion))
             });
@@ -1026,59 +1039,55 @@ fn score_oblivious_split(
         .max_by(|left, right| left.score.total_cmp(&right.score))
 }
 
-fn split_oblivious_leaf(
+fn split_oblivious_leaves_in_place(
     table: &dyn TableAccess,
+    row_indices: &mut [usize],
     targets: &[f64],
-    leaf: ObliviousLeafState,
+    leaves: Vec<ObliviousLeafState>,
     feature_index: usize,
     threshold_bin: u16,
     criterion: Criterion,
-) -> [ObliviousLeafState; 2] {
-    let fallback_value = leaf.value;
-    let mut left_rows = Vec::new();
-    let mut right_rows = Vec::new();
-    let mut left_sum = 0.0;
-    let mut left_sum_sq = 0.0;
-    let mut right_sum = 0.0;
-    let mut right_sum_sq = 0.0;
-
-    for row_idx in leaf.rows {
-        let target = targets[row_idx];
-        if table.binned_value(feature_index, row_idx) <= threshold_bin {
-            left_rows.push(row_idx);
-            left_sum += target;
-            left_sum_sq += target * target;
-        } else {
-            right_rows.push(row_idx);
-            right_sum += target;
-            right_sum_sq += target * target;
-        }
-    }
-
-    [
-        ObliviousLeafState {
+) -> Vec<ObliviousLeafState> {
+    let mut next_leaves = Vec::with_capacity(leaves.len() * 2);
+    for leaf in leaves {
+        let fallback_value = leaf.value;
+        let left_count = partition_rows_for_binary_split(
+            table,
+            feature_index,
+            threshold_bin,
+            &mut row_indices[leaf.start..leaf.end],
+        );
+        let mid = leaf.start + left_count;
+        let left_rows = &row_indices[leaf.start..mid];
+        let right_rows = &row_indices[mid..leaf.end];
+        let (left_sum, left_sum_sq) = sum_stats(left_rows, targets);
+        let (right_sum, right_sum_sq) = sum_stats(right_rows, targets);
+        next_leaves.push(ObliviousLeafState {
+            start: leaf.start,
+            end: mid,
             value: if left_rows.is_empty() {
                 fallback_value
             } else {
-                regression_value_from_stats(&left_rows, targets, criterion, left_sum)
+                regression_value_from_stats(left_rows, targets, criterion, left_sum)
             },
             variance: variance_from_stats(left_rows.len(), left_sum, left_sum_sq),
-            rows: left_rows,
             sum: left_sum,
             sum_sq: left_sum_sq,
-        },
-        ObliviousLeafState {
+        });
+        next_leaves.push(ObliviousLeafState {
+            start: mid,
+            end: leaf.end,
             value: if right_rows.is_empty() {
                 fallback_value
             } else {
-                regression_value_from_stats(&right_rows, targets, criterion, right_sum)
+                regression_value_from_stats(right_rows, targets, criterion, right_sum)
             },
             variance: variance_from_stats(right_rows.len(), right_sum, right_sum_sq),
-            rows: right_rows,
             sum: right_sum,
             sum_sq: right_sum_sq,
-        },
-    ]
+        });
+    }
+    next_leaves
 }
 
 fn variance(rows: &[usize], targets: &[f64]) -> Option<f64> {
@@ -1449,6 +1458,7 @@ fn score_randomized_split_choice_mean_fast(
 
 fn score_numeric_oblivious_split_mean_fast(
     table: &dyn TableAccess,
+    row_indices: &[usize],
     targets: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -1467,7 +1477,7 @@ fn score_numeric_oblivious_split_mean_fast(
         let mut bin_sum_sq = vec![0.0; bin_cap];
         let mut observed_bins = vec![false; bin_cap];
 
-        for row_idx in &leaf.rows {
+        for row_idx in &row_indices[leaf.start..leaf.end] {
             let bin = table.binned_value(feature_index, *row_idx) as usize;
             if bin >= bin_cap {
                 return None;
@@ -1489,7 +1499,7 @@ fn score_numeric_oblivious_split_mean_fast(
         }
         observed_any = true;
 
-        let parent_loss = leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.rows.len() as f64;
+        let parent_loss = leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.len() as f64;
         let mut left_count = 0usize;
         let mut left_sum = 0.0;
         let mut left_sum_sq = 0.0;
@@ -1498,7 +1508,7 @@ fn score_numeric_oblivious_split_mean_fast(
             left_count += bin_count[bin];
             left_sum += bin_sum[bin];
             left_sum_sq += bin_sum_sq[bin];
-            let right_count = leaf.rows.len() - left_count;
+            let right_count = leaf.len() - left_count;
 
             if left_count < min_samples_leaf || right_count < min_samples_leaf {
                 continue;
@@ -1599,6 +1609,7 @@ fn node_seed(base_seed: u64, depth: usize, rows: &[usize], salt: u64) -> u64 {
 
 fn score_binary_oblivious_split(
     table: &dyn TableAccess,
+    row_indices: &[usize],
     targets: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -1606,8 +1617,9 @@ fn score_binary_oblivious_split(
     min_samples_leaf: usize,
 ) -> Option<ObliviousSplitCandidate> {
     let score = leaves.iter().fold(0.0, |score, leaf| {
+        let leaf_rows = &row_indices[leaf.start..leaf.end];
         let (left_rows, right_rows): (Vec<usize>, Vec<usize>) =
-            leaf.rows.iter().copied().partition(|row_idx| {
+            leaf_rows.iter().copied().partition(|row_idx| {
                 !table
                     .binned_boolean_value(feature_index, *row_idx)
                     .expect("binary feature must expose boolean values")
@@ -1617,7 +1629,7 @@ fn score_binary_oblivious_split(
             return score;
         }
 
-        score + regression_loss(&leaf.rows, targets, criterion)
+        score + regression_loss(leaf_rows, targets, criterion)
             - (regression_loss(&left_rows, targets, criterion)
                 + regression_loss(&right_rows, targets, criterion))
     });
@@ -1631,6 +1643,7 @@ fn score_binary_oblivious_split(
 
 fn score_binary_oblivious_split_mean_fast(
     table: &dyn TableAccess,
+    row_indices: &[usize],
     targets: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
@@ -1644,7 +1657,7 @@ fn score_binary_oblivious_split_mean_fast(
         let mut left_sum = 0.0;
         let mut left_sum_sq = 0.0;
 
-        for row_idx in &leaf.rows {
+        for row_idx in &row_indices[leaf.start..leaf.end] {
             if !table
                 .binned_boolean_value(feature_index, *row_idx)
                 .expect("binary feature must expose boolean values")
@@ -1656,13 +1669,13 @@ fn score_binary_oblivious_split_mean_fast(
             }
         }
 
-        let right_count = leaf.rows.len() - left_count;
+        let right_count = leaf.len() - left_count;
         if left_count < min_samples_leaf || right_count < min_samples_leaf {
             continue;
         }
 
         found_valid = true;
-        let parent_loss = leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.rows.len() as f64;
+        let parent_loss = leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.len() as f64;
         let right_sum = leaf.sum - left_sum;
         let right_sum_sq = leaf.sum_sq - left_sum_sq;
         let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
@@ -1692,10 +1705,17 @@ fn variance_from_stats(count: usize, sum: f64, sum_sq: f64) -> Option<f64> {
     }
 }
 
-fn leaf_regression_loss(leaf: &ObliviousLeafState, targets: &[f64], criterion: Criterion) -> f64 {
+fn leaf_regression_loss(
+    leaf: &ObliviousLeafState,
+    row_indices: &[usize],
+    targets: &[f64],
+    criterion: Criterion,
+) -> f64 {
     match criterion {
-        Criterion::Mean => leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.rows.len() as f64,
-        Criterion::Median => regression_loss(&leaf.rows, targets, criterion),
+        Criterion::Mean => leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.len() as f64,
+        Criterion::Median => {
+            regression_loss(&row_indices[leaf.start..leaf.end], targets, criterion)
+        }
         _ => unreachable!("regression criterion only supports mean or median"),
     }
 }
