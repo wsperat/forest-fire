@@ -1305,7 +1305,7 @@ fn preprocessing(model: &Model) -> PreprocessingSection {
     PreprocessingSection {
         included_in_model: true,
         numeric_binning: NumericBinning {
-            kind: "rank_bin_512".to_string(),
+            kind: "rank_bin_128".to_string(),
             features,
         },
         notes: "Numeric features use serialized training-time rank bins. Binary features are serialized as booleans. Missing values and categorical encodings are not implemented in IR v1."
@@ -1331,7 +1331,7 @@ fn postprocessing(model: &Model, class_labels: Option<Vec<f64>>) -> Postprocessi
 fn required_capabilities(model: &Model, representation: &str) -> Vec<String> {
     let mut capabilities = vec![
         representation.to_string(),
-        "training_rank_bin_512".to_string(),
+        "training_rank_bin_128".to_string(),
     ];
     match model.tree_type() {
         TreeType::Id3 | TreeType::C45 => {

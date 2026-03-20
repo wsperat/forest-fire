@@ -144,6 +144,13 @@ enum SplitCandidate {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BinarySplitChoice {
+    feature_index: usize,
+    score: f64,
+    threshold_bin: u16,
+}
+
 pub fn train_id3(train_set: &dyn TableAccess) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_id3_with_criterion(train_set, Criterion::Entropy)
 }
@@ -366,6 +373,21 @@ fn train_classifier(
             parallelism,
             options,
         ),
+        DecisionTreeAlgorithm::Cart | DecisionTreeAlgorithm::Randomized => {
+            let mut nodes = Vec::new();
+            let mut all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
+            let context = BuildContext {
+                table: train_set,
+                class_indices: &class_indices,
+                class_labels: &class_labels,
+                algorithm,
+                criterion,
+                parallelism,
+                options,
+            };
+            let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
+            TreeStructure::Standard { nodes, root }
+        }
         _ => {
             let mut nodes = Vec::new();
             let all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
@@ -750,6 +772,107 @@ impl DecisionTreeClassifier {
     }
 }
 
+fn build_binary_node_in_place(
+    context: &BuildContext<'_>,
+    nodes: &mut Vec<TreeNode>,
+    rows: &mut [usize],
+    depth: usize,
+) -> usize {
+    let majority_class_index =
+        majority_class(rows, context.class_indices, context.class_labels.len());
+    let current_class_counts =
+        class_counts(rows, context.class_indices, context.class_labels.len());
+
+    if rows.is_empty()
+        || depth >= context.options.max_depth
+        || rows.len() < context.options.min_samples_split
+        || is_pure(rows, context.class_indices)
+    {
+        return push_leaf(
+            nodes,
+            majority_class_index,
+            rows.len(),
+            current_class_counts,
+        );
+    }
+
+    let scoring = SplitScoringContext {
+        table: context.table,
+        class_indices: context.class_indices,
+        num_classes: context.class_labels.len(),
+        criterion: context.criterion,
+        min_samples_leaf: context.options.min_samples_leaf,
+    };
+    let feature_indices = candidate_feature_indices(
+        context.table.binned_feature_count(),
+        context.options.max_features,
+        node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
+    );
+    let best_split = if context.parallelism.enabled() {
+        feature_indices
+            .into_par_iter()
+            .filter_map(|feature_index| {
+                score_binary_split_choice(&scoring, feature_index, rows, context.algorithm)
+            })
+            .max_by(|left, right| left.score.total_cmp(&right.score))
+    } else {
+        feature_indices
+            .into_iter()
+            .filter_map(|feature_index| {
+                score_binary_split_choice(&scoring, feature_index, rows, context.algorithm)
+            })
+            .max_by(|left, right| left.score.total_cmp(&right.score))
+    };
+
+    match best_split {
+        Some(best_split)
+            if context
+                .table
+                .is_canary_binned_feature(best_split.feature_index) =>
+        {
+            push_leaf(
+                nodes,
+                majority_class_index,
+                rows.len(),
+                current_class_counts,
+            )
+        }
+        Some(best_split) if best_split.score > 0.0 => {
+            let impurity =
+                classification_impurity(&current_class_counts, rows.len(), context.criterion);
+            let left_count = partition_rows_for_binary_split(
+                context.table,
+                best_split.feature_index,
+                best_split.threshold_bin,
+                rows,
+            );
+            let (left_rows, right_rows) = rows.split_at_mut(left_count);
+            let left_child = build_binary_node_in_place(context, nodes, left_rows, depth + 1);
+            let right_child = build_binary_node_in_place(context, nodes, right_rows, depth + 1);
+
+            push_node(
+                nodes,
+                TreeNode::BinarySplit {
+                    feature_index: best_split.feature_index,
+                    threshold_bin: best_split.threshold_bin,
+                    left_child,
+                    right_child,
+                    sample_count: rows.len(),
+                    impurity,
+                    gain: best_split.score,
+                    class_counts: current_class_counts,
+                },
+            )
+        }
+        _ => push_leaf(
+            nodes,
+            majority_class_index,
+            rows.len(),
+            current_class_counts,
+        ),
+    }
+}
+
 fn normalized_class_probabilities(class_counts: &[usize]) -> Vec<f64> {
     let total = class_counts.iter().sum::<usize>();
     if total == 0 {
@@ -1038,6 +1161,7 @@ struct SplitScoringContext<'a> {
 struct ObliviousLeafState {
     rows: Vec<usize>,
     class_index: usize,
+    class_counts: Vec<usize>,
 }
 
 fn train_oblivious_structure(
@@ -1053,6 +1177,7 @@ fn train_oblivious_structure(
     let total_impurity = classification_impurity(&total_class_counts, all_rows.len(), criterion);
     let mut leaves = vec![ObliviousLeafState {
         class_index: majority_class(&all_rows, class_indices, class_labels.len()),
+        class_counts: total_class_counts.clone(),
         rows: all_rows,
     }];
     let mut splits = Vec::new();
@@ -1170,6 +1295,17 @@ fn score_oblivious_split(
             min_samples_leaf,
         );
     }
+    if let Some(candidate) = score_numeric_oblivious_split_fast(
+        table,
+        class_indices,
+        feature_index,
+        leaves,
+        num_classes,
+        criterion,
+        min_samples_leaf,
+    ) {
+        return Some(candidate);
+    }
     let feature_value = |row_idx: usize| table.binned_value(feature_index, row_idx);
     let candidate_thresholds = leaves
         .iter()
@@ -1190,7 +1326,7 @@ fn score_oblivious_split(
                     return score;
                 }
 
-                let parent_counts = class_counts(&leaf.rows, class_indices, num_classes);
+                let parent_counts = leaf.class_counts.clone();
                 let left_counts = class_counts(&left_rows, class_indices, num_classes);
                 let right_counts = class_counts(&right_rows, class_indices, num_classes);
 
@@ -1221,30 +1357,43 @@ fn split_oblivious_leaf(
     feature_index: usize,
     threshold_bin: u16,
 ) -> [ObliviousLeafState; 2] {
-    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = leaf
-        .rows
-        .into_iter()
-        .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
+    let mut left_rows = Vec::new();
+    let mut right_rows = Vec::new();
+    let mut left_class_counts = vec![0usize; num_classes];
+    let mut right_class_counts = vec![0usize; num_classes];
+
+    for row_idx in leaf.rows {
+        let class_index = class_indices[row_idx];
+        if table.binned_value(feature_index, row_idx) <= threshold_bin {
+            left_class_counts[class_index] += 1;
+            left_rows.push(row_idx);
+        } else {
+            right_class_counts[class_index] += 1;
+            right_rows.push(row_idx);
+        }
+    }
 
     let left_class_index = if left_rows.is_empty() {
         leaf.class_index
     } else {
-        majority_class(&left_rows, class_indices, num_classes)
+        majority_class_from_counts(&left_class_counts)
     };
     let right_class_index = if right_rows.is_empty() {
         leaf.class_index
     } else {
-        majority_class(&right_rows, class_indices, num_classes)
+        majority_class_from_counts(&right_class_counts)
     };
 
     [
         ObliviousLeafState {
             rows: left_rows,
             class_index: left_class_index,
+            class_counts: left_class_counts,
         },
         ObliviousLeafState {
             rows: right_rows,
             class_index: right_class_index,
+            class_counts: right_class_counts,
         },
     ]
 }
@@ -1499,7 +1648,7 @@ fn score_binary_oblivious_split(
             return score;
         }
 
-        let parent_counts = class_counts(&leaf.rows, class_indices, num_classes);
+        let parent_counts = leaf.class_counts.clone();
         let left_counts = class_counts(&left_rows, class_indices, num_classes);
         let right_counts = class_counts(&right_rows, class_indices, num_classes);
         let weighted_parent_impurity = leaf.rows.len() as f64
@@ -1517,6 +1666,90 @@ fn score_binary_oblivious_split(
         threshold_bin: 0,
         score,
     })
+}
+
+fn score_numeric_oblivious_split_fast(
+    table: &dyn TableAccess,
+    class_indices: &[usize],
+    feature_index: usize,
+    leaves: &[ObliviousLeafState],
+    num_classes: usize,
+    criterion: Criterion,
+    min_samples_leaf: usize,
+) -> Option<ObliviousSplitCandidate> {
+    let bin_cap = table.numeric_bin_cap();
+    if bin_cap == 0 {
+        return None;
+    }
+
+    let mut threshold_scores = vec![0.0; bin_cap];
+    let mut observed_any = false;
+
+    for leaf in leaves {
+        let mut bin_class_counts = vec![vec![0usize; num_classes]; bin_cap];
+        let mut observed_bins = vec![false; bin_cap];
+        for row_idx in &leaf.rows {
+            let bin = table.binned_value(feature_index, *row_idx) as usize;
+            if bin >= bin_cap {
+                return None;
+            }
+            bin_class_counts[bin][class_indices[*row_idx]] += 1;
+            observed_bins[bin] = true;
+        }
+
+        let observed_bins: Vec<usize> = observed_bins
+            .into_iter()
+            .enumerate()
+            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .collect();
+        if observed_bins.len() <= 1 {
+            continue;
+        }
+        observed_any = true;
+
+        let parent_weighted_impurity = leaf.rows.len() as f64
+            * classification_impurity(&leaf.class_counts, leaf.rows.len(), criterion);
+        let mut left_counts = vec![0usize; num_classes];
+        let mut left_size = 0usize;
+
+        for &bin in &observed_bins {
+            for class_index in 0..num_classes {
+                left_counts[class_index] += bin_class_counts[bin][class_index];
+            }
+            left_size += bin_class_counts[bin].iter().sum::<usize>();
+            let right_size = leaf.rows.len() - left_size;
+
+            if left_size < min_samples_leaf || right_size < min_samples_leaf {
+                continue;
+            }
+
+            let right_counts = leaf
+                .class_counts
+                .iter()
+                .zip(left_counts.iter())
+                .map(|(parent, left)| parent - left)
+                .collect::<Vec<_>>();
+            let weighted_children_impurity = left_size as f64
+                * classification_impurity(&left_counts, left_size, criterion)
+                + right_size as f64 * classification_impurity(&right_counts, right_size, criterion);
+            threshold_scores[bin] += parent_weighted_impurity - weighted_children_impurity;
+        }
+    }
+
+    if !observed_any {
+        return None;
+    }
+
+    threshold_scores
+        .into_iter()
+        .enumerate()
+        .filter(|(_, score)| *score > 0.0)
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(threshold_bin, score)| ObliviousSplitCandidate {
+            feature_index,
+            threshold_bin: threshold_bin as u16,
+            score,
+        })
 }
 
 fn score_numeric_cart_split_fast(
@@ -1659,8 +1892,13 @@ fn class_counts(rows: &[usize], class_indices: &[usize], num_classes: usize) -> 
 }
 
 fn majority_class(rows: &[usize], class_indices: &[usize], num_classes: usize) -> usize {
-    class_counts(rows, class_indices, num_classes)
-        .into_iter()
+    majority_class_from_counts(&class_counts(rows, class_indices, num_classes))
+}
+
+fn majority_class_from_counts(counts: &[usize]) -> usize {
+    counts
+        .iter()
+        .copied()
         .enumerate()
         .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
         .map(|(class_index, _count)| class_index)
@@ -1709,6 +1947,224 @@ fn split_score(candidate: &SplitCandidate) -> f64 {
     match candidate {
         SplitCandidate::Multiway { score, .. } | SplitCandidate::Binary { score, .. } => *score,
     }
+}
+
+fn score_binary_split_choice(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    rows: &[usize],
+    algorithm: DecisionTreeAlgorithm,
+) -> Option<BinarySplitChoice> {
+    match algorithm {
+        DecisionTreeAlgorithm::Cart => {
+            if context.table.is_binary_binned_feature(feature_index) {
+                score_binary_cart_split_choice(context, feature_index, rows)
+            } else {
+                score_numeric_cart_split_choice_fast(context, feature_index, rows)
+            }
+        }
+        DecisionTreeAlgorithm::Randomized => {
+            if context.table.is_binary_binned_feature(feature_index) {
+                score_binary_cart_split_choice(context, feature_index, rows)
+            } else {
+                score_numeric_randomized_split_choice_fast(context, feature_index, rows)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn score_binary_cart_split_choice(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    rows: &[usize],
+) -> Option<BinarySplitChoice> {
+    let parent_counts = class_counts(rows, context.class_indices, context.num_classes);
+    let parent_impurity = classification_impurity(&parent_counts, rows.len(), context.criterion);
+    let mut left_counts = vec![0usize; context.num_classes];
+    let mut left_size = 0usize;
+
+    for row_idx in rows {
+        if !context
+            .table
+            .binned_boolean_value(feature_index, *row_idx)
+            .expect("binary feature must expose boolean values")
+        {
+            left_counts[context.class_indices[*row_idx]] += 1;
+            left_size += 1;
+        }
+    }
+
+    let right_size = rows.len() - left_size;
+    if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+        return None;
+    }
+
+    let right_counts = parent_counts
+        .iter()
+        .zip(left_counts.iter())
+        .map(|(parent, left)| parent - left)
+        .collect::<Vec<_>>();
+    let weighted_impurity = (left_size as f64 / rows.len() as f64)
+        * classification_impurity(&left_counts, left_size, context.criterion)
+        + (right_size as f64 / rows.len() as f64)
+            * classification_impurity(&right_counts, right_size, context.criterion);
+
+    Some(BinarySplitChoice {
+        feature_index,
+        score: parent_impurity - weighted_impurity,
+        threshold_bin: 0,
+    })
+}
+
+fn score_numeric_cart_split_choice_fast(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    rows: &[usize],
+) -> Option<BinarySplitChoice> {
+    let parent_counts = class_counts(rows, context.class_indices, context.num_classes);
+    let parent_impurity = classification_impurity(&parent_counts, rows.len(), context.criterion);
+    let bin_cap = context.table.numeric_bin_cap();
+    if bin_cap == 0 {
+        return None;
+    }
+
+    let mut bin_class_counts = vec![vec![0usize; context.num_classes]; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
+    for row_idx in rows {
+        let bin = context.table.binned_value(feature_index, *row_idx) as usize;
+        if bin >= bin_cap {
+            return None;
+        }
+        bin_class_counts[bin][context.class_indices[*row_idx]] += 1;
+        observed_bins[bin] = true;
+    }
+
+    let observed_bins: Vec<usize> = observed_bins
+        .into_iter()
+        .enumerate()
+        .filter_map(|(bin, seen)| seen.then_some(bin))
+        .collect();
+    if observed_bins.len() <= 1 {
+        return None;
+    }
+
+    let mut left_counts = vec![0usize; context.num_classes];
+    let mut left_size = 0usize;
+    let mut best_threshold = None;
+    let mut best_score = f64::NEG_INFINITY;
+
+    for &bin in &observed_bins {
+        for class_index in 0..context.num_classes {
+            left_counts[class_index] += bin_class_counts[bin][class_index];
+        }
+        left_size += bin_class_counts[bin].iter().sum::<usize>();
+        let right_size = rows.len() - left_size;
+
+        if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+            continue;
+        }
+
+        let right_counts = parent_counts
+            .iter()
+            .zip(left_counts.iter())
+            .map(|(parent, left)| parent - left)
+            .collect::<Vec<_>>();
+        let weighted_impurity = (left_size as f64 / rows.len() as f64)
+            * classification_impurity(&left_counts, left_size, context.criterion)
+            + (right_size as f64 / rows.len() as f64)
+                * classification_impurity(&right_counts, right_size, context.criterion);
+        let score = parent_impurity - weighted_impurity;
+        if score > best_score {
+            best_score = score;
+            best_threshold = Some(bin as u16);
+        }
+    }
+
+    best_threshold.map(|threshold_bin| BinarySplitChoice {
+        feature_index,
+        score: best_score,
+        threshold_bin,
+    })
+}
+
+fn score_numeric_randomized_split_choice_fast(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    rows: &[usize],
+) -> Option<BinarySplitChoice> {
+    let bin_cap = context.table.numeric_bin_cap();
+    if bin_cap == 0 {
+        return None;
+    }
+    let mut observed_bins = vec![false; bin_cap];
+    for row_idx in rows {
+        let bin = context.table.binned_value(feature_index, *row_idx) as usize;
+        if bin >= bin_cap {
+            return None;
+        }
+        observed_bins[bin] = true;
+    }
+    let candidate_thresholds = observed_bins
+        .into_iter()
+        .enumerate()
+        .filter_map(|(bin, seen)| seen.then_some(bin as u16))
+        .collect::<Vec<_>>();
+    let threshold_bin =
+        choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xC1A551F1u64)?;
+
+    let parent_counts = class_counts(rows, context.class_indices, context.num_classes);
+    let parent_impurity = classification_impurity(&parent_counts, rows.len(), context.criterion);
+    let mut left_counts = vec![0usize; context.num_classes];
+    let mut left_size = 0usize;
+    for row_idx in rows {
+        if context.table.binned_value(feature_index, *row_idx) <= threshold_bin {
+            left_counts[context.class_indices[*row_idx]] += 1;
+            left_size += 1;
+        }
+    }
+    let right_size = rows.len() - left_size;
+    if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+        return None;
+    }
+    let right_counts = parent_counts
+        .iter()
+        .zip(left_counts.iter())
+        .map(|(parent, left)| parent - left)
+        .collect::<Vec<_>>();
+    let weighted_impurity = (left_size as f64 / rows.len() as f64)
+        * classification_impurity(&left_counts, left_size, context.criterion)
+        + (right_size as f64 / rows.len() as f64)
+            * classification_impurity(&right_counts, right_size, context.criterion);
+
+    Some(BinarySplitChoice {
+        feature_index,
+        score: parent_impurity - weighted_impurity,
+        threshold_bin,
+    })
+}
+
+fn partition_rows_for_binary_split(
+    table: &dyn TableAccess,
+    feature_index: usize,
+    threshold_bin: u16,
+    rows: &mut [usize],
+) -> usize {
+    let mut left = 0usize;
+    for index in 0..rows.len() {
+        let go_left = if table.is_binary_binned_feature(feature_index) {
+            !table
+                .binned_boolean_value(feature_index, rows[index])
+                .expect("binary feature must expose boolean values")
+        } else {
+            table.binned_value(feature_index, rows[index]) <= threshold_bin
+        };
+        if go_left {
+            rows.swap(left, index);
+            left += 1;
+        }
+    }
+    left
 }
 
 fn choose_random_threshold(
@@ -1988,7 +2444,7 @@ mod tests {
                         upper_bound: 1.0,
                     },
                     NumericBinBoundary {
-                        bin: 511,
+                        bin: 127,
                         upper_bound: 10.0,
                     },
                 ],
@@ -2016,7 +2472,7 @@ mod tests {
                     TreeNode::MultiwaySplit {
                         feature_index: 1,
                         fallback_class_index: 0,
-                        branches: vec![(0, 0), (511, 1)],
+                        branches: vec![(0, 0), (127, 1)],
                         sample_count: 5,
                         impurity: 0.48,
                         gain: 0.24,
@@ -2049,7 +2505,7 @@ mod tests {
                     TreeNode::MultiwaySplit {
                         feature_index: 1,
                         fallback_class_index: 0,
-                        branches: vec![(0, 0), (511, 1)],
+                        branches: vec![(0, 0), (127, 1)],
                         sample_count: 5,
                         impurity: 0.48,
                         gain: 0.24,

@@ -2,6 +2,9 @@
 
 Python bindings for the unified ForestFire training interface.
 
+Long-running training, optimized-runtime construction, and heavy prediction work release the GIL
+before entering the Rust hot path.
+
 The Python package is built around five objects:
 
 - `Table` for validated training data
@@ -120,7 +123,7 @@ Current stopping behavior:
 Current values:
 
 - `"auto"`
-- integer `1..=512`
+- integer `1..=128`
 
 Why it exists:
 
@@ -130,14 +133,14 @@ Why it exists:
 
 Current `auto` behavior:
 
-- per numeric feature, ForestFire picks the highest power of two up to `512`
+- per numeric feature, ForestFire picks the highest power of two up to `128`
 - the chosen count is also capped by the number of distinct observed values
 - that keeps every realized bin populated while avoiding a larger-than-useful bin space
 
 Why this is the default:
 
 - tiny datasets do not waste work on hundreds of empty bins
-- larger datasets can still use up to `512` bins
+- larger datasets can still use up to `128` bins
 - the result stays regular enough for fast training and inference kernels
 
 #### `physical_cores`
@@ -183,7 +186,7 @@ Current meaning of `oob_score`:
 
 ### `DenseTable`
 
-`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into a power-of-two number of bins, using the highest populated count up to `512` by default, and binary `0/1` columns are stored as booleans so they are both smaller and cheaper to split on.
+`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into a power-of-two number of bins, using the highest populated count up to `128` by default, and binary `0/1` columns are stored as booleans so they are both smaller and cheaper to split on.
 
 ### `SparseTable`
 

@@ -258,7 +258,7 @@ Current stopping behavior:
 Current values:
 
 - `"auto"` in Python / `NumericBins::Auto` in Rust
-- integer `1..=512` in Python / `NumericBins::Fixed(usize)` in Rust
+- integer `1..=128` in Python / `NumericBins::Fixed(usize)` in Rust
 
 Why it exists:
 
@@ -268,14 +268,14 @@ Why it exists:
 
 Current `auto` behavior:
 
-- for each numeric feature, ForestFire chooses the highest power of two up to `512`
+- for each numeric feature, ForestFire chooses the highest power of two up to `128`
 - the chosen count is capped by the number of distinct observed values
 - that keeps every realized bin populated while still giving the learner as much split resolution as the data supports
 
 Why that is the default:
 
 - small datasets do not waste work on hundreds of empty bins
-- larger datasets can still climb up to `512` bins
+- larger datasets can still climb up to `128` bins
 - the resulting representation stays regular for both training and optimized prediction
 
 #### `physical_cores`
@@ -404,7 +404,7 @@ Key design choices:
 
 - Arrow-backed column storage for scan-friendly feature access
 - boolean storage for binary `0/1` columns to reduce memory use
-- numeric rank-binning into a power-of-two bin count, using the highest populated count up to `512` by default
+- numeric rank-binning into a power-of-two bin count, using the highest populated count up to `128` by default
 - canaries built at the table layer so every learner sees the same stopping reference
 
 Why the numeric binning is rank-based:

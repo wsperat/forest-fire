@@ -126,12 +126,12 @@ def test_table_accepts_auto_and_fixed_bins() -> None:
     assert fixed_table.kind == "dense"
 
 
-@pytest.mark.parametrize("bins", [0, 513])
+@pytest.mark.parametrize("bins", [0, 129])
 def test_table_rejects_invalid_integer_bins(bins: int) -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
 
-    with pytest.raises(ValueError, match="between 1 and 512"):
+    with pytest.raises(ValueError, match="between 1 and 128"):
         Table(X, y, bins=bins)
 
 
@@ -141,7 +141,7 @@ def test_table_rejects_invalid_string_bins() -> None:
 
     with pytest.raises(
         ValueError,
-        match="Expected 'auto' or an integer between 1 and 512",
+        match="Expected 'auto' or an integer between 1 and 128",
     ):
         Table(X, y, bins="dynamic")
 
@@ -1554,8 +1554,8 @@ def test_train_rejects_invalid_bins() -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
 
-    with pytest.raises(ValueError, match="between 1 and 512"):
-        train(X, y, bins=1024)
+    with pytest.raises(ValueError, match="between 1 and 128"):
+        train(X, y, bins=256)
 
 
 def test_train_rejects_y_when_x_is_already_a_table(
