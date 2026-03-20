@@ -13,11 +13,13 @@ const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
 #[pyclass(name = "Model")]
 struct PyModel {
     inner: Model,
+    string_class_labels: Option<Vec<String>>,
 }
 
 #[pyclass(name = "OptimizedModel")]
 struct PyOptimizedModel {
     inner: CoreOptimizedModel,
+    string_class_labels: Option<Vec<String>>,
 }
 
 #[pyclass(name = "Table")]
@@ -33,12 +35,20 @@ fn table_kind_name(kind: TableKind) -> &'static str {
     }
 }
 
+enum TrainingTargets {
+    Numeric(Vec<f64>),
+    StringClasses {
+        encoded: Vec<f64>,
+        labels: Vec<String>,
+    },
+}
+
 fn build_training_table(
     x: &Bound<PyAny>,
     y: Option<&Bound<PyAny>>,
     canaries: usize,
     bins: NumericBins,
-) -> PyResult<Table> {
+) -> PyResult<(Table, Option<Vec<String>>)> {
     if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
         if y.is_some() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -50,7 +60,7 @@ fn build_training_table(
                 "bins must be omitted when x is already a Table.",
             ));
         }
-        return Ok(table.inner.clone());
+        return Ok((table.inner.clone(), None));
     }
 
     let y = y.ok_or_else(|| {
@@ -62,10 +72,14 @@ fn build_training_table(
         return build_sparse_training_table(x, y, canaries, bins);
     }
     let x_rows = extract_matrix(x)?;
-    let y_values = extract_vector(y)?;
+    let (y_values, string_class_labels) = match extract_training_targets(y)? {
+        TrainingTargets::Numeric(values) => (values, None),
+        TrainingTargets::StringClasses { encoded, labels } => (encoded, Some(labels)),
+    };
 
     Table::with_options(x_rows, y_values, canaries, bins)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+        .map(|table| (table, string_class_labels))
 }
 
 fn build_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
@@ -258,19 +272,46 @@ fn predict_proba_input_with_optimized_model(
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
+fn decoded_predictions<'py>(
+    py: Python<'py>,
+    preds: Vec<f64>,
+    string_class_labels: Option<&[String]>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if let Some(labels) = string_class_labels {
+        let decoded = preds
+            .into_iter()
+            .map(|value| {
+                let index = value as usize;
+                labels.get(index).cloned().ok_or_else(|| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Prediction referenced an unknown string class label.",
+                    )
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let numpy = py.import("numpy")?;
+        return numpy.getattr("array")?.call1((decoded,));
+    }
+
+    Ok(PyArray1::from_vec(py, preds).into_any())
+}
+
 fn build_sparse_training_table(
     x: &Bound<PyAny>,
     y: &Bound<PyAny>,
     canaries: usize,
     bins: NumericBins,
-) -> PyResult<Table> {
+) -> PyResult<(Table, Option<Vec<String>>)> {
     let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
-    let y_values = extract_vector(y)?;
+    let (y_values, string_class_labels) = match extract_training_targets(y)? {
+        TrainingTargets::Numeric(values) => (values, None),
+        TrainingTargets::StringClasses { encoded, labels } => (encoded, Some(labels)),
+    };
     let table = forestfire_data::SparseTable::from_sparse_binary_columns_with_options(
         n_rows, n_features, columns, y_values, canaries, bins,
     )
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-    Ok(Table::Sparse(table))
+    Ok((Table::Sparse(table), string_class_labels))
 }
 
 fn build_sparse_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
@@ -402,6 +443,24 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
             .collect());
     }
 
+    if let Ok(array) = x.extract::<PyReadonlyArray2<'_, i64>>() {
+        let view = array.as_array();
+        return Ok(view
+            .rows()
+            .into_iter()
+            .map(|row| row.iter().map(|value| *value as f64).collect())
+            .collect());
+    }
+
+    if let Ok(array) = x.extract::<PyReadonlyArray2<'_, i32>>() {
+        let view = array.as_array();
+        return Ok(view
+            .rows()
+            .into_iter()
+            .map(|row| row.iter().map(|value| f64::from(*value)).collect())
+            .collect());
+    }
+
     if x.hasattr("toarray")? {
         let as_array = x.call_method0("toarray")?;
         return extract_matrix(&as_array);
@@ -414,6 +473,9 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
 
     if x.hasattr("__array__")? {
         let as_array = x.call_method0("__array__")?;
+        if as_array.is(x) {
+            return extract_matrix_from_rows(x);
+        }
         return extract_matrix(&as_array);
     }
 
@@ -547,6 +609,42 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
         ));
     }
 
+    if let Ok(array) = y.extract::<PyReadonlyArray1<'_, i64>>() {
+        return Ok(array.as_array().iter().map(|value| *value as f64).collect());
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray2<'_, i64>>() {
+        let shape = array.shape();
+        if shape[0] == 1 || shape[1] == 1 {
+            return Ok(array.as_array().iter().map(|value| *value as f64).collect());
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Target arrays must be one-dimensional or have a single row/column.",
+        ));
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray1<'_, i32>>() {
+        return Ok(array
+            .as_array()
+            .iter()
+            .map(|value| f64::from(*value))
+            .collect());
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray2<'_, i32>>() {
+        let shape = array.shape();
+        if shape[0] == 1 || shape[1] == 1 {
+            return Ok(array
+                .as_array()
+                .iter()
+                .map(|value| f64::from(*value))
+                .collect());
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Target arrays must be one-dimensional or have a single row/column.",
+        ));
+    }
+
     if y.hasattr("toarray")? {
         let as_array = y.call_method0("toarray")?;
         return extract_vector(&as_array);
@@ -559,6 +657,12 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
 
     if y.hasattr("__array__")? {
         let as_array = y.call_method0("__array__")?;
+        if as_array.is(y) {
+            return y
+                .try_iter()?
+                .map(|value| value.and_then(|value| extract_scalar(&value)))
+                .collect();
+        }
         return extract_vector(&as_array);
     }
 
@@ -575,6 +679,73 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
     y.try_iter()?
         .map(|value| value.and_then(|value| extract_scalar(&value)))
         .collect()
+}
+
+fn extract_training_targets(y: &Bound<PyAny>) -> PyResult<TrainingTargets> {
+    if y.hasattr("to_pylist")? {
+        let as_list = y.call_method0("to_pylist")?;
+        if let Ok(strings) = as_list.extract::<Vec<String>>() {
+            return encode_string_labels(strings);
+        }
+        if let Ok(strings) = as_list.extract::<Vec<Vec<String>>>() {
+            let is_vector = strings.len() == 1 || strings.iter().all(|row| row.len() == 1);
+            if is_vector {
+                return encode_string_labels(
+                    strings
+                        .into_iter()
+                        .flat_map(|row| row.into_iter())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Target arrays must be one-dimensional or have a single row/column.",
+            ));
+        }
+    }
+
+    if y.hasattr("tolist")? {
+        let as_list = y.call_method0("tolist")?;
+        if let Ok(strings) = as_list.extract::<Vec<String>>() {
+            return encode_string_labels(strings);
+        }
+        if let Ok(strings) = as_list.extract::<Vec<Vec<String>>>() {
+            let is_vector = strings.len() == 1 || strings.iter().all(|row| row.len() == 1);
+            if is_vector {
+                return encode_string_labels(
+                    strings
+                        .into_iter()
+                        .flat_map(|row| row.into_iter())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Target arrays must be one-dimensional or have a single row/column.",
+            ));
+        }
+    }
+
+    Ok(TrainingTargets::Numeric(extract_vector(y)?))
+}
+
+fn encode_string_labels(labels: Vec<String>) -> PyResult<TrainingTargets> {
+    let mut vocabulary = Vec::<String>::new();
+    let mut encoded = Vec::with_capacity(labels.len());
+
+    for label in labels {
+        let index = if let Some(index) = vocabulary.iter().position(|candidate| candidate == &label)
+        {
+            index
+        } else {
+            vocabulary.push(label.clone());
+            vocabulary.len() - 1
+        };
+        encoded.push(index as f64);
+    }
+
+    Ok(TrainingTargets::StringClasses {
+        encoded,
+        labels: vocabulary,
+    })
 }
 
 fn extract_scalar(value: &Bound<PyAny>) -> PyResult<f64> {
@@ -615,11 +786,90 @@ fn parse_task(task: &str) -> PyResult<Task> {
     match task {
         "regression" => Ok(Task::Regression),
         "classification" => Ok(Task::Classification),
+        "auto" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Internal error: task='auto' must be resolved before parse_task.",
+        )),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported task '{}'. Expected one of: regression, classification",
+            "Unsupported task '{}'. Expected one of: regression, classification, auto",
             task
         ))),
     }
+}
+
+fn resolve_task(x: &Bound<PyAny>, y: Option<&Bound<PyAny>>, task: &str) -> PyResult<Task> {
+    if task != "auto" {
+        return parse_task(task);
+    }
+
+    if let Some(y) = y {
+        if target_is_string_like(y)? || target_is_integer_like(y)? {
+            return Ok(Task::Classification);
+        }
+        return Ok(Task::Regression);
+    }
+
+    if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        let all_integral = (0..table.inner.n_rows()).all(|row_idx| {
+            let value = table.inner.target_value(row_idx);
+            value.is_finite() && value.fract() == 0.0
+        });
+        if all_integral {
+            return Ok(Task::Classification);
+        }
+        return Ok(Task::Regression);
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+        "task='auto' requires y unless x is already a Table.",
+    ))
+}
+
+fn target_is_integer_like(y: &Bound<PyAny>) -> PyResult<bool> {
+    if y.extract::<PyReadonlyArray1<'_, i64>>().is_ok()
+        || y.extract::<PyReadonlyArray2<'_, i64>>().is_ok()
+        || y.extract::<PyReadonlyArray1<'_, i32>>().is_ok()
+        || y.extract::<PyReadonlyArray2<'_, i32>>().is_ok()
+        || y.extract::<PyReadonlyArray1<'_, bool>>().is_ok()
+        || y.extract::<PyReadonlyArray2<'_, bool>>().is_ok()
+    {
+        return Ok(true);
+    }
+
+    if y.hasattr("to_pylist")? {
+        let as_list = y.call_method0("to_pylist")?;
+        if let Ok(values) = as_list.extract::<Vec<i64>>() {
+            return Ok(!values.is_empty() || as_list.len().unwrap_or(0) == 0);
+        }
+    }
+
+    if y.hasattr("tolist")? {
+        let as_list = y.call_method0("tolist")?;
+        if as_list.extract::<Vec<i64>>().is_ok() || as_list.extract::<Vec<Vec<i64>>>().is_ok() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn target_is_string_like(y: &Bound<PyAny>) -> PyResult<bool> {
+    if y.hasattr("to_pylist")? {
+        let as_list = y.call_method0("to_pylist")?;
+        if as_list.extract::<Vec<String>>().is_ok() || as_list.extract::<Vec<Vec<String>>>().is_ok()
+        {
+            return Ok(true);
+        }
+    }
+
+    if y.hasattr("tolist")? {
+        let as_list = y.call_method0("tolist")?;
+        if as_list.extract::<Vec<String>>().is_ok() || as_list.extract::<Vec<Vec<String>>>().is_ok()
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
@@ -698,7 +948,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None, n_trees=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None, n_trees=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -712,10 +962,11 @@ fn train(
     physical_cores: Option<usize>,
     n_trees: Option<usize>,
 ) -> PyResult<PyModel> {
-    let table = build_training_table(x, y, canaries, parse_bins(bins)?)?;
+    let resolved_task = resolve_task(x, y, task)?;
+    let (table, string_class_labels) = build_training_table(x, y, canaries, parse_bins(bins)?)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
-        task: parse_task(task)?,
+        task: resolved_task,
         tree_type: parse_tree_type(tree_type)?,
         criterion: parse_criterion(criterion)?,
         physical_cores,
@@ -724,7 +975,10 @@ fn train(
     let model = train_model(&table, config)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
 
-    Ok(PyModel { inner: model })
+    Ok(PyModel {
+        inner: model,
+        string_class_labels,
+    })
 }
 
 #[pymethods]
@@ -733,20 +987,19 @@ impl PyModel {
     fn deserialize(_cls: &Bound<PyType>, serialized: &str) -> PyResult<Self> {
         let inner = Model::deserialize(serialized)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            string_class_labels: None,
+        })
     }
 
-    fn predict<'py>(
-        &self,
-        py: Python<'py>,
-        x: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let preds = if is_polars_lazyframe(x)? {
             predict_lazyframe_in_batches(x, |input| predict_input_with_model(&self.inner, input))?
         } else {
             predict_input_with_model(&self.inner, build_inference_input(x)?)?
         };
-        Ok(PyArray1::from_vec(py, preds))
+        decoded_predictions(py, preds, self.string_class_labels.as_deref())
     }
 
     fn predict_proba<'py>(
@@ -771,7 +1024,10 @@ impl PyModel {
             .inner
             .optimize_inference(physical_cores)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-        Ok(PyOptimizedModel { inner })
+        Ok(PyOptimizedModel {
+            inner,
+            string_class_labels: self.string_class_labels.clone(),
+        })
     }
 
     #[getter]
@@ -801,6 +1057,11 @@ impl PyModel {
 
     #[pyo3(signature = (pretty=false))]
     fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "IR export is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.to_ir_json_pretty()
         } else {
@@ -811,6 +1072,11 @@ impl PyModel {
 
     #[pyo3(signature = (pretty=false))]
     fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Serialization is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.serialize_pretty()
         } else {
@@ -831,14 +1097,13 @@ impl PyOptimizedModel {
     ) -> PyResult<Self> {
         let inner = CoreOptimizedModel::deserialize_compiled(serialized, physical_cores)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            string_class_labels: None,
+        })
     }
 
-    fn predict<'py>(
-        &self,
-        py: Python<'py>,
-        x: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let preds = if is_polars_lazyframe(x)? {
             predict_lazyframe_in_batches(x, |input| {
                 predict_input_with_optimized_model(&self.inner, input)
@@ -846,7 +1111,7 @@ impl PyOptimizedModel {
         } else {
             predict_input_with_optimized_model(&self.inner, build_inference_input(x)?)?
         };
-        Ok(PyArray1::from_vec(py, preds))
+        decoded_predictions(py, preds, self.string_class_labels.as_deref())
     }
 
     fn predict_proba<'py>(
@@ -892,6 +1157,11 @@ impl PyOptimizedModel {
 
     #[pyo3(signature = (pretty=false))]
     fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "IR export is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.to_ir_json_pretty()
         } else {
@@ -902,6 +1172,11 @@ impl PyOptimizedModel {
 
     #[pyo3(signature = (pretty=false))]
     fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Serialization is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.serialize_pretty()
         } else {
@@ -911,6 +1186,11 @@ impl PyOptimizedModel {
     }
 
     fn serialize_compiled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Compiled serialization is not supported for models trained with string class labels.",
+            ));
+        }
         let bytes = self
             .inner
             .serialize_compiled()
@@ -931,7 +1211,13 @@ impl PyTable {
     ) -> PyResult<Self> {
         let bins = parse_bins(bins)?;
         let inner = if let Some(y) = y {
-            build_training_table(x, Some(y), canaries, bins)?
+            let (table, string_class_labels) = build_training_table(x, Some(y), canaries, bins)?;
+            if string_class_labels.is_some() {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "Table does not support string targets; pass raw inputs to train(...) instead.",
+                ));
+            }
+            table
         } else {
             build_feature_table(x, bins)?
         };

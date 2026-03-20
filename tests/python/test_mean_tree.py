@@ -59,6 +59,46 @@ def test_train_defaults_match_documented_regression_baseline(
     assert model.criterion == "mean"
 
 
+def test_table_accepts_integer_numpy_targets_without_crashing() -> None:
+    X = np.random.randn(128, 3)
+    y = np.random.choice([1, 0], 128)
+
+    table = Table(X, y)
+
+    assert table.n_rows == 128
+
+
+def test_train_auto_detects_integer_targets_as_classification() -> None:
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0, 0, 1, 1], dtype=np.int64)
+
+    model = train(X, y, tree_type="cart", canaries=0)
+
+    assert model.task == "classification"
+    assert np.array_equal(model.predict(X), y.astype(np.float64))
+
+
+def test_train_auto_detects_float_targets_as_regression() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.5, 1.5, 2.5, 3.5], dtype=np.float64)
+
+    model = train(X, y, tree_type="cart", canaries=0)
+
+    assert model.task == "regression"
+    assert model.tree_type == "cart"
+
+
+def test_train_auto_detects_string_targets_as_classification() -> None:
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array(["cat", "cat", "dog", "dog"])
+
+    model = train(X, y, tree_type="cart", canaries=0)
+    preds = model.predict(X)
+
+    assert model.task == "classification"
+    assert preds.tolist() == y.tolist()
+
+
 def test_table_builds_sparse_layout_for_binary_data() -> None:
     X = np.array([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
     y = np.array([0.0, 1.0, 1.0])
