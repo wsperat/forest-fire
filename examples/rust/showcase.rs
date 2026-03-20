@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::error::Error;
 
 use forestfire_core::{
-    Criterion, Model, OptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType, train,
+    Criterion, MaxFeatures, Model, OptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType,
+    train,
 };
 use forestfire_data::{NumericBins, Table};
 
@@ -35,10 +36,9 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
     let (x, y) = regression_rows();
     let table = Table::with_options(x.clone(), y, 0, NumericBins::Auto)?;
     let configs = [
-        (TreeType::TargetMean, Criterion::Mean),
-        (TreeType::TargetMean, Criterion::Median),
         (TreeType::Cart, Criterion::Mean),
         (TreeType::Cart, Criterion::Median),
+        (TreeType::Randomized, Criterion::Mean),
         (TreeType::Oblivious, Criterion::Mean),
     ];
 
@@ -51,7 +51,19 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 task: Task::Regression,
                 tree_type,
                 criterion,
+                max_depth: None,
+
+                min_samples_split: None,
+                min_samples_leaf: None,
                 physical_cores: None,
+                n_trees: None,
+                max_features: MaxFeatures::Auto,
+                seed: None,
+                compute_oob: false,
+                learning_rate: None,
+                bootstrap: false,
+                top_gradient_fraction: None,
+                other_gradient_fraction: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -68,6 +80,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
         (TreeType::C45, Criterion::Entropy),
         (TreeType::Cart, Criterion::Gini),
         (TreeType::Cart, Criterion::Entropy),
+        (TreeType::Randomized, Criterion::Gini),
         (TreeType::Oblivious, Criterion::Gini),
     ];
 
@@ -80,7 +93,19 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 task: Task::Classification,
                 tree_type,
                 criterion,
+                max_depth: None,
+
+                min_samples_split: None,
+                min_samples_leaf: None,
                 physical_cores: None,
+                n_trees: None,
+                max_features: MaxFeatures::Auto,
+                seed: None,
+                compute_oob: false,
+                learning_rate: None,
+                bootstrap: false,
+                top_gradient_fraction: None,
+                other_gradient_fraction: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -115,7 +140,19 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
+            min_samples_split: None,
+            min_samples_leaf: None,
             physical_cores: None,
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -163,7 +200,19 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
+            max_depth: None,
+
+            min_samples_split: None,
+            min_samples_leaf: None,
             physical_cores: None,
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         },
     )?;
 

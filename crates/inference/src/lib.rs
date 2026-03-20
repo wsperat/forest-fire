@@ -1,4 +1,4 @@
-//! Minimal inference layer: a trait for regressors plus impl for TargetMeanTree.
+//! Minimal inference layer: a trait for regressors plus impl for DecisionTreeRegressor.
 
 pub mod regressor;
 

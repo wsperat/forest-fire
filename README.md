@@ -13,8 +13,9 @@ ForestFire is a tree-learning library with a Rust core and a Python API. The cur
 
 - Unified `train` API in Rust and Python
 - Automatic table selection between `DenseTable` and `SparseTable`
-- Classification trees: `id3`, `c45`, `cart`, `oblivious`
-- Regression trees: `target_mean`, `cart`, `oblivious`
+- Classification trees: `id3`, `c45`, `cart`, `randomized`, `oblivious`
+- Regression trees: `cart`, `randomized`, `oblivious`
+- Learner families: `dt`, `rf`, `gbm`
 - Criterion selection via `gini`, `entropy`, `mean`, `median`, or `auto`
 - Canary-based automatic growth stopping
 - Physical-core-aware parallel training
@@ -147,12 +148,20 @@ train(
     X_or_table,
     y=None,
     algorithm="dt",
-    task="regression",
-    tree_type="target_mean",
+    task="auto",
+    tree_type="cart",
     criterion="auto",
     canaries=2,
     bins="auto",
     physical_cores=None,
+    n_trees=None,
+    max_features=None,
+    seed=None,
+    compute_oob=False,
+    learning_rate=None,
+    bootstrap=False,
+    top_gradient_fraction=None,
+    other_gradient_fraction=None,
 )
 ```
 
@@ -166,14 +175,17 @@ train(&table, TrainConfig { ... })
 
 #### `algorithm`
 
-Current value:
+Current values:
 
 - `dt`
+- `rf`
+- `gbm`
 
 Why it exists:
 
 - It keeps the top-level API stable as the library grows beyond a single learner family.
 - It separates the learner family from the exact tree structure.
+- `gbm` uses stage-wise second-order trees for regression and binary classification.
 
 Why it is a string in Python but an enum in Rust:
 
@@ -184,20 +196,21 @@ Why it is a string in Python but an enum in Rust:
 
 Current values:
 
+- `auto`
 - `regression`
 - `classification`
 
 Why it exists:
 
-- ForestFire does not guess the task from `y`.
+- `auto` infers classification for integer, boolean, and string targets, and regression for float targets.
 - Task choice changes leaf semantics, scoring, defaults, and supported tree types.
 
 #### `tree_type`
 
 Current support:
 
-- regression: `target_mean`, `cart`, `oblivious`
-- classification: `id3`, `c45`, `cart`, `oblivious`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
 
 Why it exists:
 
@@ -206,10 +219,10 @@ Why it exists:
 
 What each one means:
 
-- `target_mean`: simplest regression baseline
 - `id3`: entropy-driven multiway-style classifier
 - `c45`: practical extension of ID3
 - `cart`: conventional binary tree
+- `randomized`: stochastic split-search variant
 - `oblivious`: symmetric tree with one shared split per depth
 
 #### `criterion`
@@ -227,8 +240,9 @@ Why it exists:
 Current `auto` resolution:
 
 - `id3`, `c45` classification -> `entropy`
-- `cart`, `oblivious` classification -> `gini`
+- `cart`, `randomized`, `oblivious` classification -> `gini`
 - regression models -> `mean`
+- `gbm` trains second-order trees internally when the public criterion is left as `auto`
 
 #### `canaries`
 
@@ -246,13 +260,14 @@ Current stopping behavior:
 
 - standard trees: growth stops at that node
 - oblivious trees: growth stops for the remaining tree
+- `gbm`: the current stage is discarded and boosting stops when the first/root split would be a canary
 
 #### `bins`
 
 Current values:
 
 - `"auto"` in Python / `NumericBins::Auto` in Rust
-- integer `1..=512` in Python / `NumericBins::Fixed(usize)` in Rust
+- integer `1..=128` in Python / `NumericBins::Fixed(usize)` in Rust
 
 Why it exists:
 
@@ -262,14 +277,14 @@ Why it exists:
 
 Current `auto` behavior:
 
-- for each numeric feature, ForestFire chooses the highest power of two up to `512`
+- for each numeric feature, ForestFire chooses the highest power of two up to `128`
 - the chosen count is capped by the number of distinct observed values
 - that keeps every realized bin populated while still giving the learner as much split resolution as the data supports
 
 Why that is the default:
 
 - small datasets do not waste work on hundreds of empty bins
-- larger datasets can still climb up to `512` bins
+- larger datasets can still climb up to `128` bins
 - the resulting representation stays regular for both training and optimized prediction
 
 #### `physical_cores`
@@ -288,6 +303,113 @@ Behavior:
 - `None` uses all detected physical cores
 - oversized values are capped
 - `0` is rejected
+
+#### `compute_oob`
+
+Default:
+
+- `False`
+
+Why it exists:
+
+- Random forests can estimate generalization quality from out-of-bag rows without needing a separate validation split.
+
+Behavior:
+
+- only meaningful for `algorithm="rf"`
+- classification forests expose OOB accuracy
+- regression forests expose OOB `R^2`
+- non-forest models always report `compute_oob=False` and `oob_score=None`
+
+#### `learning_rate`
+
+Behavior:
+
+- only meaningful for `algorithm="gbm"`
+- scales each stage contribution before it is added to the ensemble
+- smaller values typically require more trees
+
+#### `bootstrap`
+
+Behavior:
+
+- only meaningful for `algorithm="gbm"`
+- when enabled, each stage starts from a bootstrap sample of rows
+- when disabled, each stage starts from the full table
+
+#### `top_gradient_fraction` and `other_gradient_fraction`
+
+Behavior:
+
+- only meaningful for `algorithm="gbm"`
+- ForestFire uses a LightGBM-style gradient-focused sampling step
+- `top_gradient_fraction` keeps the highest-gradient rows deterministically
+- `other_gradient_fraction` samples additional rows from the remainder
+
+## Tree introspection
+
+Tree models expose a small introspection API on both `Model` and `OptimizedModel`.
+
+Available members:
+
+- `tree_count`
+- `tree_structure(tree_index=0)`
+- `tree_prediction_stats(tree_index=0)`
+- `tree_node(node_index, tree_index=0)` for standard trees
+- `tree_level(level_index, tree_index=0)` for oblivious trees
+- `tree_leaf(leaf_index, tree_index=0)` for all trees
+
+What it is for:
+
+- understanding realized tree shape after training
+- inspecting cutoffs and leaf payloads
+- summarizing the distribution of prediction values stored in leaves
+- inspecting one tree at a time inside a forest
+
+What `tree_structure(...)` returns:
+
+- `representation`: `"node_tree"` or `"oblivious_levels"`
+- `node_count`
+- `internal_node_count`
+- `leaf_count`
+- `actual_depth`
+- `shortest_path`
+- `longest_path`
+- `average_path`
+
+What `tree_prediction_stats(...)` returns:
+
+- `count`
+- `unique_count`
+- `min`
+- `max`
+- `mean`
+- `std_dev`
+- `histogram`
+
+How it works:
+
+- introspection is derived from the semantic IR, not from a separate debug-only format
+- standard trees are inspected through exported nodes
+- oblivious trees are inspected through exported levels and leaves
+- optimized models delegate to the same semantic model, so introspection matches the original model exactly
+- forests use `tree_index` to inspect a specific constituent tree
+
+Python example:
+
+```python
+model = train(X, y, task="classification", tree_type="cart")
+
+summary = model.tree_structure()
+stats = model.tree_prediction_stats()
+root = model.tree_node(0)
+leaf = model.tree_leaf(0)
+
+print(summary["leaf_count"], summary["actual_depth"])
+print(stats["histogram"])
+print(root["kind"])
+print(leaf["leaf"])
+```
 
 ## Table system
 
@@ -316,7 +438,7 @@ Key design choices:
 
 - Arrow-backed column storage for scan-friendly feature access
 - boolean storage for binary `0/1` columns to reduce memory use
-- numeric rank-binning into a power-of-two bin count, using the highest populated count up to `512` by default
+- numeric rank-binning into a power-of-two bin count, using the highest populated count up to `128` by default
 - canaries built at the table layer so every learner sees the same stopping reference
 
 Why the numeric binning is rank-based:
@@ -568,7 +690,6 @@ The biggest gains usually come from:
 The gains are usually smaller for:
 
 - tiny prediction batches, where thread-pool and preprocessing overhead dominate
-- `target_mean`, because its inference path is already trivial
 - very shallow trees, where there is little branch structure to optimize away
 - cases where input coercion dominates total latency more than model traversal does
 - oblivious single-core scoring, where the extra batch-layout conversion can still outweigh the traversal savings on some workloads
@@ -664,7 +785,6 @@ It does not replace the JSON IR. It is an execution artifact for optimized runti
 
 - missing-value handling
 - categorical preprocessing semantics
-- ensembles
 
 ### JSON Schema
 
@@ -676,10 +796,17 @@ It is generated from the Rust IR types and checked in as a contract artifact. Th
 
 ## Support matrix
 
-### Tasks and tree types
+### Algorithms, tasks, and tree types
 
-- `task="regression"` with `tree_type="target_mean" | "cart" | "oblivious"`
-- `task="classification"` with `tree_type="id3" | "c45" | "cart" | "oblivious"`
+- `algorithm="dt"`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
+- `algorithm="rf"`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
+- `algorithm="gbm"`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `cart`, `randomized`, `oblivious` with binary targets only
 
 ### Python input types
 
@@ -697,11 +824,24 @@ Run:
 
 ```bash
 task benchmark-inference
+task benchmark-training-rf
+task benchmark-training-extra-trees
+task benchmark-training-gbm
+task benchmark-prediction-rf
+task benchmark-prediction-extra-trees
+task benchmark-prediction-gbm
 ```
+
+The training and prediction benchmark scripts live in `benchmark/` and use the root `benchmark` dependency group to compare ForestFire against sklearn, LightGBM, and XGBoost for random forests, extra trees, and gradient boosting. Extra-trees runs are benchmarked for ForestFire, sklearn, and LightGBM; XGBoost is recorded as unsupported there because it does not expose a direct extra-trees random-forest mode.
 
 Artifacts are written to:
 
 - [docs/benchmarks/inference_benchmark_results.json](docs/benchmarks/inference_benchmark_results.json)
+- `docs/benchmarks/training_benchmark_results_<family>_<problem>.json`
+- `docs/benchmarks/prediction_benchmark_results_<family>_<problem>.json`
+- `docs/benchmarks/training_library_comparison_<family>_<problem>.png`
+- `docs/benchmarks/prediction_library_comparison_<family>_<problem>.png`
+- `docs/benchmarks/predict_proba_library_comparison_<family>_<problem>.png`
 - [docs/benchmarks/cart_runtime.png](docs/benchmarks/cart_runtime.png)
 - [docs/benchmarks/cart_speedup.png](docs/benchmarks/cart_speedup.png)
 - [docs/benchmarks/oblivious_runtime.png](docs/benchmarks/oblivious_runtime.png)
@@ -718,6 +858,21 @@ That matches the current runtime:
 
 - compiled CART benefits strongly from fallthrough layout, batch partitioning, and compact `u8`/`u16` bins
 - oblivious trees improve mainly when batching and parallelism amortize the batch-conversion cost
+
+## Training optimizations
+
+ForestFire training is optimized around a compact binned core and shared row-index buffers rather than row copies.
+
+- Numeric features are pre-binned into compact integer ranks, currently capped at `128` bins.
+- Long-running training and prediction release the Python GIL before entering the Rust hot path.
+- CART and randomized trees use histogram-based numeric split search instead of exact threshold rescans.
+- Standard binary trees partition row indices in place, so child nodes are ranges over a shared buffer rather than copied datasets.
+- ID3 and C4.5 now use the same in-place row-buffer approach for multiway branches.
+- Oblivious trees now train over shared row buffers plus per-leaf ranges instead of per-leaf row vectors.
+- CART/randomized classification and mean-regression builders reuse parent histograms and derive the sibling child histogram by subtraction after each split.
+- Oblivious split scoring reuses cached per-leaf counts or `sum`/`sum_sq` so it does not recompute sibling statistics from scratch.
+- Random forests parallelize across trees, while intra-tree parallelism is limited to feature scoring so the trainer avoids oversubscribing cores.
+- Binary sparse inputs stay sparse through training and inference instead of being densified first.
 
 ## Design notes
 

@@ -3,14 +3,13 @@ use crate::tree::classifier::{
     ObliviousSplit as ClassifierObliviousSplit, TreeNode as ClassifierTreeNode,
     TreeStructure as ClassifierTreeStructure,
 };
-use crate::tree::mean_tree::TargetMeanTree;
 use crate::tree::regressor::{
     DecisionTreeRegressor, ObliviousSplit as RegressorObliviousSplit, RegressionNode,
     RegressionTreeAlgorithm, RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::{
-    FeaturePreprocessing, InputFeatureKind, Model, NumericBinBoundary, Task, TrainAlgorithm,
-    TreeType,
+    Criterion, FeaturePreprocessing, GradientBoostedTrees, InputFeatureKind, Model,
+    NumericBinBoundary, RandomForest, Task, TrainAlgorithm, TreeType,
 };
 use schemars::schema::RootSchema;
 use schemars::{JsonSchema, schema_for};
@@ -200,6 +199,8 @@ pub struct Aggregation {
     pub kind: String,
     pub tree_weights: Vec<f64>,
     pub normalize_by_weight_sum: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -309,6 +310,7 @@ pub struct TrainingMetadata {
     pub tree_type: String,
     pub criterion: String,
     pub canaries: usize,
+    pub compute_oob: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -316,7 +318,23 @@ pub struct TrainingMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_samples_leaf: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub n_trees: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_features: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oob_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub class_labels: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learning_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_gradient_fraction: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_gradient_fraction: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -427,18 +445,56 @@ impl ModelPackageIr {
 }
 
 pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
-    let tree = match model {
-        Model::TargetMean(target_mean) => target_mean.to_ir_tree(),
-        Model::DecisionTreeClassifier(classifier) => classifier.to_ir_tree(),
-        Model::DecisionTreeRegressor(regressor) => regressor.to_ir_tree(),
+    let trees = match model {
+        Model::RandomForest(forest) => forest
+            .trees()
+            .iter()
+            .map(model_tree_definition)
+            .collect::<Vec<_>>(),
+        Model::GradientBoostedTrees(boosted) => boosted
+            .trees()
+            .iter()
+            .map(model_tree_definition)
+            .collect::<Vec<_>>(),
+        _ => vec![model_tree_definition(model)],
     };
-    let representation = match &tree {
-        TreeDefinition::NodeTree { .. } => "node_tree",
-        TreeDefinition::ObliviousLevels { .. } => "oblivious_levels",
+    let representation = if let Some(first_tree) = trees.first() {
+        match first_tree {
+            TreeDefinition::NodeTree { .. } => "node_tree",
+            TreeDefinition::ObliviousLevels { .. } => "oblivious_levels",
+        }
+    } else {
+        match model.tree_type() {
+            TreeType::Oblivious => "oblivious_levels",
+            TreeType::Id3 | TreeType::C45 | TreeType::Cart | TreeType::Randomized => "node_tree",
+        }
     };
-    let class_labels = match model {
-        Model::DecisionTreeClassifier(classifier) => Some(classifier.class_labels().to_vec()),
-        Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => None,
+    let class_labels = model.class_labels();
+    let is_ensemble = matches!(
+        model,
+        Model::RandomForest(_) | Model::GradientBoostedTrees(_)
+    );
+    let tree_count = trees.len();
+    let (aggregation_kind, tree_weights, normalize_by_weight_sum, base_score) = match model {
+        Model::RandomForest(_) => (
+            match model.task() {
+                Task::Regression => "average",
+                Task::Classification => "average_class_probabilities",
+            },
+            vec![1.0; tree_count],
+            true,
+            None,
+        ),
+        Model::GradientBoostedTrees(boosted) => (
+            match boosted.task() {
+                Task::Regression => "sum_tree_outputs",
+                Task::Classification => "sum_tree_outputs_then_sigmoid",
+            },
+            boosted.tree_weights().to_vec(),
+            false,
+            Some(boosted.base_score()),
+        ),
+        _ => ("identity_single_tree", vec![1.0; tree_count], true, None),
     };
 
     ModelPackageIr {
@@ -459,12 +515,13 @@ pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
             num_outputs: 1,
             supports_missing: false,
             supports_categorical: false,
-            is_ensemble: false,
-            trees: vec![tree],
+            is_ensemble,
+            trees,
             aggregation: Aggregation {
-                kind: "identity_single_tree".to_string(),
-                tree_weights: vec![1.0],
-                normalize_by_weight_sum: true,
+                kind: aggregation_kind.to_string(),
+                tree_weights,
+                normalize_by_weight_sum,
+                base_score,
             },
         },
         input_schema: input_schema(model),
@@ -489,11 +546,7 @@ pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
         },
         preprocessing: preprocessing(model),
         postprocessing: postprocessing(model, class_labels),
-        training_metadata: match model {
-            Model::TargetMean(target_mean) => target_mean.training_metadata(),
-            Model::DecisionTreeClassifier(classifier) => classifier.training_metadata(),
-            Model::DecisionTreeRegressor(regressor) => regressor.training_metadata(),
-        },
+        training_metadata: model.training_metadata(),
         integrity: IntegritySection {
             serialization: "json".to_string(),
             canonical_json: true,
@@ -509,10 +562,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
     validate_ir_header(&ir)?;
     validate_inference_options(&ir.inference_options)?;
 
-    if ir.model.trees.len() != 1 {
-        return Err(IrError::InvalidTreeCount(ir.model.trees.len()));
-    }
-
     let algorithm = parse_algorithm(&ir.model.algorithm)?;
     let task = parse_task(&ir.model.task)?;
     let tree_type = parse_tree_type(&ir.model.tree_type)?;
@@ -522,6 +571,88 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
     let options = tree_options(&ir.training_metadata);
     let training_canaries = ir.training_metadata.canaries;
     let deserialized_class_labels = classification_labels(&ir).ok();
+
+    if algorithm == TrainAlgorithm::Dt && ir.model.trees.len() != 1 {
+        return Err(IrError::InvalidTreeCount(ir.model.trees.len()));
+    }
+
+    if algorithm == TrainAlgorithm::Rf {
+        let trees = ir
+            .model
+            .trees
+            .into_iter()
+            .map(|tree| {
+                single_model_from_ir_parts(
+                    task,
+                    tree_type,
+                    criterion,
+                    feature_preprocessing.clone(),
+                    num_features,
+                    options,
+                    training_canaries,
+                    deserialized_class_labels.clone(),
+                    tree,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(Model::RandomForest(RandomForest::new(
+            task,
+            criterion,
+            tree_type,
+            trees,
+            ir.training_metadata.compute_oob,
+            ir.training_metadata.oob_score,
+            ir.training_metadata
+                .max_features
+                .unwrap_or(num_features.max(1)),
+            ir.training_metadata.seed,
+            num_features,
+            feature_preprocessing,
+        )));
+    }
+
+    if algorithm == TrainAlgorithm::Gbm {
+        let tree_weights = ir.model.aggregation.tree_weights.clone();
+        let base_score = ir.model.aggregation.base_score.unwrap_or(0.0);
+        let trees = ir
+            .model
+            .trees
+            .into_iter()
+            .map(|tree| {
+                single_model_from_ir_parts(
+                    task,
+                    tree_type,
+                    criterion,
+                    feature_preprocessing.clone(),
+                    num_features,
+                    options,
+                    training_canaries,
+                    deserialized_class_labels.clone(),
+                    tree,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(Model::GradientBoostedTrees(GradientBoostedTrees::new(
+            task,
+            tree_type,
+            trees,
+            tree_weights,
+            base_score,
+            ir.training_metadata.learning_rate.unwrap_or(0.1),
+            ir.training_metadata.bootstrap.unwrap_or(false),
+            ir.training_metadata.top_gradient_fraction.unwrap_or(0.2),
+            ir.training_metadata.other_gradient_fraction.unwrap_or(0.1),
+            ir.training_metadata
+                .max_features
+                .unwrap_or(num_features.max(1)),
+            ir.training_metadata.seed,
+            num_features,
+            feature_preprocessing,
+            deserialized_class_labels,
+            training_canaries,
+        )));
+    }
+
     let tree = ir
         .model
         .trees
@@ -529,26 +660,35 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
         .next()
         .expect("validated single tree");
 
-    match (algorithm, task, tree_type, tree) {
+    single_model_from_ir_parts(
+        task,
+        tree_type,
+        criterion,
+        feature_preprocessing,
+        num_features,
+        options,
+        training_canaries,
+        deserialized_class_labels,
+        tree,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn single_model_from_ir_parts(
+    task: Task,
+    tree_type: TreeType,
+    criterion: Criterion,
+    feature_preprocessing: Vec<FeaturePreprocessing>,
+    num_features: usize,
+    options: DecisionTreeOptions,
+    training_canaries: usize,
+    deserialized_class_labels: Option<Vec<f64>>,
+    tree: TreeDefinition,
+) -> Result<Model, IrError> {
+    match (task, tree_type, tree) {
         (
-            TrainAlgorithm::Dt,
-            Task::Regression,
-            TreeType::TargetMean,
-            TreeDefinition::NodeTree { nodes, .. },
-        ) => {
-            let mean = extract_target_mean_leaf(&nodes)?;
-            Ok(Model::TargetMean(TargetMeanTree::from_ir_parts(
-                mean,
-                criterion,
-                num_features,
-                feature_preprocessing,
-                training_canaries,
-            )))
-        }
-        (
-            TrainAlgorithm::Dt,
             Task::Classification,
-            TreeType::Id3 | TreeType::C45 | TreeType::Cart,
+            TreeType::Id3 | TreeType::C45 | TreeType::Cart | TreeType::Randomized,
             TreeDefinition::NodeTree {
                 nodes,
                 root_node_id,
@@ -566,7 +706,8 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                         TreeType::Id3 => DecisionTreeAlgorithm::Id3,
                         TreeType::C45 => DecisionTreeAlgorithm::C45,
                         TreeType::Cart => DecisionTreeAlgorithm::Cart,
-                        TreeType::TargetMean | TreeType::Oblivious => unreachable!(),
+                        TreeType::Randomized => DecisionTreeAlgorithm::Randomized,
+                        TreeType::Oblivious => unreachable!(),
                     },
                     criterion,
                     class_labels,
@@ -579,7 +720,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             ))
         }
         (
-            TrainAlgorithm::Dt,
             Task::Classification,
             TreeType::Oblivious,
             TreeDefinition::ObliviousLevels { levels, leaves, .. },
@@ -608,9 +748,8 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             ))
         }
         (
-            TrainAlgorithm::Dt,
             Task::Regression,
-            TreeType::Cart,
+            TreeType::Cart | TreeType::Randomized,
             TreeDefinition::NodeTree {
                 nodes,
                 root_node_id,
@@ -618,7 +757,11 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             },
         ) => Ok(Model::DecisionTreeRegressor(
             DecisionTreeRegressor::from_ir_parts(
-                RegressionTreeAlgorithm::Cart,
+                match tree_type {
+                    TreeType::Cart => RegressionTreeAlgorithm::Cart,
+                    TreeType::Randomized => RegressionTreeAlgorithm::Randomized,
+                    _ => unreachable!(),
+                },
                 criterion,
                 RegressionTreeStructure::Standard {
                     nodes: rebuild_regressor_nodes(nodes)?,
@@ -628,6 +771,8 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                     max_depth: options.max_depth,
                     min_samples_split: options.min_samples_split,
                     min_samples_leaf: options.min_samples_leaf,
+                    max_features: None,
+                    random_seed: 0,
                 },
                 num_features,
                 feature_preprocessing,
@@ -635,7 +780,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             ),
         )),
         (
-            TrainAlgorithm::Dt,
             Task::Regression,
             TreeType::Oblivious,
             TreeDefinition::ObliviousLevels { levels, leaves, .. },
@@ -656,6 +800,8 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                         max_depth: options.max_depth,
                         min_samples_split: options.min_samples_split,
                         min_samples_leaf: options.min_samples_leaf,
+                        max_features: None,
+                        random_seed: 0,
                     },
                     num_features,
                     feature_preprocessing,
@@ -663,7 +809,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                 ),
             ))
         }
-        (_, _, _, tree) => Err(IrError::UnsupportedRepresentation(match tree {
+        (_, _, tree) => Err(IrError::UnsupportedRepresentation(match tree {
             TreeDefinition::NodeTree { .. } => "node_tree".to_string(),
             TreeDefinition::ObliviousLevels { .. } => "oblivious_levels".to_string(),
         })),
@@ -709,6 +855,8 @@ fn validate_inference_options(options: &InferenceOptions) -> Result<(), IrError>
 fn parse_algorithm(value: &str) -> Result<TrainAlgorithm, IrError> {
     match value {
         "dt" => Ok(TrainAlgorithm::Dt),
+        "rf" => Ok(TrainAlgorithm::Rf),
+        "gbm" => Ok(TrainAlgorithm::Gbm),
         _ => Err(IrError::UnsupportedAlgorithm(value.to_string())),
     }
 }
@@ -723,10 +871,10 @@ fn parse_task(value: &str) -> Result<Task, IrError> {
 
 fn parse_tree_type(value: &str) -> Result<TreeType, IrError> {
     match value {
-        "target_mean" => Ok(TreeType::TargetMean),
         "id3" => Ok(TreeType::Id3),
         "c45" => Ok(TreeType::C45),
         "cart" => Ok(TreeType::Cart),
+        "randomized" => Ok(TreeType::Randomized),
         "oblivious" => Ok(TreeType::Oblivious),
         _ => Err(IrError::UnsupportedTreeType(value.to_string())),
     }
@@ -738,6 +886,7 @@ fn parse_criterion(value: &str) -> Result<crate::Criterion, IrError> {
         "entropy" => Ok(crate::Criterion::Entropy),
         "mean" => Ok(crate::Criterion::Mean),
         "median" => Ok(crate::Criterion::Median),
+        "second_order" => Ok(crate::Criterion::SecondOrder),
         "auto" => Ok(crate::Criterion::Auto),
         _ => Err(IrError::InvalidInferenceOption(format!(
             "unsupported criterion '{}'",
@@ -751,6 +900,8 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         max_depth: training.max_depth.unwrap_or(8),
         min_samples_split: training.min_samples_split.unwrap_or(2),
         min_samples_leaf: training.min_samples_leaf.unwrap_or(1),
+        max_features: None,
+        random_seed: 0,
     }
 }
 
@@ -812,23 +963,6 @@ fn classification_labels(ir: &ModelPackageIr) -> Result<Vec<f64>, IrError> {
         .clone()
         .or_else(|| ir.training_metadata.class_labels.clone())
         .ok_or(IrError::MissingClassLabels)
-}
-
-fn extract_target_mean_leaf(nodes: &[NodeTreeNode]) -> Result<f64, IrError> {
-    if nodes.len() != 1 {
-        return Err(IrError::InvalidNode(
-            "target_mean expects a single leaf node".to_string(),
-        ));
-    }
-    match &nodes[0] {
-        NodeTreeNode::Leaf {
-            leaf: LeafPayload::RegressionValue { value },
-            ..
-        } => Ok(*value),
-        _ => Err(IrError::InvalidLeaf(
-            "target_mean leaf must be regression_value".to_string(),
-        )),
-    }
 }
 
 fn classifier_class_index(leaf: &LeafPayload, class_labels: &[f64]) -> Result<usize, IrError> {
@@ -1258,7 +1392,7 @@ fn preprocessing(model: &Model) -> PreprocessingSection {
     PreprocessingSection {
         included_in_model: true,
         numeric_binning: NumericBinning {
-            kind: "rank_bin_512".to_string(),
+            kind: "rank_bin_128".to_string(),
             features,
         },
         notes: "Numeric features use serialized training-time rank bins. Binary features are serialized as booleans. Missing values and categorical encodings are not implemented in IR v1."
@@ -1284,16 +1418,13 @@ fn postprocessing(model: &Model, class_labels: Option<Vec<f64>>) -> Postprocessi
 fn required_capabilities(model: &Model, representation: &str) -> Vec<String> {
     let mut capabilities = vec![
         representation.to_string(),
-        "training_rank_bin_512".to_string(),
+        "training_rank_bin_128".to_string(),
     ];
     match model.tree_type() {
         TreeType::Id3 | TreeType::C45 => {
             capabilities.push("binned_multiway_splits".to_string());
         }
-        TreeType::TargetMean => {
-            capabilities.push("constant_leaf_prediction".to_string());
-        }
-        TreeType::Cart | TreeType::Oblivious => {
+        TreeType::Cart | TreeType::Randomized | TreeType::Oblivious => {
             capabilities.push("numeric_bin_threshold_splits".to_string());
         }
     }
@@ -1314,6 +1445,18 @@ fn required_capabilities(model: &Model, representation: &str) -> Vec<String> {
 pub(crate) fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
+        TrainAlgorithm::Rf => "rf",
+        TrainAlgorithm::Gbm => "gbm",
+    }
+}
+
+fn model_tree_definition(model: &Model) -> TreeDefinition {
+    match model {
+        Model::DecisionTreeClassifier(classifier) => classifier.to_ir_tree(),
+        Model::DecisionTreeRegressor(regressor) => regressor.to_ir_tree(),
+        Model::RandomForest(_) | Model::GradientBoostedTrees(_) => {
+            unreachable!("ensemble IR expands into member trees")
+        }
     }
 }
 
@@ -1324,6 +1467,7 @@ pub(crate) fn criterion_name(criterion: crate::Criterion) -> &'static str {
         crate::Criterion::Entropy => "entropy",
         crate::Criterion::Mean => "mean",
         crate::Criterion::Median => "median",
+        crate::Criterion::SecondOrder => "second_order",
     }
 }
 
@@ -1336,10 +1480,10 @@ pub(crate) fn task_name(task: Task) -> &'static str {
 
 pub(crate) fn tree_type_name(tree_type: TreeType) -> &'static str {
     match tree_type {
-        TreeType::TargetMean => "target_mean",
         TreeType::Id3 => "id3",
         TreeType::C45 => "c45",
         TreeType::Cart => "cart",
+        TreeType::Randomized => "randomized",
         TreeType::Oblivious => "oblivious",
     }
 }

@@ -588,6 +588,7 @@ dependencies = [
  "forestfire-data",
  "num_cpus",
  "polars",
+ "rand",
  "rayon",
  "schemars",
  "serde",
@@ -620,6 +621,8 @@ dependencies = [
  "forestfire-data",
  "numpy",
  "pyo3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

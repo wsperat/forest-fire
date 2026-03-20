@@ -1,9 +1,9 @@
 use forestfire_core::{
-    Criterion, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm, TrainConfig,
-    TreeType, train as train_model,
+    Criterion, IntrospectionError, MaxFeatures, Model, OptimizedModel as CoreOptimizedModel, Task,
+    TrainAlgorithm, TrainConfig, TreeType, train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
-use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::types::{PyBytes, PyDict, PyType};
 use pyo3::{Bound, prelude::*};
 use std::collections::BTreeMap;
@@ -13,17 +13,47 @@ const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
 #[pyclass(name = "Model")]
 struct PyModel {
     inner: Model,
+    string_class_labels: Option<Vec<String>>,
 }
 
 #[pyclass(name = "OptimizedModel")]
 struct PyOptimizedModel {
     inner: CoreOptimizedModel,
+    string_class_labels: Option<Vec<String>>,
 }
 
 #[pyclass(name = "Table")]
 #[derive(Clone)]
 struct PyTable {
     inner: Table,
+}
+
+#[derive(serde::Serialize)]
+struct TreeDataFrameRow {
+    tree_index: usize,
+    representation: String,
+    node_type: String,
+    node_index: String,
+    depth: usize,
+    parent_index: Option<String>,
+    left_child: Option<String>,
+    right_child: Option<String>,
+    branch_bins: Option<Vec<u16>>,
+    branch_children: Option<Vec<String>>,
+    split_feature: Option<usize>,
+    split_feature_name: Option<String>,
+    split_type: Option<String>,
+    threshold_bin: Option<u16>,
+    threshold_upper_bound: Option<f64>,
+    operator: Option<String>,
+    leaf_value: Option<f64>,
+    leaf_class_index: Option<usize>,
+    leaf_label: Option<String>,
+    sample_count: usize,
+    impurity: Option<f64>,
+    gain: Option<f64>,
+    variance: Option<f64>,
+    class_counts: Option<Vec<usize>>,
 }
 
 fn table_kind_name(kind: TableKind) -> &'static str {
@@ -33,12 +63,20 @@ fn table_kind_name(kind: TableKind) -> &'static str {
     }
 }
 
+enum TrainingTargets {
+    Numeric(Vec<f64>),
+    StringClasses {
+        encoded: Vec<f64>,
+        labels: Vec<String>,
+    },
+}
+
 fn build_training_table(
     x: &Bound<PyAny>,
     y: Option<&Bound<PyAny>>,
     canaries: usize,
     bins: NumericBins,
-) -> PyResult<Table> {
+) -> PyResult<(Table, Option<Vec<String>>)> {
     if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
         if y.is_some() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -50,7 +88,7 @@ fn build_training_table(
                 "bins must be omitted when x is already a Table.",
             ));
         }
-        return Ok(table.inner.clone());
+        return Ok((table.inner.clone(), None));
     }
 
     let y = y.ok_or_else(|| {
@@ -62,10 +100,14 @@ fn build_training_table(
         return build_sparse_training_table(x, y, canaries, bins);
     }
     let x_rows = extract_matrix(x)?;
-    let y_values = extract_vector(y)?;
+    let (y_values, string_class_labels) = match extract_training_targets(y)? {
+        TrainingTargets::Numeric(values) => (values, None),
+        TrainingTargets::StringClasses { encoded, labels } => (encoded, Some(labels)),
+    };
 
     Table::with_options(x_rows, y_values, canaries, bins)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+        .map(|table| (table, string_class_labels))
 }
 
 fn build_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
@@ -114,11 +156,17 @@ fn build_inference_input(x: &Bound<PyAny>) -> PyResult<InferenceInput> {
         });
     }
 
+    if let Ok(rows) = extract_rows_or_single_row(x) {
+        return Ok(InferenceInput::Rows(rows));
+    }
+
     if let Ok(columns) = extract_named_columns(x) {
         return Ok(InferenceInput::NamedColumns(columns));
     }
 
-    Ok(InferenceInput::Rows(extract_matrix(x)?))
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "Input could not be interpreted as rows or named columns.",
+    ))
 }
 
 fn is_scipy_sparse_matrix(x: &Bound<PyAny>) -> PyResult<bool> {
@@ -171,7 +219,35 @@ where
     Ok(predictions)
 }
 
-fn predict_input_with_model(model: &Model, input: InferenceInput) -> PyResult<Vec<f64>> {
+fn predict_proba_lazyframe_in_batches<F>(
+    x: &Bound<PyAny>,
+    predict_batch: F,
+) -> PyResult<Vec<Vec<f64>>>
+where
+    F: Fn(InferenceInput) -> PyResult<Vec<Vec<f64>>>,
+{
+    let mut predictions = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let sliced = x.call_method1("slice", (offset, LAZYFRAME_PREDICT_BATCH_ROWS))?;
+        let batch = sliced.call_method0("collect")?;
+        let height = row_count(&batch)?;
+        if height == 0 {
+            break;
+        }
+        predictions.extend(predict_batch(build_inference_input(&batch)?)?);
+        if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+            break;
+        }
+        offset += height;
+    }
+    Ok(predictions)
+}
+
+fn predict_input_with_model_result(
+    model: &Model,
+    input: InferenceInput,
+) -> Result<Vec<f64>, String> {
     match input {
         InferenceInput::Rows(rows) => model.predict_rows(rows),
         InferenceInput::NamedColumns(columns) => model.predict_named_columns(columns),
@@ -182,24 +258,878 @@ fn predict_input_with_model(model: &Model, input: InferenceInput) -> PyResult<Ve
         } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
         InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
     }
-    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    .map_err(|err| err.to_string())
 }
 
-fn predict_input_with_optimized_model(
+fn predict_proba_input_with_model_result(
+    model: &Model,
+    input: InferenceInput,
+) -> Result<Vec<Vec<f64>>, String> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_proba_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_proba_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_proba_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => model.predict_proba_table(&table),
+    }
+    .map_err(|err| err.to_string())
+}
+
+fn predict_input_with_optimized_model_result(
+    model: &CoreOptimizedModel,
+    input: InferenceInput,
+) -> Result<Vec<f64>, String> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    }
+    .map_err(|err| err.to_string())
+}
+
+fn predict_proba_input_with_optimized_model_result(
+    model: &CoreOptimizedModel,
+    input: InferenceInput,
+) -> Result<Vec<Vec<f64>>, String> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_proba_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_proba_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_proba_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => model.predict_proba_table(&table),
+    }
+    .map_err(|err| err.to_string())
+}
+
+fn train_model_detached(py: Python<'_>, table: Table, config: TrainConfig) -> PyResult<Model> {
+    py.detach(move || train_model(&table, config).map_err(|err| err.to_string()))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+}
+
+fn optimize_model_detached(
+    py: Python<'_>,
+    model: &Model,
+    physical_cores: Option<usize>,
+) -> PyResult<CoreOptimizedModel> {
+    py.detach(|| {
+        model
+            .optimize_inference(physical_cores)
+            .map_err(|err| err.to_string())
+    })
+    .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+}
+
+fn predict_input_with_model_detached(
+    py: Python<'_>,
+    model: &Model,
+    input: InferenceInput,
+) -> PyResult<Vec<f64>> {
+    py.detach(|| predict_input_with_model_result(model, input))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+}
+
+fn predict_proba_input_with_model_detached(
+    py: Python<'_>,
+    model: &Model,
+    input: InferenceInput,
+) -> PyResult<Vec<Vec<f64>>> {
+    py.detach(|| predict_proba_input_with_model_result(model, input))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+}
+
+fn predict_input_with_optimized_model_detached(
+    py: Python<'_>,
     model: &CoreOptimizedModel,
     input: InferenceInput,
 ) -> PyResult<Vec<f64>> {
-    match input {
-        InferenceInput::Rows(rows) => model.predict_rows(rows),
-        InferenceInput::NamedColumns(columns) => model.predict_named_columns(columns),
-        InferenceInput::SparseBinaryColumns {
-            n_rows,
-            n_features,
-            columns,
-        } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
-        InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    py.detach(|| predict_input_with_optimized_model_result(model, input))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+}
+
+fn predict_proba_input_with_optimized_model_detached(
+    py: Python<'_>,
+    model: &CoreOptimizedModel,
+    input: InferenceInput,
+) -> PyResult<Vec<Vec<f64>>> {
+    py.detach(|| predict_proba_input_with_optimized_model_result(model, input))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+}
+
+fn decoded_predictions<'py>(
+    py: Python<'py>,
+    preds: Vec<f64>,
+    string_class_labels: Option<&[String]>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if let Some(labels) = string_class_labels {
+        let decoded = preds
+            .into_iter()
+            .map(|value| {
+                let index = value as usize;
+                labels.get(index).cloned().ok_or_else(|| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Prediction referenced an unknown string class label.",
+                    )
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let numpy = py.import("numpy")?;
+        return numpy.getattr("array")?.call1((decoded,));
     }
-    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+
+    Ok(PyArray1::from_vec(py, preds).into_any())
+}
+
+fn to_python_json_value<'py, T: serde::Serialize>(
+    py: Python<'py>,
+    value: &T,
+) -> PyResult<Bound<'py, PyAny>> {
+    let json = py.import("json")?;
+    let serialized = serde_json::to_string(value)
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    json.getattr("loads")?.call1((serialized,))
+}
+
+fn build_dataframe<'py, T: serde::Serialize>(
+    py: Python<'py>,
+    value: &T,
+) -> PyResult<Bound<'py, PyAny>> {
+    let rows = to_python_json_value(py, value)?;
+    match py.import("polars") {
+        Ok(polars) => polars.getattr("DataFrame")?.call1((rows.clone(),)),
+        Err(_) => {
+            let pyarrow = py.import("pyarrow")?;
+            pyarrow
+                .getattr("Table")?
+                .getattr("from_pylist")?
+                .call1((rows,))
+        }
+    }
+}
+
+fn string_label_for_leaf(
+    labels: Option<&[String]>,
+    leaf_class_index: Option<usize>,
+) -> Option<String> {
+    labels.and_then(|labels| leaf_class_index.and_then(|index| labels.get(index).cloned()))
+}
+
+type SplitDetails = (
+    Option<usize>,
+    Option<String>,
+    Option<String>,
+    Option<u16>,
+    Option<f64>,
+    Option<String>,
+);
+
+fn split_details(split: &serde_json::Value) -> SplitDetails {
+    (
+        split
+            .get("feature_index")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize),
+        split
+            .get("feature_name")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        split
+            .get("split_type")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        split
+            .get("threshold_bin")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u16),
+        split
+            .get("threshold_upper_bound")
+            .and_then(|value| value.as_f64()),
+        split
+            .get("operator")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+    )
+}
+
+fn leaf_payload_details(
+    leaf: &serde_json::Value,
+    string_class_labels: Option<&[String]>,
+) -> (Option<f64>, Option<usize>, Option<String>) {
+    match leaf.get("prediction_kind").and_then(|value| value.as_str()) {
+        Some("regression_value") => (
+            leaf.get("value").and_then(|value| value.as_f64()),
+            None,
+            None,
+        ),
+        Some("class_index") => {
+            let class_index = leaf
+                .get("class_index")
+                .and_then(|value| value.as_u64())
+                .map(|value| value as usize);
+            (
+                leaf.get("class_value").and_then(|value| value.as_f64()),
+                class_index,
+                string_label_for_leaf(string_class_labels, class_index),
+            )
+        }
+        _ => (None, None, None),
+    }
+}
+
+fn tree_rows_from_model(
+    model: &Model,
+    string_class_labels: Option<&[String]>,
+    tree_index: usize,
+) -> PyResult<Vec<TreeDataFrameRow>> {
+    let summary = model
+        .tree_structure(tree_index)
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    let mut rows = Vec::new();
+
+    match summary.representation.as_str() {
+        "node_tree" => {
+            let mut nodes = Vec::new();
+            let mut node_index = 0usize;
+            loop {
+                match model.tree_node(tree_index, node_index) {
+                    Ok(node) => {
+                        nodes.push(node);
+                        node_index += 1;
+                    }
+                    Err(IntrospectionError::NodeIndexOutOfBounds { .. }) => break,
+                    Err(err) => {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            err.to_string(),
+                        ));
+                    }
+                }
+            }
+
+            let mut parents = BTreeMap::<String, String>::new();
+            for node in &nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id, children, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        parents.insert(children.left.to_string(), parent.clone());
+                        parents.insert(children.right.to_string(), parent);
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id, branches, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        for branch in branches {
+                            parents.insert(branch.child.to_string(), parent.clone());
+                        }
+                    }
+                    forestfire_core::ir::NodeTreeNode::Leaf { .. } => {}
+                }
+            }
+
+            for node in nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::Leaf {
+                        node_id,
+                        depth,
+                        leaf,
+                        stats,
+                    } => {
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "leaf".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id,
+                        depth,
+                        split,
+                        children,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: Some(children.left.to_string()),
+                            right_child: Some(children.right.to_string()),
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id,
+                        depth,
+                        split,
+                        branches,
+                        unmatched_leaf,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: Some(branches.iter().map(|branch| branch.bin).collect()),
+                            branch_children: Some(
+                                branches
+                                    .iter()
+                                    .map(|branch| branch.child.to_string())
+                                    .collect(),
+                            ),
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts.clone(),
+                        });
+
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&unmatched_leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "unmatched_leaf".to_string(),
+                            node_index: format!("{node_id}.missing"),
+                            depth: depth + 1,
+                            parent_index: Some(node_id.to_string()),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: None,
+                            gain: None,
+                            variance: None,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                }
+            }
+        }
+        "oblivious_levels" => {
+            for level_index in 0..summary.actual_depth {
+                let level = model.tree_level(tree_index, level_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let split = serde_json::to_value(&level.split).unwrap();
+                let (
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                ) = split_details(&split);
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "level".to_string(),
+                    node_index: format!("level_{level_index}"),
+                    depth: level.level,
+                    parent_index: (level.level > 0).then(|| format!("level_{}", level.level - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                    leaf_value: None,
+                    leaf_class_index: None,
+                    leaf_label: None,
+                    sample_count: level.stats.sample_count,
+                    impurity: level.stats.impurity,
+                    gain: level.stats.gain,
+                    variance: level.stats.variance,
+                    class_counts: level.stats.class_counts,
+                });
+            }
+
+            for leaf_index in 0..summary.leaf_count {
+                let leaf = model.tree_leaf(tree_index, leaf_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                    &serde_json::to_value(&leaf.leaf).unwrap(),
+                    string_class_labels,
+                );
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "leaf".to_string(),
+                    node_index: format!("leaf_{leaf_index}"),
+                    depth: summary.actual_depth,
+                    parent_index: (summary.actual_depth > 0)
+                        .then(|| format!("level_{}", summary.actual_depth - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature: None,
+                    split_feature_name: None,
+                    split_type: None,
+                    threshold_bin: None,
+                    threshold_upper_bound: None,
+                    operator: None,
+                    leaf_value,
+                    leaf_class_index,
+                    leaf_label,
+                    sample_count: leaf.stats.sample_count,
+                    impurity: leaf.stats.impurity,
+                    gain: leaf.stats.gain,
+                    variance: leaf.stats.variance,
+                    class_counts: leaf.stats.class_counts,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    Ok(rows)
+}
+
+fn dataframe_from_model<'py>(
+    py: Python<'py>,
+    model: &Model,
+    string_class_labels: Option<&[String]>,
+    tree_index: Option<usize>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let mut rows = Vec::new();
+    let indices = if let Some(tree_index) = tree_index {
+        vec![tree_index]
+    } else {
+        (0..model.tree_count()).collect()
+    };
+    for tree_index in indices {
+        rows.extend(tree_rows_from_model(
+            model,
+            string_class_labels,
+            tree_index,
+        )?);
+    }
+    build_dataframe(py, &rows)
+}
+
+fn tree_rows_from_optimized_model(
+    model: &CoreOptimizedModel,
+    string_class_labels: Option<&[String]>,
+    tree_index: usize,
+) -> PyResult<Vec<TreeDataFrameRow>> {
+    let summary = model
+        .tree_structure(tree_index)
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    let mut rows = Vec::new();
+
+    match summary.representation.as_str() {
+        "node_tree" => {
+            let mut nodes = Vec::new();
+            let mut node_index = 0usize;
+            loop {
+                match model.tree_node(tree_index, node_index) {
+                    Ok(node) => {
+                        nodes.push(node);
+                        node_index += 1;
+                    }
+                    Err(IntrospectionError::NodeIndexOutOfBounds { .. }) => break,
+                    Err(err) => {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            err.to_string(),
+                        ));
+                    }
+                }
+            }
+
+            let mut parents = BTreeMap::<String, String>::new();
+            for node in &nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id, children, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        parents.insert(children.left.to_string(), parent.clone());
+                        parents.insert(children.right.to_string(), parent);
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id, branches, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        for branch in branches {
+                            parents.insert(branch.child.to_string(), parent.clone());
+                        }
+                    }
+                    forestfire_core::ir::NodeTreeNode::Leaf { .. } => {}
+                }
+            }
+
+            for node in nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::Leaf {
+                        node_id,
+                        depth,
+                        leaf,
+                        stats,
+                    } => {
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "leaf".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id,
+                        depth,
+                        split,
+                        children,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: Some(children.left.to_string()),
+                            right_child: Some(children.right.to_string()),
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id,
+                        depth,
+                        split,
+                        branches,
+                        unmatched_leaf,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: Some(branches.iter().map(|branch| branch.bin).collect()),
+                            branch_children: Some(
+                                branches
+                                    .iter()
+                                    .map(|branch| branch.child.to_string())
+                                    .collect(),
+                            ),
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts.clone(),
+                        });
+
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&unmatched_leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "unmatched_leaf".to_string(),
+                            node_index: format!("{node_id}.missing"),
+                            depth: depth + 1,
+                            parent_index: Some(node_id.to_string()),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: None,
+                            gain: None,
+                            variance: None,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                }
+            }
+        }
+        "oblivious_levels" => {
+            for level_index in 0..summary.actual_depth {
+                let level = model.tree_level(tree_index, level_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let split = serde_json::to_value(&level.split).unwrap();
+                let (
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                ) = split_details(&split);
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "level".to_string(),
+                    node_index: format!("level_{level_index}"),
+                    depth: level.level,
+                    parent_index: (level.level > 0).then(|| format!("level_{}", level.level - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                    leaf_value: None,
+                    leaf_class_index: None,
+                    leaf_label: None,
+                    sample_count: level.stats.sample_count,
+                    impurity: level.stats.impurity,
+                    gain: level.stats.gain,
+                    variance: level.stats.variance,
+                    class_counts: level.stats.class_counts,
+                });
+            }
+
+            for leaf_index in 0..summary.leaf_count {
+                let leaf = model.tree_leaf(tree_index, leaf_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                    &serde_json::to_value(&leaf.leaf).unwrap(),
+                    string_class_labels,
+                );
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "leaf".to_string(),
+                    node_index: format!("leaf_{leaf_index}"),
+                    depth: summary.actual_depth,
+                    parent_index: (summary.actual_depth > 0)
+                        .then(|| format!("level_{}", summary.actual_depth - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature: None,
+                    split_feature_name: None,
+                    split_type: None,
+                    threshold_bin: None,
+                    threshold_upper_bound: None,
+                    operator: None,
+                    leaf_value,
+                    leaf_class_index,
+                    leaf_label,
+                    sample_count: leaf.stats.sample_count,
+                    impurity: leaf.stats.impurity,
+                    gain: leaf.stats.gain,
+                    variance: leaf.stats.variance,
+                    class_counts: leaf.stats.class_counts,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    Ok(rows)
+}
+
+fn dataframe_from_optimized_model<'py>(
+    py: Python<'py>,
+    model: &CoreOptimizedModel,
+    string_class_labels: Option<&[String]>,
+    tree_index: Option<usize>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let mut rows = Vec::new();
+    let indices = if let Some(tree_index) = tree_index {
+        vec![tree_index]
+    } else {
+        (0..model.tree_count()).collect()
+    };
+    for tree_index in indices {
+        rows.extend(tree_rows_from_optimized_model(
+            model,
+            string_class_labels,
+            tree_index,
+        )?);
+    }
+    build_dataframe(py, &rows)
 }
 
 fn build_sparse_training_table(
@@ -207,14 +1137,17 @@ fn build_sparse_training_table(
     y: &Bound<PyAny>,
     canaries: usize,
     bins: NumericBins,
-) -> PyResult<Table> {
+) -> PyResult<(Table, Option<Vec<String>>)> {
     let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
-    let y_values = extract_vector(y)?;
+    let (y_values, string_class_labels) = match extract_training_targets(y)? {
+        TrainingTargets::Numeric(values) => (values, None),
+        TrainingTargets::StringClasses { encoded, labels } => (encoded, Some(labels)),
+    };
     let table = forestfire_data::SparseTable::from_sparse_binary_columns_with_options(
         n_rows, n_features, columns, y_values, canaries, bins,
     )
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-    Ok(Table::Sparse(table))
+    Ok((Table::Sparse(table), string_class_labels))
 }
 
 fn build_sparse_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
@@ -346,6 +1279,24 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
             .collect());
     }
 
+    if let Ok(array) = x.extract::<PyReadonlyArray2<'_, i64>>() {
+        let view = array.as_array();
+        return Ok(view
+            .rows()
+            .into_iter()
+            .map(|row| row.iter().map(|value| *value as f64).collect())
+            .collect());
+    }
+
+    if let Ok(array) = x.extract::<PyReadonlyArray2<'_, i32>>() {
+        let view = array.as_array();
+        return Ok(view
+            .rows()
+            .into_iter()
+            .map(|row| row.iter().map(|value| f64::from(*value)).collect())
+            .collect());
+    }
+
     if x.hasattr("toarray")? {
         let as_array = x.call_method0("toarray")?;
         return extract_matrix(&as_array);
@@ -358,6 +1309,9 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
 
     if x.hasattr("__array__")? {
         let as_array = x.call_method0("__array__")?;
+        if as_array.is(x) {
+            return extract_matrix_from_rows(x);
+        }
         return extract_matrix(&as_array);
     }
 
@@ -379,15 +1333,20 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
     extract_matrix_from_rows(x)
 }
 
+fn extract_rows_or_single_row(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
+    match extract_matrix(x) {
+        Ok(rows) => Ok(rows),
+        Err(matrix_error) => match extract_vector(x) {
+            Ok(row) => Ok(vec![row]),
+            Err(_) => Err(matrix_error),
+        },
+    }
+}
+
 fn extract_named_columns(x: &Bound<PyAny>) -> PyResult<BTreeMap<String, Vec<f64>>> {
     if x.hasattr("collect")? {
         let collected = x.call_method0("collect")?;
         return extract_named_columns(&collected);
-    }
-
-    if x.hasattr("to_pydict")? {
-        let columns = x.call_method0("to_pydict")?;
-        return extract_named_columns_from_dict(columns.cast::<PyDict>()?);
     }
 
     if let Ok(columns) = x.cast::<PyDict>() {
@@ -491,6 +1450,42 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
         ));
     }
 
+    if let Ok(array) = y.extract::<PyReadonlyArray1<'_, i64>>() {
+        return Ok(array.as_array().iter().map(|value| *value as f64).collect());
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray2<'_, i64>>() {
+        let shape = array.shape();
+        if shape[0] == 1 || shape[1] == 1 {
+            return Ok(array.as_array().iter().map(|value| *value as f64).collect());
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Target arrays must be one-dimensional or have a single row/column.",
+        ));
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray1<'_, i32>>() {
+        return Ok(array
+            .as_array()
+            .iter()
+            .map(|value| f64::from(*value))
+            .collect());
+    }
+
+    if let Ok(array) = y.extract::<PyReadonlyArray2<'_, i32>>() {
+        let shape = array.shape();
+        if shape[0] == 1 || shape[1] == 1 {
+            return Ok(array
+                .as_array()
+                .iter()
+                .map(|value| f64::from(*value))
+                .collect());
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Target arrays must be one-dimensional or have a single row/column.",
+        ));
+    }
+
     if y.hasattr("toarray")? {
         let as_array = y.call_method0("toarray")?;
         return extract_vector(&as_array);
@@ -503,6 +1498,12 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
 
     if y.hasattr("__array__")? {
         let as_array = y.call_method0("__array__")?;
+        if as_array.is(y) {
+            return y
+                .try_iter()?
+                .map(|value| value.and_then(|value| extract_scalar(&value)))
+                .collect();
+        }
         return extract_vector(&as_array);
     }
 
@@ -521,6 +1522,73 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
         .collect()
 }
 
+fn extract_training_targets(y: &Bound<PyAny>) -> PyResult<TrainingTargets> {
+    if y.hasattr("to_pylist")? {
+        let as_list = y.call_method0("to_pylist")?;
+        if let Ok(strings) = as_list.extract::<Vec<String>>() {
+            return encode_string_labels(strings);
+        }
+        if let Ok(strings) = as_list.extract::<Vec<Vec<String>>>() {
+            let is_vector = strings.len() == 1 || strings.iter().all(|row| row.len() == 1);
+            if is_vector {
+                return encode_string_labels(
+                    strings
+                        .into_iter()
+                        .flat_map(|row| row.into_iter())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Target arrays must be one-dimensional or have a single row/column.",
+            ));
+        }
+    }
+
+    if y.hasattr("tolist")? {
+        let as_list = y.call_method0("tolist")?;
+        if let Ok(strings) = as_list.extract::<Vec<String>>() {
+            return encode_string_labels(strings);
+        }
+        if let Ok(strings) = as_list.extract::<Vec<Vec<String>>>() {
+            let is_vector = strings.len() == 1 || strings.iter().all(|row| row.len() == 1);
+            if is_vector {
+                return encode_string_labels(
+                    strings
+                        .into_iter()
+                        .flat_map(|row| row.into_iter())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Target arrays must be one-dimensional or have a single row/column.",
+            ));
+        }
+    }
+
+    Ok(TrainingTargets::Numeric(extract_vector(y)?))
+}
+
+fn encode_string_labels(labels: Vec<String>) -> PyResult<TrainingTargets> {
+    let mut vocabulary = Vec::<String>::new();
+    let mut encoded = Vec::with_capacity(labels.len());
+
+    for label in labels {
+        let index = if let Some(index) = vocabulary.iter().position(|candidate| candidate == &label)
+        {
+            index
+        } else {
+            vocabulary.push(label.clone());
+            vocabulary.len() - 1
+        };
+        encoded.push(index as f64);
+    }
+
+    Ok(TrainingTargets::StringClasses {
+        encoded,
+        labels: vocabulary,
+    })
+}
+
 fn extract_scalar(value: &Bound<PyAny>) -> PyResult<f64> {
     if let Ok(value) = value.extract::<bool>() {
         return Ok(f64::from(u8::from(value)));
@@ -532,8 +1600,10 @@ fn extract_scalar(value: &Bound<PyAny>) -> PyResult<f64> {
 fn parse_algorithm(algorithm: &str) -> PyResult<TrainAlgorithm> {
     match algorithm {
         "dt" => Ok(TrainAlgorithm::Dt),
+        "rf" => Ok(TrainAlgorithm::Rf),
+        "gbm" => Ok(TrainAlgorithm::Gbm),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported algorithm '{}'. Expected one of: dt",
+            "Unsupported algorithm '{}'. Expected one of: dt, rf, gbm",
             algorithm
         ))),
     }
@@ -541,27 +1611,114 @@ fn parse_algorithm(algorithm: &str) -> PyResult<TrainAlgorithm> {
 
 fn parse_tree_type(tree_type: &str) -> PyResult<TreeType> {
     match tree_type {
-        "target_mean" => Ok(TreeType::TargetMean),
         "id3" => Ok(TreeType::Id3),
         "c45" => Ok(TreeType::C45),
         "cart" => Ok(TreeType::Cart),
+        "randomized" => Ok(TreeType::Randomized),
         "oblivious" => Ok(TreeType::Oblivious),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported tree_type '{}'. Expected one of: target_mean, id3, c45, cart, oblivious",
+            "Unsupported tree_type '{}'. Expected one of: id3, c45, cart, randomized, oblivious",
             tree_type
         ))),
     }
+}
+
+fn resolve_tree_type(requested_tree_type: &str, task_was_auto: bool) -> PyResult<TreeType> {
+    if task_was_auto && requested_tree_type == "cart" {
+        return Ok(TreeType::Cart);
+    }
+
+    parse_tree_type(requested_tree_type)
 }
 
 fn parse_task(task: &str) -> PyResult<Task> {
     match task {
         "regression" => Ok(Task::Regression),
         "classification" => Ok(Task::Classification),
+        "auto" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Internal error: task='auto' must be resolved before parse_task.",
+        )),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported task '{}'. Expected one of: regression, classification",
+            "Unsupported task '{}'. Expected one of: regression, classification, auto",
             task
         ))),
     }
+}
+
+fn resolve_task(x: &Bound<PyAny>, y: Option<&Bound<PyAny>>, task: &str) -> PyResult<Task> {
+    if task != "auto" {
+        return parse_task(task);
+    }
+
+    if let Some(y) = y {
+        if target_is_string_like(y)? || target_is_integer_like(y)? {
+            return Ok(Task::Classification);
+        }
+        return Ok(Task::Regression);
+    }
+
+    if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        let all_integral = (0..table.inner.n_rows()).all(|row_idx| {
+            let value = table.inner.target_value(row_idx);
+            value.is_finite() && value.fract() == 0.0
+        });
+        if all_integral {
+            return Ok(Task::Classification);
+        }
+        return Ok(Task::Regression);
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+        "task='auto' requires y unless x is already a Table.",
+    ))
+}
+
+fn target_is_integer_like(y: &Bound<PyAny>) -> PyResult<bool> {
+    if y.extract::<PyReadonlyArray1<'_, i64>>().is_ok()
+        || y.extract::<PyReadonlyArray2<'_, i64>>().is_ok()
+        || y.extract::<PyReadonlyArray1<'_, i32>>().is_ok()
+        || y.extract::<PyReadonlyArray2<'_, i32>>().is_ok()
+        || y.extract::<PyReadonlyArray1<'_, bool>>().is_ok()
+        || y.extract::<PyReadonlyArray2<'_, bool>>().is_ok()
+    {
+        return Ok(true);
+    }
+
+    if y.hasattr("to_pylist")? {
+        let as_list = y.call_method0("to_pylist")?;
+        if let Ok(values) = as_list.extract::<Vec<i64>>() {
+            return Ok(!values.is_empty() || as_list.len().unwrap_or(0) == 0);
+        }
+    }
+
+    if y.hasattr("tolist")? {
+        let as_list = y.call_method0("tolist")?;
+        if as_list.extract::<Vec<i64>>().is_ok() || as_list.extract::<Vec<Vec<i64>>>().is_ok() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn target_is_string_like(y: &Bound<PyAny>) -> PyResult<bool> {
+    if y.hasattr("to_pylist")? {
+        let as_list = y.call_method0("to_pylist")?;
+        if as_list.extract::<Vec<String>>().is_ok() || as_list.extract::<Vec<Vec<String>>>().is_ok()
+        {
+            return Ok(true);
+        }
+    }
+
+    if y.hasattr("tolist")? {
+        let as_list = y.call_method0("tolist")?;
+        if as_list.extract::<Vec<String>>().is_ok() || as_list.extract::<Vec<Vec<String>>>().is_ok()
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
@@ -575,6 +1732,74 @@ fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
             "Unsupported criterion '{}'. Expected one of: auto, gini, entropy, mean, median",
             criterion
         ))),
+    }
+}
+
+fn parse_max_features(value: Option<&Bound<PyAny>>) -> PyResult<MaxFeatures> {
+    let Some(value) = value else {
+        return Ok(MaxFeatures::Auto);
+    };
+
+    if value.is_none() {
+        return Ok(MaxFeatures::Auto);
+    }
+
+    if let Ok(text) = value.extract::<String>() {
+        return match text.as_str() {
+            "auto" => Ok(MaxFeatures::Auto),
+            "all" => Ok(MaxFeatures::All),
+            "sqrt" => Ok(MaxFeatures::Sqrt),
+            "third" => Ok(MaxFeatures::Third),
+            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Unsupported max_features '{}'. Expected one of: auto, all, sqrt, third, or a positive integer",
+                text
+            ))),
+        };
+    }
+
+    if let Ok(count) = value.extract::<usize>() {
+        return Ok(MaxFeatures::Count(count));
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+        "Unsupported max_features value. Expected one of: auto, all, sqrt, third, or a positive integer",
+    ))
+}
+
+fn parse_optional_positive_usize(value: Option<usize>, name: &str) -> PyResult<Option<usize>> {
+    match value {
+        Some(0) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "{} must be at least 1.",
+            name
+        ))),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
+    }
+}
+
+fn parse_optional_positive_f64(value: Option<f64>, name: &str) -> PyResult<Option<f64>> {
+    match value {
+        Some(value) if !value.is_finite() || value <= 0.0 => {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "{} must be a finite value greater than 0.",
+                name
+            )))
+        }
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
+    }
+}
+
+fn parse_optional_fraction(value: Option<f64>, name: &str) -> PyResult<Option<f64>> {
+    match value {
+        Some(value) if !value.is_finite() || !(0.0..=1.0).contains(&value) => {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "{} must be a finite value between 0 and 1.",
+                name
+            )))
+        }
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
     }
 }
 
@@ -607,6 +1832,8 @@ fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
 fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
+        TrainAlgorithm::Rf => "rf",
+        TrainAlgorithm::Gbm => "gbm",
     }
 }
 
@@ -624,23 +1851,25 @@ fn criterion_name(criterion: Criterion) -> &'static str {
         Criterion::Entropy => "entropy",
         Criterion::Mean => "mean",
         Criterion::Median => "median",
+        Criterion::SecondOrder => "second_order",
     }
 }
 
 fn tree_type_name(tree_type: TreeType) -> &'static str {
     match tree_type {
-        TreeType::TargetMean => "target_mean",
         TreeType::Id3 => "id3",
         TreeType::C45 => "c45",
         TreeType::Cart => "cart",
+        TreeType::Randomized => "randomized",
         TreeType::Oblivious => "oblivious",
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
+    py: Python<'_>,
     x: &Bound<PyAny>,
     y: Option<&Bound<PyAny>>,
     algorithm: &str,
@@ -650,19 +1879,51 @@ fn train(
     canaries: usize,
     bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
+    max_depth: Option<usize>,
+    min_samples_split: Option<usize>,
+    min_samples_leaf: Option<usize>,
+    n_trees: Option<usize>,
+    max_features: Option<&Bound<PyAny>>,
+    seed: Option<u64>,
+    compute_oob: bool,
+    learning_rate: Option<f64>,
+    bootstrap: bool,
+    top_gradient_fraction: Option<f64>,
+    other_gradient_fraction: Option<f64>,
 ) -> PyResult<PyModel> {
-    let table = build_training_table(x, y, canaries, parse_bins(bins)?)?;
+    let task_was_auto = task == "auto";
+    let resolved_task = resolve_task(x, y, task)?;
+    let (table, string_class_labels) = build_training_table(x, y, canaries, parse_bins(bins)?)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
-        task: parse_task(task)?,
-        tree_type: parse_tree_type(tree_type)?,
+        task: resolved_task,
+        tree_type: resolve_tree_type(tree_type, task_was_auto)?,
         criterion: parse_criterion(criterion)?,
+        max_depth: parse_optional_positive_usize(max_depth, "max_depth")?,
+        min_samples_split: parse_optional_positive_usize(min_samples_split, "min_samples_split")?,
+        min_samples_leaf: parse_optional_positive_usize(min_samples_leaf, "min_samples_leaf")?,
         physical_cores,
+        n_trees,
+        max_features: parse_max_features(max_features)?,
+        seed,
+        compute_oob,
+        learning_rate: parse_optional_positive_f64(learning_rate, "learning_rate")?,
+        bootstrap,
+        top_gradient_fraction: parse_optional_fraction(
+            top_gradient_fraction,
+            "top_gradient_fraction",
+        )?,
+        other_gradient_fraction: parse_optional_fraction(
+            other_gradient_fraction,
+            "other_gradient_fraction",
+        )?,
     };
-    let model = train_model(&table, config)
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    let model = train_model_detached(py, table, config)?;
 
-    Ok(PyModel { inner: model })
+    Ok(PyModel {
+        inner: model,
+        string_class_labels,
+    })
 }
 
 #[pymethods]
@@ -671,29 +1932,137 @@ impl PyModel {
     fn deserialize(_cls: &Bound<PyType>, serialized: &str) -> PyResult<Self> {
         let inner = Model::deserialize(serialized)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            string_class_labels: None,
+        })
     }
 
-    fn predict<'py>(
+    fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let preds = if is_polars_lazyframe(x)? {
+            predict_lazyframe_in_batches(x, |input| {
+                predict_input_with_model_detached(py, &self.inner, input)
+            })?
+        } else {
+            predict_input_with_model_detached(py, &self.inner, build_inference_input(x)?)?
+        };
+        decoded_predictions(py, preds, self.string_class_labels.as_deref())
+    }
+
+    fn predict_proba<'py>(
         &self,
         py: Python<'py>,
         x: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let preds = if is_polars_lazyframe(x)? {
-            predict_lazyframe_in_batches(x, |input| predict_input_with_model(&self.inner, input))?
+            predict_proba_lazyframe_in_batches(x, |input| {
+                predict_proba_input_with_model_detached(py, &self.inner, input)
+            })?
         } else {
-            predict_input_with_model(&self.inner, build_inference_input(x)?)?
+            predict_proba_input_with_model_detached(py, &self.inner, build_inference_input(x)?)?
         };
-        Ok(PyArray1::from_vec(py, preds))
+        PyArray2::from_vec2(py, &preds)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[getter]
+    fn tree_count(&self) -> usize {
+        self.inner.tree_count()
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_structure<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let summary = self
+            .inner
+            .tree_structure(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &summary)
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_prediction_stats<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let stats = self
+            .inner
+            .tree_prediction_stats(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &stats)
+    }
+
+    #[pyo3(signature = (node_index, tree_index=0))]
+    fn tree_node<'py>(
+        &self,
+        py: Python<'py>,
+        node_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node = self
+            .inner
+            .tree_node(tree_index, node_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &node)
+    }
+
+    #[pyo3(signature = (level_index, tree_index=0))]
+    fn tree_level<'py>(
+        &self,
+        py: Python<'py>,
+        level_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let level = self
+            .inner
+            .tree_level(tree_index, level_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &level)
+    }
+
+    #[pyo3(signature = (leaf_index, tree_index=0))]
+    fn tree_leaf<'py>(
+        &self,
+        py: Python<'py>,
+        leaf_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let leaf = self
+            .inner
+            .tree_leaf(tree_index, leaf_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &leaf)
+    }
+
+    #[pyo3(signature = (tree_index=None))]
+    fn to_dataframe<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: Option<usize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        dataframe_from_model(
+            py,
+            &self.inner,
+            self.string_class_labels.as_deref(),
+            tree_index,
+        )
     }
 
     #[pyo3(signature = (physical_cores=None))]
-    fn optimize_inference(&self, physical_cores: Option<usize>) -> PyResult<PyOptimizedModel> {
-        let inner = self
-            .inner
-            .optimize_inference(physical_cores)
-            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-        Ok(PyOptimizedModel { inner })
+    fn optimize_inference(
+        &self,
+        py: Python<'_>,
+        physical_cores: Option<usize>,
+    ) -> PyResult<PyOptimizedModel> {
+        let inner = optimize_model_detached(py, &self.inner, physical_cores)?;
+        Ok(PyOptimizedModel {
+            inner,
+            string_class_labels: self.string_class_labels.clone(),
+        })
     }
 
     #[getter]
@@ -717,12 +2086,77 @@ impl PyModel {
     }
 
     #[getter]
-    fn mean_(&self) -> Option<f64> {
-        self.inner.mean_value()
+    fn canaries(&self) -> usize {
+        self.inner.canaries()
+    }
+
+    #[getter]
+    fn max_depth(&self) -> Option<usize> {
+        self.inner.max_depth()
+    }
+
+    #[getter]
+    fn min_samples_split(&self) -> Option<usize> {
+        self.inner.min_samples_split()
+    }
+
+    #[getter]
+    fn min_samples_leaf(&self) -> Option<usize> {
+        self.inner.min_samples_leaf()
+    }
+
+    #[getter]
+    fn n_trees(&self) -> Option<usize> {
+        self.inner.n_trees()
+    }
+
+    #[getter]
+    fn max_features(&self) -> Option<usize> {
+        self.inner.max_features()
+    }
+
+    #[getter]
+    fn seed(&self) -> Option<u64> {
+        self.inner.seed()
+    }
+
+    #[getter]
+    fn compute_oob(&self) -> bool {
+        self.inner.compute_oob()
+    }
+
+    #[getter]
+    fn oob_score(&self) -> Option<f64> {
+        self.inner.oob_score()
+    }
+
+    #[getter]
+    fn learning_rate(&self) -> Option<f64> {
+        self.inner.learning_rate()
+    }
+
+    #[getter]
+    fn bootstrap(&self) -> bool {
+        self.inner.bootstrap()
+    }
+
+    #[getter]
+    fn top_gradient_fraction(&self) -> Option<f64> {
+        self.inner.top_gradient_fraction()
+    }
+
+    #[getter]
+    fn other_gradient_fraction(&self) -> Option<f64> {
+        self.inner.other_gradient_fraction()
     }
 
     #[pyo3(signature = (pretty=false))]
     fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "IR export is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.to_ir_json_pretty()
         } else {
@@ -733,6 +2167,11 @@ impl PyModel {
 
     #[pyo3(signature = (pretty=false))]
     fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Serialization is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.serialize_pretty()
         } else {
@@ -753,22 +2192,128 @@ impl PyOptimizedModel {
     ) -> PyResult<Self> {
         let inner = CoreOptimizedModel::deserialize_compiled(serialized, physical_cores)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            string_class_labels: None,
+        })
     }
 
-    fn predict<'py>(
+    fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let preds = if is_polars_lazyframe(x)? {
+            predict_lazyframe_in_batches(x, |input| {
+                predict_input_with_optimized_model_detached(py, &self.inner, input)
+            })?
+        } else {
+            predict_input_with_optimized_model_detached(py, &self.inner, build_inference_input(x)?)?
+        };
+        decoded_predictions(py, preds, self.string_class_labels.as_deref())
+    }
+
+    fn predict_proba<'py>(
         &self,
         py: Python<'py>,
         x: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let preds = if is_polars_lazyframe(x)? {
-            predict_lazyframe_in_batches(x, |input| {
-                predict_input_with_optimized_model(&self.inner, input)
+            predict_proba_lazyframe_in_batches(x, |input| {
+                predict_proba_input_with_optimized_model_detached(py, &self.inner, input)
             })?
         } else {
-            predict_input_with_optimized_model(&self.inner, build_inference_input(x)?)?
+            predict_proba_input_with_optimized_model_detached(
+                py,
+                &self.inner,
+                build_inference_input(x)?,
+            )?
         };
-        Ok(PyArray1::from_vec(py, preds))
+        PyArray2::from_vec2(py, &preds)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[getter]
+    fn tree_count(&self) -> usize {
+        self.inner.tree_count()
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_structure<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let summary = self
+            .inner
+            .tree_structure(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &summary)
+    }
+
+    #[pyo3(signature = (tree_index=0))]
+    fn tree_prediction_stats<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let stats = self
+            .inner
+            .tree_prediction_stats(tree_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &stats)
+    }
+
+    #[pyo3(signature = (node_index, tree_index=0))]
+    fn tree_node<'py>(
+        &self,
+        py: Python<'py>,
+        node_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node = self
+            .inner
+            .tree_node(tree_index, node_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &node)
+    }
+
+    #[pyo3(signature = (level_index, tree_index=0))]
+    fn tree_level<'py>(
+        &self,
+        py: Python<'py>,
+        level_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let level = self
+            .inner
+            .tree_level(tree_index, level_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &level)
+    }
+
+    #[pyo3(signature = (leaf_index, tree_index=0))]
+    fn tree_leaf<'py>(
+        &self,
+        py: Python<'py>,
+        leaf_index: usize,
+        tree_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let leaf = self
+            .inner
+            .tree_leaf(tree_index, leaf_index)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        to_python_json_value(py, &leaf)
+    }
+
+    #[pyo3(signature = (tree_index=None))]
+    fn to_dataframe<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: Option<usize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        dataframe_from_optimized_model(
+            py,
+            &self.inner,
+            self.string_class_labels.as_deref(),
+            tree_index,
+        )
     }
 
     #[getter]
@@ -792,12 +2337,77 @@ impl PyOptimizedModel {
     }
 
     #[getter]
-    fn mean_(&self) -> Option<f64> {
-        self.inner.mean_value()
+    fn canaries(&self) -> usize {
+        self.inner.canaries()
+    }
+
+    #[getter]
+    fn max_depth(&self) -> Option<usize> {
+        self.inner.max_depth()
+    }
+
+    #[getter]
+    fn min_samples_split(&self) -> Option<usize> {
+        self.inner.min_samples_split()
+    }
+
+    #[getter]
+    fn min_samples_leaf(&self) -> Option<usize> {
+        self.inner.min_samples_leaf()
+    }
+
+    #[getter]
+    fn n_trees(&self) -> Option<usize> {
+        self.inner.n_trees()
+    }
+
+    #[getter]
+    fn max_features(&self) -> Option<usize> {
+        self.inner.max_features()
+    }
+
+    #[getter]
+    fn seed(&self) -> Option<u64> {
+        self.inner.seed()
+    }
+
+    #[getter]
+    fn compute_oob(&self) -> bool {
+        self.inner.compute_oob()
+    }
+
+    #[getter]
+    fn oob_score(&self) -> Option<f64> {
+        self.inner.oob_score()
+    }
+
+    #[getter]
+    fn learning_rate(&self) -> Option<f64> {
+        self.inner.learning_rate()
+    }
+
+    #[getter]
+    fn bootstrap(&self) -> bool {
+        self.inner.bootstrap()
+    }
+
+    #[getter]
+    fn top_gradient_fraction(&self) -> Option<f64> {
+        self.inner.top_gradient_fraction()
+    }
+
+    #[getter]
+    fn other_gradient_fraction(&self) -> Option<f64> {
+        self.inner.other_gradient_fraction()
     }
 
     #[pyo3(signature = (pretty=false))]
     fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "IR export is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.to_ir_json_pretty()
         } else {
@@ -808,6 +2418,11 @@ impl PyOptimizedModel {
 
     #[pyo3(signature = (pretty=false))]
     fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Serialization is not supported for models trained with string class labels.",
+            ));
+        }
         if pretty {
             self.inner.serialize_pretty()
         } else {
@@ -817,6 +2432,11 @@ impl PyOptimizedModel {
     }
 
     fn serialize_compiled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Compiled serialization is not supported for models trained with string class labels.",
+            ));
+        }
         let bytes = self
             .inner
             .serialize_compiled()
@@ -837,7 +2457,13 @@ impl PyTable {
     ) -> PyResult<Self> {
         let bins = parse_bins(bins)?;
         let inner = if let Some(y) = y {
-            build_training_table(x, Some(y), canaries, bins)?
+            let (table, string_class_labels) = build_training_table(x, Some(y), canaries, bins)?;
+            if string_class_labels.is_some() {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "Table does not support string targets; pass raw inputs to train(...) instead.",
+                ));
+            }
+            table
         } else {
             build_feature_table(x, bins)?
         };

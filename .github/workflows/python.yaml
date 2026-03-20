@@ -39,8 +39,8 @@ jobs:
         run: >-
           uv run isort --check-only
           bindings/python/forestfire.pyi
-          examples/python/mean_tree.py
-          tests/python/test_mean_tree.py
+          examples/python/showcase.py
+          tests/python/test_train.py
       - name: Ruff lint
         run: >-
           uv run ruff check --output-format=github
@@ -51,8 +51,8 @@ jobs:
         run: >-
           uv run ruff format --check
           bindings/python/forestfire.pyi
-          examples/python/mean_tree.py
-          tests/python/test_mean_tree.py
+          examples/python/showcase.py
+          tests/python/test_train.py
       - name: yamllint
         run: >-
           uv run yamllint
@@ -66,8 +66,6 @@ jobs:
       - name: Build Python extension
         run: uv run maturin develop -m bindings/python/Cargo.toml
       - name: pytest
-        run: uv run pytest -q tests/python/test_mean_tree.py
+        run: uv run pytest -q tests/python/test_train.py
       - name: Run Python examples
-        run: |-
-          uv run python examples/python/mean_tree.py
-          uv run python examples/python/showcase.py
+        run: uv run python examples/python/showcase.py

@@ -11,30 +11,31 @@ tasks:
     cmds: [uv venv --python=$(cat .python-version) --allow-existing]
   install:
     desc: Install dependencies
-    cmds: [uv sync --all-extras]
+    cmds: [uv sync --group dev --group benchmark]
   lint-check-only:
     desc: Check linting and formatting (no fixes)
     cmds:
       - >-
         uv run isort --check-only
         bindings/python/forestfire.pyi
-        examples/python/mean_tree.py
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
-        tests/python/test_mean_tree.py
+        tests/python/test_train.py
       - >-
         uv run ruff check
         bindings/python
+        benchmark
         examples/python
         scripts
         tests/python
       - >-
         uv run ruff format --check
         bindings/python/forestfire.pyi
-        examples/python/mean_tree.py
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
-        tests/python/test_mean_tree.py
+        tests/python/test_train.py
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   lint:
     desc: Auto-fix linting and formatting issues
@@ -42,23 +43,24 @@ tasks:
       - >-
         uv run isort
         bindings/python/forestfire.pyi
-        examples/python/mean_tree.py
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
-        tests/python/test_mean_tree.py
+        tests/python/test_train.py
       - >-
         uv run ruff check --fix
         bindings/python
+        benchmark
         examples/python
         scripts
         tests/python
       - >-
         uv run ruff format
         bindings/python/forestfire.pyi
-        examples/python/mean_tree.py
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
-        tests/python/test_mean_tree.py
+        tests/python/test_train.py
       - uv run yamlfix Taskfile.yaml .pre-commit-config.yaml .github/workflows
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   mypy:
@@ -85,15 +87,11 @@ tasks:
   python-examples:
     desc: Run Python examples
     deps: [python-ext-develop]
-    cmds:
-      - uv run python examples/python/mean_tree.py
-      - uv run python examples/python/showcase.py
+    cmds: [uv run python examples/python/showcase.py]
   rust-examples:
     desc: Run Rust examples
     deps: [rust-toolchain]
-    cmds:
-      - cargo run -p forestfire-rust-examples --bin mean_tree
-      - cargo run -p forestfire-rust-examples --bin showcase
+    cmds: [cargo run -p forestfire-rust-examples --bin showcase]
   examples:
     desc: Run Python and Rust examples
     cmds: [task python-examples, task rust-examples]
@@ -153,6 +151,12 @@ tasks:
     desc: Build and install the PyO3 extension into the venv
     deps: [install, rust-toolchain]
     cmds: [uv run maturin develop -m bindings/python/Cargo.toml]
+  python-ext-develop-release:
+    desc: >-
+      Build and install the PyO3 extension into the venv with release
+      optimizations
+    deps: [install, rust-toolchain]
+    cmds: [uv run maturin develop --release -m bindings/python/Cargo.toml]
   python-ext-wheel:
     desc: Build a wheel for the Python extension
     deps: [install, rust-toolchain]
@@ -162,11 +166,129 @@ tasks:
     cmds: [task test]
   benchmark-inference:
     desc: Benchmark baseline vs optimized inference and write plots
-    deps: [python-ext-develop]
+    deps: [python-ext-develop-release]
     cmds:
       - >-
         uv run python scripts/benchmark_inference.py
         --output-dir docs/benchmarks
+  benchmark-training:
+    desc: Benchmark training speed against sklearn, LightGBM, and XGBoost
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_benchmark.py
+        --output-dir docs/benchmarks
+  benchmark-training-rf:
+    desc: >-
+      Benchmark random forest training speed against sklearn, LightGBM,
+      and XGBoost
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
+        --train-rows 10000
+        --predict-rows 5000
+        --n-estimators 100
+        --warmup-runs 0
+        --measurement-runs 1
+  benchmark-training-extra-trees:
+    desc: Benchmark extra trees training speed against sklearn and LightGBM
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_benchmark.py
+        --output-dir docs/benchmarks
+        --family extra_trees
+        --train-rows 10000
+        --predict-rows 5000
+        --n-estimators 100
+        --warmup-runs 0
+        --measurement-runs 1
+  benchmark-training-gbm:
+    desc: >-
+      Benchmark gradient boosting training speed against sklearn, LightGBM,
+      and XGBoost
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_benchmark.py
+        --output-dir docs/benchmarks
+        --family gradient_boosting
+        --train-rows 10000
+        --predict-rows 5000
+        --n-estimators 100
+        --warmup-runs 0
+        --measurement-runs 1
+  benchmark-prediction:
+    desc: Benchmark prediction speed against sklearn, LightGBM, and XGBoost
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_benchmark.py
+        --output-dir docs/benchmarks
+  benchmark-prediction-rf:
+    desc: >-
+      Benchmark random forest prediction speed against sklearn, LightGBM,
+      and XGBoost
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
+        --train-rows 10000
+        --predict-rows 10000
+        --n-estimators 100
+        --warmup-runs 1
+        --measurement-runs 3
+  benchmark-prediction-extra-trees:
+    desc: Benchmark extra trees prediction speed against sklearn and LightGBM
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_benchmark.py
+        --output-dir docs/benchmarks
+        --family extra_trees
+        --train-rows 10000
+        --predict-rows 10000
+        --n-estimators 100
+        --warmup-runs 1
+        --measurement-runs 3
+  benchmark-prediction-gbm:
+    desc: >-
+      Benchmark gradient boosting prediction speed against sklearn, LightGBM,
+      and XGBoost
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_benchmark.py
+        --output-dir docs/benchmarks
+        --family gradient_boosting
+        --train-rows 10000
+        --predict-rows 10000
+        --n-estimators 100
+        --warmup-runs 1
+        --measurement-runs 3
+  benchmark:
+    desc: Run inference, training, and prediction benchmarks
+    cmds:
+      - task benchmark-inference
+      - task benchmark-training-rf
+      - task benchmark-training-extra-trees
+      - task benchmark-training-gbm
+      - task benchmark-prediction-rf
+      - task benchmark-prediction-extra-trees
+      - task benchmark-prediction-gbm
   verify:
     desc: Run Python and Rust checks and tests
     cmds: [task check, task rust-verify]

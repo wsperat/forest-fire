@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-pub const MAX_NUMERIC_BINS: usize = 512;
+pub const MAX_NUMERIC_BINS: usize = 128;
 const DEFAULT_CANARIES: usize = 2;
 
 type PreprocessedRows = (Vec<Vec<f64>>, Float64Array, usize, usize);
@@ -1235,21 +1235,21 @@ mod tests {
     }
 
     #[test]
-    fn auto_bins_numeric_columns_into_power_of_two_bins_up_to_512() {
+    fn auto_bins_numeric_columns_into_power_of_two_bins_up_to_128() {
         let x: Vec<Vec<f64>> = (0..1024).map(|value| vec![value as f64]).collect();
         let y: Vec<f64> = vec![1.0; 1024];
 
         let table = DenseTable::with_canaries(x, y, 0).unwrap();
 
         assert_eq!(table.binned_value(0, 0), 0);
-        assert_eq!(table.binned_value(0, 1023), 511);
+        assert_eq!(table.binned_value(0, 1023), 127);
         assert!((1..1024).all(|idx| table.binned_value(0, idx - 1) <= table.binned_value(0, idx)));
         assert_eq!(
             (0..1024)
                 .map(|idx| table.binned_value(0, idx))
                 .collect::<BTreeSet<_>>()
                 .len(),
-            512
+            128
         );
     }
 

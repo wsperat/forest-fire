@@ -59,6 +59,13 @@
         "tree_weights"
       ],
       "properties": {
+        "base_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "kind": {
           "type": "string"
         },
@@ -1075,6 +1082,7 @@
       "required": [
         "algorithm",
         "canaries",
+        "compute_oob",
         "criterion",
         "task",
         "tree_type"
@@ -1082,6 +1090,12 @@
       "properties": {
         "algorithm": {
           "type": "string"
+        },
+        "bootstrap": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "canaries": {
           "type": "integer",
@@ -1098,10 +1112,28 @@
             "format": "double"
           }
         },
+        "compute_oob": {
+          "type": "boolean"
+        },
         "criterion": {
           "type": "string"
         },
+        "learning_rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "max_depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "max_features": {
           "type": [
             "integer",
             "null"
@@ -1125,8 +1157,45 @@
           "format": "uint",
           "minimum": 0.0
         },
+        "n_trees": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "oob_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "other_gradient_fraction": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "task": {
           "type": "string"
+        },
+        "top_gradient_fraction": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
         },
         "tree_type": {
           "type": "string"
