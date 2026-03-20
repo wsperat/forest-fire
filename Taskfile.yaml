@@ -18,18 +18,21 @@ tasks:
       - >-
         uv run isort --check-only
         bindings/python/forestfire.pyi
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
       - >-
         uv run ruff check
         bindings/python
+        benchmark
         examples/python
         scripts
         tests/python
       - >-
         uv run ruff format --check
         bindings/python/forestfire.pyi
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
@@ -40,18 +43,21 @@ tasks:
       - >-
         uv run isort
         bindings/python/forestfire.pyi
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
       - >-
         uv run ruff check --fix
         bindings/python
+        benchmark
         examples/python
         scripts
         tests/python
       - >-
         uv run ruff format
         bindings/python/forestfire.pyi
+        benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
@@ -158,6 +164,22 @@ tasks:
     cmds:
       - >-
         uv run python scripts/benchmark_inference.py
+        --output-dir docs/benchmarks
+  benchmark-training:
+    desc: Benchmark training speed against sklearn, LightGBM, and XGBoost
+    deps: [python-ext-develop]
+    cmds:
+      - >-
+        uv run --package forestfire-benchmark
+        python benchmark/train_benchmark.py
+        --output-dir docs/benchmarks
+  benchmark-prediction:
+    desc: Benchmark prediction speed against sklearn, LightGBM, and XGBoost
+    deps: [python-ext-develop]
+    cmds:
+      - >-
+        uv run --package forestfire-benchmark
+        python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
   verify:
     desc: Run Python and Rust checks and tests

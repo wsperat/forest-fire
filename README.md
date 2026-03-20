@@ -784,11 +784,17 @@ Run:
 
 ```bash
 task benchmark-inference
+task benchmark-training
+task benchmark-prediction
 ```
+
+The training and prediction benchmark scripts live in the dedicated [benchmark/](/Users/waltersperat/Desktop/Personal/forest-fire/benchmark) workspace and compare ForestFire against sklearn, LightGBM, and XGBoost for random-forest-style models. Extra-trees runs are benchmarked for ForestFire, sklearn, and LightGBM; XGBoost is recorded as unsupported there because it does not expose a direct extra-trees random-forest mode.
 
 Artifacts are written to:
 
 - [docs/benchmarks/inference_benchmark_results.json](docs/benchmarks/inference_benchmark_results.json)
+- [docs/benchmarks/training_benchmark_results.json](docs/benchmarks/training_benchmark_results.json)
+- [docs/benchmarks/prediction_benchmark_results.json](docs/benchmarks/prediction_benchmark_results.json)
 - [docs/benchmarks/cart_runtime.png](docs/benchmarks/cart_runtime.png)
 - [docs/benchmarks/cart_speedup.png](docs/benchmarks/cart_speedup.png)
 - [docs/benchmarks/oblivious_runtime.png](docs/benchmarks/oblivious_runtime.png)
@@ -805,6 +811,21 @@ That matches the current runtime:
 
 - compiled CART benefits strongly from fallthrough layout, batch partitioning, and compact `u8`/`u16` bins
 - oblivious trees improve mainly when batching and parallelism amortize the batch-conversion cost
+
+## Training optimizations
+
+ForestFire training is optimized around a compact binned core and shared row-index buffers rather than row copies.
+
+- Numeric features are pre-binned into compact integer ranks, currently capped at `128` bins.
+- Long-running training and prediction release the Python GIL before entering the Rust hot path.
+- CART and randomized trees use histogram-based numeric split search instead of exact threshold rescans.
+- Standard binary trees partition row indices in place, so child nodes are ranges over a shared buffer rather than copied datasets.
+- ID3 and C4.5 now use the same in-place row-buffer approach for multiway branches.
+- Oblivious trees now train over shared row buffers plus per-leaf ranges instead of per-leaf row vectors.
+- CART/randomized classification and mean-regression builders reuse parent histograms and derive the sibling child histogram by subtraction after each split.
+- Oblivious split scoring reuses cached per-leaf counts or `sum`/`sum_sq` so it does not recompute sibling statistics from scratch.
+- Random forests parallelize across trees, while intra-tree parallelism is limited to feature scoring so the trainer avoids oversubscribing cores.
+- Binary sparse inputs stay sparse through training and inference instead of being densified first.
 
 ## Design notes
 

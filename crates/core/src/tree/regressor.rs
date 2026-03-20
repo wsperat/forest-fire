@@ -154,6 +154,24 @@ struct BinarySplitChoice {
     score: f64,
 }
 
+#[derive(Debug, Clone)]
+enum RegressionFeatureHistogram {
+    Binary {
+        false_count: usize,
+        false_sum: f64,
+        false_sum_sq: f64,
+        true_count: usize,
+        true_sum: f64,
+        true_sum_sq: f64,
+    },
+    Numeric {
+        bin_count: Vec<usize>,
+        bin_sum: Vec<f64>,
+        bin_sum_sq: Vec<f64>,
+        observed_bins: Vec<usize>,
+    },
+}
+
 pub fn train_cart_regressor(
     train_set: &dyn TableAccess,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
@@ -658,6 +676,153 @@ struct BuildContext<'a> {
     algorithm: RegressionTreeAlgorithm,
 }
 
+fn build_regression_node_histograms(
+    table: &dyn TableAccess,
+    targets: &[f64],
+    rows: &[usize],
+) -> Vec<RegressionFeatureHistogram> {
+    (0..table.binned_feature_count())
+        .map(|feature_index| {
+            if table.is_binary_binned_feature(feature_index) {
+                let mut false_count = 0usize;
+                let mut false_sum = 0.0;
+                let mut false_sum_sq = 0.0;
+                let mut true_count = 0usize;
+                let mut true_sum = 0.0;
+                let mut true_sum_sq = 0.0;
+                for row_idx in rows {
+                    let value = targets[*row_idx];
+                    if !table
+                        .binned_boolean_value(feature_index, *row_idx)
+                        .expect("binary feature must expose boolean values")
+                    {
+                        false_count += 1;
+                        false_sum += value;
+                        false_sum_sq += value * value;
+                    } else {
+                        true_count += 1;
+                        true_sum += value;
+                        true_sum_sq += value * value;
+                    }
+                }
+                RegressionFeatureHistogram::Binary {
+                    false_count,
+                    false_sum,
+                    false_sum_sq,
+                    true_count,
+                    true_sum,
+                    true_sum_sq,
+                }
+            } else {
+                let bin_cap = table.numeric_bin_cap();
+                let mut bin_count = vec![0usize; bin_cap];
+                let mut bin_sum = vec![0.0; bin_cap];
+                let mut bin_sum_sq = vec![0.0; bin_cap];
+                let mut observed_bins = vec![false; bin_cap];
+                for row_idx in rows {
+                    let bin = table.binned_value(feature_index, *row_idx) as usize;
+                    let value = targets[*row_idx];
+                    bin_count[bin] += 1;
+                    bin_sum[bin] += value;
+                    bin_sum_sq[bin] += value * value;
+                    observed_bins[bin] = true;
+                }
+                RegressionFeatureHistogram::Numeric {
+                    bin_count,
+                    bin_sum,
+                    bin_sum_sq,
+                    observed_bins: observed_bins
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(bin, seen)| seen.then_some(bin))
+                        .collect(),
+                }
+            }
+        })
+        .collect()
+}
+
+fn subtract_regression_node_histograms(
+    parent: &[RegressionFeatureHistogram],
+    child: &[RegressionFeatureHistogram],
+) -> Vec<RegressionFeatureHistogram> {
+    parent
+        .iter()
+        .zip(child.iter())
+        .map(
+            |(parent_hist, child_hist)| match (parent_hist, child_hist) {
+                (
+                    RegressionFeatureHistogram::Binary {
+                        false_count: parent_false_count,
+                        false_sum: parent_false_sum,
+                        false_sum_sq: parent_false_sum_sq,
+                        true_count: parent_true_count,
+                        true_sum: parent_true_sum,
+                        true_sum_sq: parent_true_sum_sq,
+                    },
+                    RegressionFeatureHistogram::Binary {
+                        false_count: child_false_count,
+                        false_sum: child_false_sum,
+                        false_sum_sq: child_false_sum_sq,
+                        true_count: child_true_count,
+                        true_sum: child_true_sum,
+                        true_sum_sq: child_true_sum_sq,
+                    },
+                ) => RegressionFeatureHistogram::Binary {
+                    false_count: parent_false_count - child_false_count,
+                    false_sum: parent_false_sum - child_false_sum,
+                    false_sum_sq: parent_false_sum_sq - child_false_sum_sq,
+                    true_count: parent_true_count - child_true_count,
+                    true_sum: parent_true_sum - child_true_sum,
+                    true_sum_sq: parent_true_sum_sq - child_true_sum_sq,
+                },
+                (
+                    RegressionFeatureHistogram::Numeric {
+                        bin_count: parent_bin_count,
+                        bin_sum: parent_bin_sum,
+                        bin_sum_sq: parent_bin_sum_sq,
+                        ..
+                    },
+                    RegressionFeatureHistogram::Numeric {
+                        bin_count: child_bin_count,
+                        bin_sum: child_bin_sum,
+                        bin_sum_sq: child_bin_sum_sq,
+                        ..
+                    },
+                ) => {
+                    let bin_count = parent_bin_count
+                        .iter()
+                        .zip(child_bin_count.iter())
+                        .map(|(parent, child)| parent - child)
+                        .collect::<Vec<_>>();
+                    let bin_sum = parent_bin_sum
+                        .iter()
+                        .zip(child_bin_sum.iter())
+                        .map(|(parent, child)| parent - child)
+                        .collect::<Vec<_>>();
+                    let bin_sum_sq = parent_bin_sum_sq
+                        .iter()
+                        .zip(child_bin_sum_sq.iter())
+                        .map(|(parent, child)| parent - child)
+                        .collect::<Vec<_>>();
+                    let observed_bins = bin_count
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(bin, count)| (*count > 0).then_some(bin))
+                        .collect::<Vec<_>>();
+                    RegressionFeatureHistogram::Numeric {
+                        bin_count,
+                        bin_sum,
+                        bin_sum_sq,
+                        observed_bins,
+                    }
+                }
+                _ => unreachable!("histogram shapes must match"),
+            },
+        )
+        .collect()
+}
+
 fn finite_targets(train_set: &dyn TableAccess) -> Result<Vec<f64>, RegressionTreeError> {
     (0..train_set.n_rows())
         .map(|row_idx| {
@@ -680,6 +845,16 @@ fn build_binary_node_in_place(
     rows: &mut [usize],
     depth: usize,
 ) -> usize {
+    build_binary_node_in_place_with_hist(context, nodes, rows, depth, None)
+}
+
+fn build_binary_node_in_place_with_hist(
+    context: &BuildContext<'_>,
+    nodes: &mut Vec<RegressionNode>,
+    rows: &mut [usize],
+    depth: usize,
+    histograms: Option<Vec<RegressionFeatureHistogram>>,
+) -> usize {
     let leaf_value = regression_value(rows, context.targets, context.criterion);
     let leaf_variance = variance(rows, context.targets);
 
@@ -691,6 +866,13 @@ fn build_binary_node_in_place(
         return push_leaf(nodes, leaf_value, rows.len(), leaf_variance);
     }
 
+    let histograms = if matches!(context.criterion, Criterion::Mean) {
+        Some(histograms.unwrap_or_else(|| {
+            build_regression_node_histograms(context.table, context.targets, rows)
+        }))
+    } else {
+        None
+    };
     let feature_indices = candidate_feature_indices(
         context.table.binned_feature_count(),
         context.options.max_features,
@@ -699,12 +881,34 @@ fn build_binary_node_in_place(
     let best_split = if context.parallelism.enabled() {
         feature_indices
             .into_par_iter()
-            .filter_map(|feature_index| score_binary_split_choice(context, feature_index, rows))
+            .filter_map(|feature_index| {
+                if let Some(histograms) = histograms.as_ref() {
+                    score_binary_split_choice_from_hist(
+                        context,
+                        &histograms[feature_index],
+                        feature_index,
+                        rows,
+                    )
+                } else {
+                    score_binary_split_choice(context, feature_index, rows)
+                }
+            })
             .max_by(|left, right| left.score.total_cmp(&right.score))
     } else {
         feature_indices
             .into_iter()
-            .filter_map(|feature_index| score_binary_split_choice(context, feature_index, rows))
+            .filter_map(|feature_index| {
+                if let Some(histograms) = histograms.as_ref() {
+                    score_binary_split_choice_from_hist(
+                        context,
+                        &histograms[feature_index],
+                        feature_index,
+                        rows,
+                    )
+                } else {
+                    score_binary_split_choice(context, feature_index, rows)
+                }
+            })
             .max_by(|left, right| left.score.total_cmp(&right.score))
     };
 
@@ -725,8 +929,59 @@ fn build_binary_node_in_place(
                 rows,
             );
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
-            let left_child = build_binary_node_in_place(context, nodes, left_rows, depth + 1);
-            let right_child = build_binary_node_in_place(context, nodes, right_rows, depth + 1);
+            let (left_child, right_child) = if let Some(histograms) = histograms {
+                if left_rows.len() <= right_rows.len() {
+                    let left_histograms =
+                        build_regression_node_histograms(context.table, context.targets, left_rows);
+                    let right_histograms =
+                        subtract_regression_node_histograms(&histograms, &left_histograms);
+                    (
+                        build_binary_node_in_place_with_hist(
+                            context,
+                            nodes,
+                            left_rows,
+                            depth + 1,
+                            Some(left_histograms),
+                        ),
+                        build_binary_node_in_place_with_hist(
+                            context,
+                            nodes,
+                            right_rows,
+                            depth + 1,
+                            Some(right_histograms),
+                        ),
+                    )
+                } else {
+                    let right_histograms = build_regression_node_histograms(
+                        context.table,
+                        context.targets,
+                        right_rows,
+                    );
+                    let left_histograms =
+                        subtract_regression_node_histograms(&histograms, &right_histograms);
+                    (
+                        build_binary_node_in_place_with_hist(
+                            context,
+                            nodes,
+                            left_rows,
+                            depth + 1,
+                            Some(left_histograms),
+                        ),
+                        build_binary_node_in_place_with_hist(
+                            context,
+                            nodes,
+                            right_rows,
+                            depth + 1,
+                            Some(right_histograms),
+                        ),
+                    )
+                }
+            } else {
+                (
+                    build_binary_node_in_place(context, nodes, left_rows, depth + 1),
+                    build_binary_node_in_place(context, nodes, right_rows, depth + 1),
+                )
+            };
 
             push_node(
                 nodes,
@@ -1231,6 +1486,187 @@ fn score_binary_split_choice(
         feature_index: candidate.feature_index,
         threshold_bin: candidate.threshold_bin,
         score: candidate.score,
+    })
+}
+
+fn score_binary_split_choice_from_hist(
+    context: &BuildContext<'_>,
+    histogram: &RegressionFeatureHistogram,
+    feature_index: usize,
+    rows: &[usize],
+) -> Option<BinarySplitChoice> {
+    if !matches!(context.criterion, Criterion::Mean) {
+        return score_binary_split_choice(context, feature_index, rows);
+    }
+
+    match histogram {
+        RegressionFeatureHistogram::Binary {
+            false_count,
+            false_sum,
+            false_sum_sq,
+            true_count,
+            true_sum,
+            true_sum_sq,
+        } => score_binary_split_choice_mean_from_stats(
+            context,
+            feature_index,
+            *false_count,
+            *false_sum,
+            *false_sum_sq,
+            *true_count,
+            *true_sum,
+            *true_sum_sq,
+        ),
+        RegressionFeatureHistogram::Numeric {
+            bin_count,
+            bin_sum,
+            bin_sum_sq,
+            observed_bins,
+        } => match context.algorithm {
+            RegressionTreeAlgorithm::Cart => score_numeric_split_choice_mean_from_hist(
+                context,
+                feature_index,
+                rows.len(),
+                bin_count,
+                bin_sum,
+                bin_sum_sq,
+                observed_bins,
+            ),
+            RegressionTreeAlgorithm::Randomized => score_randomized_split_choice_mean_from_hist(
+                context,
+                feature_index,
+                rows,
+                bin_count,
+                bin_sum,
+                bin_sum_sq,
+                observed_bins,
+            ),
+            RegressionTreeAlgorithm::Oblivious => None,
+        },
+    }
+}
+
+fn score_binary_split_choice_mean_from_stats(
+    context: &BuildContext<'_>,
+    feature_index: usize,
+    left_count: usize,
+    left_sum: f64,
+    left_sum_sq: f64,
+    right_count: usize,
+    right_sum: f64,
+    right_sum_sq: f64,
+) -> Option<BinarySplitChoice> {
+    if left_count < context.options.min_samples_leaf
+        || right_count < context.options.min_samples_leaf
+    {
+        return None;
+    }
+    let total_count = left_count + right_count;
+    let total_sum = left_sum + right_sum;
+    let total_sum_sq = left_sum_sq + right_sum_sq;
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_count as f64;
+    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
+    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+    Some(BinarySplitChoice {
+        feature_index,
+        threshold_bin: 0,
+        score: parent_loss - (left_loss + right_loss),
+    })
+}
+
+fn score_numeric_split_choice_mean_from_hist(
+    context: &BuildContext<'_>,
+    feature_index: usize,
+    row_count: usize,
+    bin_count: &[usize],
+    bin_sum: &[f64],
+    bin_sum_sq: &[f64],
+    observed_bins: &[usize],
+) -> Option<BinarySplitChoice> {
+    if observed_bins.len() <= 1 {
+        return None;
+    }
+    let total_sum = bin_sum.iter().sum::<f64>();
+    let total_sum_sq = bin_sum_sq.iter().sum::<f64>();
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / row_count as f64;
+    let mut left_count = 0usize;
+    let mut left_sum = 0.0;
+    let mut left_sum_sq = 0.0;
+    let mut best_threshold = None;
+    let mut best_score = f64::NEG_INFINITY;
+
+    for &bin in observed_bins {
+        left_count += bin_count[bin];
+        left_sum += bin_sum[bin];
+        left_sum_sq += bin_sum_sq[bin];
+        let right_count = row_count - left_count;
+        if left_count < context.options.min_samples_leaf
+            || right_count < context.options.min_samples_leaf
+        {
+            continue;
+        }
+        let right_sum = total_sum - left_sum;
+        let right_sum_sq = total_sum_sq - left_sum_sq;
+        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
+        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+        let score = parent_loss - (left_loss + right_loss);
+        if score > best_score {
+            best_score = score;
+            best_threshold = Some(bin as u16);
+        }
+    }
+
+    best_threshold.map(|threshold_bin| BinarySplitChoice {
+        feature_index,
+        threshold_bin,
+        score: best_score,
+    })
+}
+
+fn score_randomized_split_choice_mean_from_hist(
+    context: &BuildContext<'_>,
+    feature_index: usize,
+    rows: &[usize],
+    bin_count: &[usize],
+    bin_sum: &[f64],
+    bin_sum_sq: &[f64],
+    observed_bins: &[usize],
+) -> Option<BinarySplitChoice> {
+    let candidate_thresholds = observed_bins
+        .iter()
+        .copied()
+        .map(|bin| bin as u16)
+        .collect::<Vec<_>>();
+    let threshold_bin =
+        choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
+    let total_sum = bin_sum.iter().sum::<f64>();
+    let total_sum_sq = bin_sum_sq.iter().sum::<f64>();
+    let mut left_count = 0usize;
+    let mut left_sum = 0.0;
+    let mut left_sum_sq = 0.0;
+    for bin in 0..=threshold_bin as usize {
+        if bin >= bin_count.len() {
+            break;
+        }
+        left_count += bin_count[bin];
+        left_sum += bin_sum[bin];
+        left_sum_sq += bin_sum_sq[bin];
+    }
+    let right_count = rows.len() - left_count;
+    if left_count < context.options.min_samples_leaf
+        || right_count < context.options.min_samples_leaf
+    {
+        return None;
+    }
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / rows.len() as f64;
+    let right_sum = total_sum - left_sum;
+    let right_sum_sq = total_sum_sq - left_sum_sq;
+    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
+    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+    Some(BinarySplitChoice {
+        feature_index,
+        threshold_bin,
+        score: parent_loss - (left_loss + right_loss),
     })
 }
 

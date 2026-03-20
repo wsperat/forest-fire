@@ -159,6 +159,20 @@ struct MultiwaySplitChoice {
     branch_bins: Vec<u16>,
 }
 
+#[derive(Debug, Clone)]
+enum ClassificationFeatureHistogram {
+    Binary {
+        false_counts: Vec<usize>,
+        true_counts: Vec<usize>,
+        false_size: usize,
+        true_size: usize,
+    },
+    Numeric {
+        bin_class_counts: Vec<Vec<usize>>,
+        observed_bins: Vec<usize>,
+    },
+}
+
 pub fn train_id3(train_set: &dyn TableAccess) -> Result<DecisionTreeClassifier, DecisionTreeError> {
     train_id3_with_criterion(train_set, Criterion::Entropy)
 }
@@ -786,6 +800,16 @@ fn build_binary_node_in_place(
     rows: &mut [usize],
     depth: usize,
 ) -> usize {
+    build_binary_node_in_place_with_hist(context, nodes, rows, depth, None)
+}
+
+fn build_binary_node_in_place_with_hist(
+    context: &BuildContext<'_>,
+    nodes: &mut Vec<TreeNode>,
+    rows: &mut [usize],
+    depth: usize,
+    histograms: Option<Vec<ClassificationFeatureHistogram>>,
+) -> usize {
     let majority_class_index =
         majority_class(rows, context.class_indices, context.class_labels.len());
     let current_class_counts =
@@ -811,6 +835,14 @@ fn build_binary_node_in_place(
         criterion: context.criterion,
         min_samples_leaf: context.options.min_samples_leaf,
     };
+    let histograms = histograms.unwrap_or_else(|| {
+        build_classification_node_histograms(
+            context.table,
+            context.class_indices,
+            rows,
+            context.class_labels.len(),
+        )
+    });
     let feature_indices = candidate_feature_indices(
         context.table.binned_feature_count(),
         context.options.max_features,
@@ -820,14 +852,28 @@ fn build_binary_node_in_place(
         feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
-                score_binary_split_choice(&scoring, feature_index, rows, context.algorithm)
+                score_binary_split_choice_from_hist(
+                    &scoring,
+                    &histograms[feature_index],
+                    feature_index,
+                    rows,
+                    &current_class_counts,
+                    context.algorithm,
+                )
             })
             .max_by(|left, right| left.score.total_cmp(&right.score))
     } else {
         feature_indices
             .into_iter()
             .filter_map(|feature_index| {
-                score_binary_split_choice(&scoring, feature_index, rows, context.algorithm)
+                score_binary_split_choice_from_hist(
+                    &scoring,
+                    &histograms[feature_index],
+                    feature_index,
+                    rows,
+                    &current_class_counts,
+                    context.algorithm,
+                )
             })
             .max_by(|left, right| left.score.total_cmp(&right.score))
     };
@@ -855,8 +901,41 @@ fn build_binary_node_in_place(
                 rows,
             );
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
-            let left_child = build_binary_node_in_place(context, nodes, left_rows, depth + 1);
-            let right_child = build_binary_node_in_place(context, nodes, right_rows, depth + 1);
+            let (left_histograms, right_histograms) = if left_rows.len() <= right_rows.len() {
+                let left_histograms = build_classification_node_histograms(
+                    context.table,
+                    context.class_indices,
+                    left_rows,
+                    context.class_labels.len(),
+                );
+                let right_histograms =
+                    subtract_classification_node_histograms(&histograms, &left_histograms);
+                (left_histograms, right_histograms)
+            } else {
+                let right_histograms = build_classification_node_histograms(
+                    context.table,
+                    context.class_indices,
+                    right_rows,
+                    context.class_labels.len(),
+                );
+                let left_histograms =
+                    subtract_classification_node_histograms(&histograms, &right_histograms);
+                (left_histograms, right_histograms)
+            };
+            let left_child = build_binary_node_in_place_with_hist(
+                context,
+                nodes,
+                left_rows,
+                depth + 1,
+                Some(left_histograms),
+            );
+            let right_child = build_binary_node_in_place_with_hist(
+                context,
+                nodes,
+                right_rows,
+                depth + 1,
+                Some(right_histograms),
+            );
 
             push_node(
                 nodes,
@@ -1272,6 +1351,135 @@ struct SplitScoringContext<'a> {
     num_classes: usize,
     criterion: Criterion,
     min_samples_leaf: usize,
+}
+
+fn build_classification_node_histograms(
+    table: &dyn TableAccess,
+    class_indices: &[usize],
+    rows: &[usize],
+    num_classes: usize,
+) -> Vec<ClassificationFeatureHistogram> {
+    (0..table.binned_feature_count())
+        .map(|feature_index| {
+            if table.is_binary_binned_feature(feature_index) {
+                let mut false_counts = vec![0usize; num_classes];
+                let mut true_counts = vec![0usize; num_classes];
+                let mut false_size = 0usize;
+                let mut true_size = 0usize;
+                for row_idx in rows {
+                    let class_index = class_indices[*row_idx];
+                    if !table
+                        .binned_boolean_value(feature_index, *row_idx)
+                        .expect("binary feature must expose boolean values")
+                    {
+                        false_counts[class_index] += 1;
+                        false_size += 1;
+                    } else {
+                        true_counts[class_index] += 1;
+                        true_size += 1;
+                    }
+                }
+                ClassificationFeatureHistogram::Binary {
+                    false_counts,
+                    true_counts,
+                    false_size,
+                    true_size,
+                }
+            } else {
+                let bin_cap = table.numeric_bin_cap();
+                let mut bin_class_counts = vec![vec![0usize; num_classes]; bin_cap];
+                let mut observed_bins = vec![false; bin_cap];
+                for row_idx in rows {
+                    let bin = table.binned_value(feature_index, *row_idx) as usize;
+                    bin_class_counts[bin][class_indices[*row_idx]] += 1;
+                    observed_bins[bin] = true;
+                }
+                ClassificationFeatureHistogram::Numeric {
+                    bin_class_counts,
+                    observed_bins: observed_bins
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(bin, seen)| seen.then_some(bin))
+                        .collect(),
+                }
+            }
+        })
+        .collect()
+}
+
+fn subtract_classification_node_histograms(
+    parent: &[ClassificationFeatureHistogram],
+    child: &[ClassificationFeatureHistogram],
+) -> Vec<ClassificationFeatureHistogram> {
+    parent
+        .iter()
+        .zip(child.iter())
+        .map(
+            |(parent_hist, child_hist)| match (parent_hist, child_hist) {
+                (
+                    ClassificationFeatureHistogram::Binary {
+                        false_counts: parent_false_counts,
+                        true_counts: parent_true_counts,
+                        false_size: parent_false_size,
+                        true_size: parent_true_size,
+                    },
+                    ClassificationFeatureHistogram::Binary {
+                        false_counts: child_false_counts,
+                        true_counts: child_true_counts,
+                        false_size: child_false_size,
+                        true_size: child_true_size,
+                    },
+                ) => ClassificationFeatureHistogram::Binary {
+                    false_counts: parent_false_counts
+                        .iter()
+                        .zip(child_false_counts.iter())
+                        .map(|(parent, child)| parent - child)
+                        .collect(),
+                    true_counts: parent_true_counts
+                        .iter()
+                        .zip(child_true_counts.iter())
+                        .map(|(parent, child)| parent - child)
+                        .collect(),
+                    false_size: parent_false_size - child_false_size,
+                    true_size: parent_true_size - child_true_size,
+                },
+                (
+                    ClassificationFeatureHistogram::Numeric {
+                        bin_class_counts: parent_bin_class_counts,
+                        ..
+                    },
+                    ClassificationFeatureHistogram::Numeric {
+                        bin_class_counts: child_bin_class_counts,
+                        ..
+                    },
+                ) => {
+                    let bin_class_counts = parent_bin_class_counts
+                        .iter()
+                        .zip(child_bin_class_counts.iter())
+                        .map(|(parent_counts, child_counts)| {
+                            parent_counts
+                                .iter()
+                                .zip(child_counts.iter())
+                                .map(|(parent, child)| parent - child)
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    let observed_bins = bin_class_counts
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(bin, counts)| {
+                            counts.iter().any(|count| *count > 0).then_some(bin)
+                        })
+                        .collect::<Vec<_>>();
+                    ClassificationFeatureHistogram::Numeric {
+                        bin_class_counts,
+                        observed_bins,
+                    }
+                }
+                _ => unreachable!("histogram shapes must match"),
+            },
+        )
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -2186,6 +2394,7 @@ fn split_score(candidate: &SplitCandidate) -> f64 {
     }
 }
 
+#[allow(dead_code)]
 fn score_binary_split_choice(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
@@ -2211,6 +2420,207 @@ fn score_binary_split_choice(
     }
 }
 
+fn score_binary_split_choice_from_hist(
+    context: &SplitScoringContext<'_>,
+    histogram: &ClassificationFeatureHistogram,
+    feature_index: usize,
+    rows: &[usize],
+    parent_counts: &[usize],
+    algorithm: DecisionTreeAlgorithm,
+) -> Option<BinarySplitChoice> {
+    match (algorithm, histogram) {
+        (
+            DecisionTreeAlgorithm::Cart,
+            ClassificationFeatureHistogram::Binary {
+                false_counts,
+                true_counts,
+                false_size,
+                true_size,
+            },
+        ) => score_binary_cart_split_choice_from_counts(
+            context,
+            feature_index,
+            parent_counts,
+            false_counts,
+            *false_size,
+            true_counts,
+            *true_size,
+        ),
+        (
+            DecisionTreeAlgorithm::Cart,
+            ClassificationFeatureHistogram::Numeric {
+                bin_class_counts,
+                observed_bins,
+            },
+        ) => score_numeric_cart_split_choice_from_hist(
+            context,
+            feature_index,
+            parent_counts,
+            rows.len(),
+            bin_class_counts,
+            observed_bins,
+        ),
+        (
+            DecisionTreeAlgorithm::Randomized,
+            ClassificationFeatureHistogram::Binary {
+                false_counts,
+                true_counts,
+                false_size,
+                true_size,
+            },
+        ) => score_binary_cart_split_choice_from_counts(
+            context,
+            feature_index,
+            parent_counts,
+            false_counts,
+            *false_size,
+            true_counts,
+            *true_size,
+        ),
+        (
+            DecisionTreeAlgorithm::Randomized,
+            ClassificationFeatureHistogram::Numeric { observed_bins, .. },
+        ) => score_numeric_randomized_split_choice_from_hist(
+            context,
+            feature_index,
+            rows,
+            parent_counts,
+            observed_bins,
+            histogram,
+        ),
+        _ => None,
+    }
+}
+
+fn score_binary_cart_split_choice_from_counts(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    parent_counts: &[usize],
+    left_counts: &[usize],
+    left_size: usize,
+    right_counts: &[usize],
+    right_size: usize,
+) -> Option<BinarySplitChoice> {
+    if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+        return None;
+    }
+    let parent_impurity =
+        classification_impurity(parent_counts, left_size + right_size, context.criterion);
+    let weighted_impurity = (left_size as f64 / (left_size + right_size) as f64)
+        * classification_impurity(left_counts, left_size, context.criterion)
+        + (right_size as f64 / (left_size + right_size) as f64)
+            * classification_impurity(right_counts, right_size, context.criterion);
+    Some(BinarySplitChoice {
+        feature_index,
+        score: parent_impurity - weighted_impurity,
+        threshold_bin: 0,
+    })
+}
+
+fn score_numeric_cart_split_choice_from_hist(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    parent_counts: &[usize],
+    row_count: usize,
+    bin_class_counts: &[Vec<usize>],
+    observed_bins: &[usize],
+) -> Option<BinarySplitChoice> {
+    if observed_bins.len() <= 1 {
+        return None;
+    }
+    let parent_impurity = classification_impurity(parent_counts, row_count, context.criterion);
+    let mut left_counts = vec![0usize; context.num_classes];
+    let mut left_size = 0usize;
+    let mut best_threshold = None;
+    let mut best_score = f64::NEG_INFINITY;
+
+    for &bin in observed_bins {
+        for class_index in 0..context.num_classes {
+            left_counts[class_index] += bin_class_counts[bin][class_index];
+        }
+        left_size += bin_class_counts[bin].iter().sum::<usize>();
+        let right_size = row_count - left_size;
+        if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+            continue;
+        }
+        let right_counts = parent_counts
+            .iter()
+            .zip(left_counts.iter())
+            .map(|(parent, left)| parent - left)
+            .collect::<Vec<_>>();
+        let weighted_impurity = (left_size as f64 / row_count as f64)
+            * classification_impurity(&left_counts, left_size, context.criterion)
+            + (right_size as f64 / row_count as f64)
+                * classification_impurity(&right_counts, right_size, context.criterion);
+        let score = parent_impurity - weighted_impurity;
+        if score > best_score {
+            best_score = score;
+            best_threshold = Some(bin as u16);
+        }
+    }
+
+    best_threshold.map(|threshold_bin| BinarySplitChoice {
+        feature_index,
+        score: best_score,
+        threshold_bin,
+    })
+}
+
+fn score_numeric_randomized_split_choice_from_hist(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    rows: &[usize],
+    parent_counts: &[usize],
+    observed_bins: &[usize],
+    histogram: &ClassificationFeatureHistogram,
+) -> Option<BinarySplitChoice> {
+    let candidate_thresholds = observed_bins
+        .iter()
+        .copied()
+        .map(|bin| bin as u16)
+        .collect::<Vec<_>>();
+    let threshold_bin =
+        choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xC1A551F1u64)?;
+    let ClassificationFeatureHistogram::Numeric {
+        bin_class_counts, ..
+    } = histogram
+    else {
+        unreachable!("randomized numeric histogram must be numeric");
+    };
+    let mut left_counts = vec![0usize; context.num_classes];
+    let mut left_size = 0usize;
+    for bin in 0..=threshold_bin as usize {
+        if bin >= bin_class_counts.len() {
+            break;
+        }
+        for class_index in 0..context.num_classes {
+            left_counts[class_index] += bin_class_counts[bin][class_index];
+        }
+        left_size += bin_class_counts[bin].iter().sum::<usize>();
+    }
+    let row_count = rows.len();
+    let right_size = row_count - left_size;
+    if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+        return None;
+    }
+    let right_counts = parent_counts
+        .iter()
+        .zip(left_counts.iter())
+        .map(|(parent, left)| parent - left)
+        .collect::<Vec<_>>();
+    let parent_impurity = classification_impurity(parent_counts, row_count, context.criterion);
+    let weighted_impurity = (left_size as f64 / row_count as f64)
+        * classification_impurity(&left_counts, left_size, context.criterion)
+        + (right_size as f64 / row_count as f64)
+            * classification_impurity(&right_counts, right_size, context.criterion);
+    Some(BinarySplitChoice {
+        feature_index,
+        score: parent_impurity - weighted_impurity,
+        threshold_bin,
+    })
+}
+
+#[allow(dead_code)]
 fn score_binary_cart_split_choice(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
@@ -2254,6 +2664,7 @@ fn score_binary_cart_split_choice(
     })
 }
 
+#[allow(dead_code)]
 fn score_numeric_cart_split_choice_fast(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
@@ -2325,6 +2736,7 @@ fn score_numeric_cart_split_choice_fast(
     })
 }
 
+#[allow(dead_code)]
 fn score_numeric_randomized_split_choice_fast(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
