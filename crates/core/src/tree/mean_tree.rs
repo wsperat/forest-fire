@@ -1,4 +1,6 @@
-use crate::ir::{LeafPayload, NodeTreeNode, TrainingMetadata, TreeDefinition, criterion_name};
+use crate::ir::{
+    LeafPayload, NodeStats, NodeTreeNode, TrainingMetadata, TreeDefinition, criterion_name,
+};
 use crate::{Criterion, FeaturePreprocessing, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use std::error::Error;
@@ -106,6 +108,13 @@ impl TargetMeanTree {
                 node_id: 0,
                 depth: 0,
                 leaf: LeafPayload::RegressionValue { value: self.mean },
+                stats: NodeStats {
+                    sample_count: 0,
+                    impurity: None,
+                    gain: None,
+                    class_counts: None,
+                    variance: None,
+                },
             }],
         }
     }

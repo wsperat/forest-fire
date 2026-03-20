@@ -1,5 +1,6 @@
 use forestfire_data::{TableAccess, numeric_bin_boundaries};
 use rayon::ThreadPoolBuilder;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -63,7 +64,7 @@ pub enum InputFeatureKind {
     Binary,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NumericBinBoundary {
     pub bin: u16,
     pub upper_bound: f64,
@@ -422,6 +423,18 @@ impl Model {
 
     pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
         self.to_ir_json_pretty()
+    }
+
+    pub fn json_schema() -> schemars::schema::RootSchema {
+        ModelPackageIr::json_schema()
+    }
+
+    pub fn json_schema_json() -> Result<String, IrError> {
+        ModelPackageIr::json_schema_json()
+    }
+
+    pub fn json_schema_json_pretty() -> Result<String, IrError> {
+        ModelPackageIr::json_schema_json_pretty()
     }
 
     pub fn deserialize(serialized: &str) -> Result<Self, IrError> {
@@ -970,5 +983,85 @@ mod tests {
         assert_eq!(model.tree_type(), restored.tree_type());
         assert_eq!(model.criterion(), restored.criterion());
         assert_eq!(model.predict_table(&table), restored.predict_table(&table));
+    }
+
+    #[test]
+    fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
+        let classifier_table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let classifier = train(
+            &classifier_table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap()
+        .to_ir();
+
+        let ir::TreeDefinition::NodeTree { nodes, .. } = &classifier.model.trees[0] else {
+            panic!("classifier should export as node_tree");
+        };
+        assert!(nodes.iter().all(|node| match node {
+            ir::NodeTreeNode::Leaf { stats, .. } => stats.sample_count > 0,
+            ir::NodeTreeNode::BinaryBranch { stats, .. }
+            | ir::NodeTreeNode::MultiwayBranch { stats, .. } => {
+                stats.sample_count > 0 && stats.impurity.is_some() && stats.gain.is_some()
+            }
+        }));
+
+        let regressor_table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 1.0, 1.0, 2.0],
+            0,
+        )
+        .unwrap();
+        let regressor = train(
+            &regressor_table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap()
+        .to_ir();
+
+        let ir::TreeDefinition::ObliviousLevels { levels, leaves, .. } = &regressor.model.trees[0]
+        else {
+            panic!("regressor should export as oblivious_levels");
+        };
+        assert!(levels.iter().all(|level| {
+            level.stats.sample_count > 0
+                && level.stats.impurity.is_some()
+                && level.stats.gain.is_some()
+        }));
+        assert!(leaves.iter().all(|leaf| leaf.stats.sample_count > 0));
+    }
+
+    #[test]
+    fn generated_json_schema_matches_checked_in_schema() {
+        let generated = Model::json_schema_json_pretty().unwrap();
+        let checked_in = include_str!("../schema/forestfire-ir.schema.json");
+        assert_eq!(generated, checked_in);
     }
 }

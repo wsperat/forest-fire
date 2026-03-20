@@ -12,13 +12,15 @@ use crate::{
     FeaturePreprocessing, InputFeatureKind, Model, NumericBinBoundary, Task, TrainAlgorithm,
     TreeType,
 };
+use schemars::schema::RootSchema;
+use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
 const IR_VERSION: &str = "1.0.0";
 const FORMAT_NAME: &str = "forestfire-ir";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ModelPackageIr {
     pub ir_version: String,
     pub format_name: String,
@@ -33,7 +35,7 @@ pub struct ModelPackageIr {
     pub integrity: IntegritySection,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProducerMetadata {
     pub library: String,
     pub library_version: String,
@@ -41,7 +43,7 @@ pub struct ProducerMetadata {
     pub platform: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ModelSection {
     pub algorithm: String,
     pub task: String,
@@ -56,7 +58,7 @@ pub struct ModelSection {
     pub aggregation: Aggregation,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "representation", rename_all = "snake_case")]
 pub enum TreeDefinition {
     NodeTree {
@@ -75,19 +77,21 @@ pub enum TreeDefinition {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeTreeNode {
     Leaf {
         node_id: usize,
         depth: usize,
         leaf: LeafPayload,
+        stats: NodeStats,
     },
     BinaryBranch {
         node_id: usize,
         depth: usize,
         split: BinarySplit,
         children: BinaryChildren,
+        stats: NodeStats,
     },
     MultiwayBranch {
         node_id: usize,
@@ -95,22 +99,23 @@ pub enum NodeTreeNode {
         split: MultiwaySplit,
         branches: Vec<MultiwayBranch>,
         unmatched_leaf: LeafPayload,
+        stats: NodeStats,
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BinaryChildren {
     pub left: usize,
     pub right: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MultiwayBranch {
     pub bin: u16,
     pub child: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "split_type", rename_all = "snake_case")]
 pub enum BinarySplit {
     NumericBinThreshold {
@@ -129,7 +134,7 @@ pub enum BinarySplit {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MultiwaySplit {
     pub split_type: String,
     pub feature_index: usize,
@@ -137,13 +142,14 @@ pub struct MultiwaySplit {
     pub comparison_dtype: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ObliviousLevel {
     pub level: usize,
     pub split: ObliviousSplit,
+    pub stats: NodeStats,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "split_type", rename_all = "snake_case")]
 pub enum ObliviousSplit {
     NumericBinThreshold {
@@ -164,19 +170,20 @@ pub enum ObliviousSplit {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LeafIndexing {
     pub bit_order: String,
     pub index_formula: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IndexedLeaf {
     pub leaf_index: usize,
     pub leaf: LeafPayload,
+    pub stats: NodeStats,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "prediction_kind", rename_all = "snake_case")]
 pub enum LeafPayload {
     RegressionValue {
@@ -188,14 +195,14 @@ pub enum LeafPayload {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Aggregation {
     pub kind: String,
     pub tree_weights: Vec<f64>,
     pub normalize_by_weight_sum: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InputSchema {
     pub feature_count: usize,
     pub features: Vec<InputFeature>,
@@ -204,7 +211,7 @@ pub struct InputSchema {
     pub accepts_feature_names: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InputFeature {
     pub index: usize,
     pub name: String,
@@ -213,7 +220,7 @@ pub struct InputFeature {
     pub nullable: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OutputSchema {
     pub raw_outputs: Vec<OutputField>,
     pub final_outputs: Vec<OutputField>,
@@ -221,7 +228,7 @@ pub struct OutputSchema {
     pub class_order: Option<Vec<f64>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OutputField {
     pub name: String,
     pub kind: String,
@@ -229,7 +236,7 @@ pub struct OutputField {
     pub dtype: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InferenceOptions {
     pub numeric_precision: String,
     pub threshold_comparison: String,
@@ -239,38 +246,38 @@ pub struct InferenceOptions {
     pub determinism: Determinism,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BoolEncoding {
     pub false_values: Vec<String>,
     pub true_values: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TieBreaking {
     pub classification: String,
     pub argmax: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Determinism {
     pub guaranteed: bool,
     pub notes: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PreprocessingSection {
     pub included_in_model: bool,
     pub numeric_binning: NumericBinning,
     pub notes: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NumericBinning {
     pub kind: String,
     pub features: Vec<FeatureBinning>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FeatureBinning {
     Numeric {
@@ -282,20 +289,20 @@ pub enum FeatureBinning {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PostprocessingSection {
     pub raw_output_kind: String,
     pub steps: Vec<PostprocessingStep>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PostprocessingStep {
     Identity,
     MapClassIndexToLabel { labels: Vec<f64> },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TrainingMetadata {
     pub algorithm: String,
     pub task: String,
@@ -312,17 +319,30 @@ pub struct TrainingMetadata {
     pub class_labels: Option<Vec<f64>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IntegritySection {
     pub serialization: String,
     pub canonical_json: bool,
     pub compatibility: Compatibility,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Compatibility {
     pub minimum_runtime_version: String,
     pub required_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NodeStats {
+    pub sample_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impurity: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_counts: Option<Vec<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variance: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,6 +410,21 @@ impl Display for IrError {
 }
 
 impl std::error::Error for IrError {}
+
+impl ModelPackageIr {
+    pub fn json_schema() -> RootSchema {
+        schema_for!(ModelPackageIr)
+    }
+
+    pub fn json_schema_json() -> Result<String, IrError> {
+        serde_json::to_string(&Self::json_schema()).map_err(|err| IrError::Json(err.to_string()))
+    }
+
+    pub fn json_schema_json_pretty() -> Result<String, IrError> {
+        serde_json::to_string_pretty(&Self::json_schema())
+            .map_err(|err| IrError::Json(err.to_string()))
+    }
+}
 
 pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
     let tree = match model {
@@ -550,9 +585,14 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             TreeDefinition::ObliviousLevels { levels, leaves, .. },
         ) => {
             let class_labels = deserialized_class_labels.ok_or(IrError::MissingClassLabels)?;
+            let leaf_sample_counts = rebuild_leaf_sample_counts(&leaves)?;
+            let leaf_class_counts =
+                rebuild_classifier_leaf_class_counts(&leaves, class_labels.len())?;
             let structure = ClassifierTreeStructure::Oblivious {
                 splits: rebuild_classifier_oblivious_splits(levels)?,
                 leaf_class_indices: rebuild_classifier_leaf_indices(leaves, &class_labels)?,
+                leaf_sample_counts,
+                leaf_class_counts,
             };
             Ok(Model::DecisionTreeClassifier(
                 DecisionTreeClassifier::from_ir_parts(
@@ -599,24 +639,30 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             Task::Regression,
             TreeType::Oblivious,
             TreeDefinition::ObliviousLevels { levels, leaves, .. },
-        ) => Ok(Model::DecisionTreeRegressor(
-            DecisionTreeRegressor::from_ir_parts(
-                RegressionTreeAlgorithm::Oblivious,
-                criterion,
-                RegressionTreeStructure::Oblivious {
-                    splits: rebuild_regressor_oblivious_splits(levels)?,
-                    leaf_values: rebuild_regressor_leaf_values(leaves)?,
-                },
-                RegressionTreeOptions {
-                    max_depth: options.max_depth,
-                    min_samples_split: options.min_samples_split,
-                    min_samples_leaf: options.min_samples_leaf,
-                },
-                num_features,
-                feature_preprocessing,
-                training_canaries,
-            ),
-        )),
+        ) => {
+            let leaf_sample_counts = rebuild_leaf_sample_counts(&leaves)?;
+            let leaf_variances = rebuild_leaf_variances(&leaves)?;
+            Ok(Model::DecisionTreeRegressor(
+                DecisionTreeRegressor::from_ir_parts(
+                    RegressionTreeAlgorithm::Oblivious,
+                    criterion,
+                    RegressionTreeStructure::Oblivious {
+                        splits: rebuild_regressor_oblivious_splits(levels)?,
+                        leaf_values: rebuild_regressor_leaf_values(leaves)?,
+                        leaf_sample_counts,
+                        leaf_variances,
+                    },
+                    RegressionTreeOptions {
+                        max_depth: options.max_depth,
+                        min_samples_split: options.min_samples_split,
+                        min_samples_leaf: options.min_samples_leaf,
+                    },
+                    num_features,
+                    feature_preprocessing,
+                    training_canaries,
+                ),
+            ))
+        }
         (_, _, _, tree) => Err(IrError::UnsupportedRepresentation(match tree {
             TreeDefinition::NodeTree { .. } => "node_tree".to_string(),
             TreeDefinition::ObliviousLevels { .. } => "oblivious_levels".to_string(),
@@ -818,18 +864,30 @@ fn rebuild_classifier_nodes(
     let mut rebuilt = vec![None; nodes.len()];
     for node in nodes {
         match node {
-            NodeTreeNode::Leaf { node_id, leaf, .. } => {
+            NodeTreeNode::Leaf {
+                node_id,
+                leaf,
+                stats,
+                ..
+            } => {
                 let class_index = classifier_class_index(&leaf, class_labels)?;
                 assign_node(
                     &mut rebuilt,
                     node_id,
-                    ClassifierTreeNode::Leaf { class_index },
+                    ClassifierTreeNode::Leaf {
+                        class_index,
+                        sample_count: stats.sample_count,
+                        class_counts: stats
+                            .class_counts
+                            .unwrap_or_else(|| vec![0; class_labels.len()]),
+                    },
                 )?;
             }
             NodeTreeNode::BinaryBranch {
                 node_id,
                 split,
                 children,
+                stats,
                 ..
             } => {
                 let (feature_index, threshold_bin) = classifier_binary_split(split)?;
@@ -841,6 +899,12 @@ fn rebuild_classifier_nodes(
                         threshold_bin,
                         left_child: children.left,
                         right_child: children.right,
+                        sample_count: stats.sample_count,
+                        impurity: stats.impurity.unwrap_or(0.0),
+                        gain: stats.gain.unwrap_or(0.0),
+                        class_counts: stats
+                            .class_counts
+                            .unwrap_or_else(|| vec![0; class_labels.len()]),
                     },
                 )?;
             }
@@ -849,6 +913,7 @@ fn rebuild_classifier_nodes(
                 split,
                 branches,
                 unmatched_leaf,
+                stats,
                 ..
             } => {
                 let fallback_class_index = classifier_class_index(&unmatched_leaf, class_labels)?;
@@ -862,6 +927,12 @@ fn rebuild_classifier_nodes(
                             .into_iter()
                             .map(|branch| (branch.bin, branch.child))
                             .collect(),
+                        sample_count: stats.sample_count,
+                        impurity: stats.impurity.unwrap_or(0.0),
+                        gain: stats.gain.unwrap_or(0.0),
+                        class_counts: stats
+                            .class_counts
+                            .unwrap_or_else(|| vec![0; class_labels.len()]),
                     },
                 )?;
             }
@@ -877,9 +948,18 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
             NodeTreeNode::Leaf {
                 node_id,
                 leaf: LeafPayload::RegressionValue { value },
+                stats,
                 ..
             } => {
-                assign_node(&mut rebuilt, node_id, RegressionNode::Leaf { value })?;
+                assign_node(
+                    &mut rebuilt,
+                    node_id,
+                    RegressionNode::Leaf {
+                        value,
+                        sample_count: stats.sample_count,
+                        variance: stats.variance,
+                    },
+                )?;
             }
             NodeTreeNode::Leaf { .. } => {
                 return Err(IrError::InvalidLeaf(
@@ -890,6 +970,7 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
                 node_id,
                 split,
                 children,
+                stats,
                 ..
             } => {
                 let (feature_index, threshold_bin) = regressor_binary_split(split)?;
@@ -901,6 +982,10 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
                         threshold_bin,
                         left_child: children.left,
                         right_child: children.right,
+                        sample_count: stats.sample_count,
+                        impurity: stats.impurity.unwrap_or(0.0),
+                        gain: stats.gain.unwrap_or(0.0),
+                        variance: stats.variance,
                     },
                 )?;
             }
@@ -927,10 +1012,16 @@ fn rebuild_classifier_oblivious_splits(
             } => ClassifierObliviousSplit {
                 feature_index,
                 threshold_bin,
+                sample_count: level.stats.sample_count,
+                impurity: level.stats.impurity.unwrap_or(0.0),
+                gain: level.stats.gain.unwrap_or(0.0),
             },
             ObliviousSplit::BooleanTest { feature_index, .. } => ClassifierObliviousSplit {
                 feature_index,
                 threshold_bin: 0,
+                sample_count: level.stats.sample_count,
+                impurity: level.stats.impurity.unwrap_or(0.0),
+                gain: level.stats.gain.unwrap_or(0.0),
             },
         });
     }
@@ -950,10 +1041,16 @@ fn rebuild_regressor_oblivious_splits(
             } => RegressorObliviousSplit {
                 feature_index,
                 threshold_bin,
+                sample_count: level.stats.sample_count,
+                impurity: level.stats.impurity.unwrap_or(0.0),
+                gain: level.stats.gain.unwrap_or(0.0),
             },
             ObliviousSplit::BooleanTest { feature_index, .. } => RegressorObliviousSplit {
                 feature_index,
                 threshold_bin: 0,
+                sample_count: level.stats.sample_count,
+                impurity: level.stats.impurity.unwrap_or(0.0),
+                gain: level.stats.gain.unwrap_or(0.0),
             },
         });
     }
@@ -984,6 +1081,49 @@ fn rebuild_regressor_leaf_values(leaves: Vec<IndexedLeaf>) -> Result<Vec<f64>, I
             }
         };
         assign_node(&mut rebuilt, indexed_leaf.leaf_index, value)?;
+    }
+    collect_nodes(rebuilt)
+}
+
+fn rebuild_leaf_sample_counts(leaves: &[IndexedLeaf]) -> Result<Vec<usize>, IrError> {
+    let mut rebuilt = vec![None; leaves.len()];
+    for indexed_leaf in leaves {
+        assign_node(
+            &mut rebuilt,
+            indexed_leaf.leaf_index,
+            indexed_leaf.stats.sample_count,
+        )?;
+    }
+    collect_nodes(rebuilt)
+}
+
+fn rebuild_leaf_variances(leaves: &[IndexedLeaf]) -> Result<Vec<Option<f64>>, IrError> {
+    let mut rebuilt = vec![None; leaves.len()];
+    for indexed_leaf in leaves {
+        assign_node(
+            &mut rebuilt,
+            indexed_leaf.leaf_index,
+            indexed_leaf.stats.variance,
+        )?;
+    }
+    collect_nodes(rebuilt)
+}
+
+fn rebuild_classifier_leaf_class_counts(
+    leaves: &[IndexedLeaf],
+    num_classes: usize,
+) -> Result<Vec<Vec<usize>>, IrError> {
+    let mut rebuilt = vec![None; leaves.len()];
+    for indexed_leaf in leaves {
+        assign_node(
+            &mut rebuilt,
+            indexed_leaf.leaf_index,
+            indexed_leaf
+                .stats
+                .class_counts
+                .clone()
+                .unwrap_or_else(|| vec![0; num_classes]),
+        )?;
     }
     collect_nodes(rebuilt)
 }

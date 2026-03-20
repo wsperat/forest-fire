@@ -8,5 +8,6 @@ arrow.workspace = true
 forestfire-data = { path = "../data" }
 num_cpus.workspace = true
 rayon.workspace = true
+schemars = { version = "0.8", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
