@@ -4,7 +4,7 @@ use forestfire_core::{
 };
 use forestfire_data::{Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
-use pyo3::types::{PyDict, PyType};
+use pyo3::types::{PyBytes, PyDict, PyType};
 use pyo3::{Bound, prelude::*};
 use std::collections::BTreeMap;
 
@@ -704,6 +704,18 @@ impl PyModel {
 
 #[pymethods]
 impl PyOptimizedModel {
+    #[classmethod]
+    #[pyo3(signature = (serialized, physical_cores=None))]
+    fn deserialize_compiled(
+        _cls: &Bound<PyType>,
+        serialized: &[u8],
+        physical_cores: Option<usize>,
+    ) -> PyResult<Self> {
+        let inner = CoreOptimizedModel::deserialize_compiled(serialized, physical_cores)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(Self { inner })
+    }
+
     fn predict<'py>(
         &self,
         py: Python<'py>,
@@ -762,6 +774,14 @@ impl PyOptimizedModel {
             self.inner.serialize()
         }
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    fn serialize_compiled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .serialize_compiled()
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(PyBytes::new(py, &bytes))
     }
 }
 

@@ -550,6 +550,7 @@ Trained models can be:
 - serialized to a JSON string
 - deserialized back into a runnable model
 - exported as the explicit IR JSON
+- optimized and serialized into a compiled CPU artifact for fast reload
 
 Rust:
 
@@ -560,12 +561,45 @@ Rust:
 - `model.to_ir_json()`
 - `model.to_ir_json_pretty()`
 - `Model::json_schema_json_pretty()`
+- `optimized.serialize_compiled()`
+- `OptimizedModel::deserialize_compiled(bytes, Some(physical_cores))`
 
 Python:
 
 - `model.serialize(pretty=False)`
 - `Model.deserialize(serialized)`
 - `model.to_ir_json(pretty=False)`
+- `optimized.serialize_compiled()`
+- `OptimizedModel.deserialize_compiled(serialized, physical_cores=None)`
+
+### Compiled optimized artifacts
+
+Optimized CPU runtimes now have a second serialization path: a compiled artifact.
+
+This artifact is intentionally different from the JSON IR:
+
+- the JSON IR is the canonical semantic model
+- the compiled artifact is a versioned binary snapshot of the already-lowered optimized CPU runtime
+
+The compiled artifact stores:
+
+- a fixed magic/version/backend header
+- the semantic model IR payload needed to preserve the exact same exported model meaning
+- the compiled runtime layout, so reload does not have to lower the semantic model into prediction nodes again
+
+This mirrors the general split used by high-performance inference systems:
+
+- one representation for portability and inspection
+- one representation for fast runtime loading
+
+In ForestFire, the compiled artifact is currently:
+
+- CPU-only
+- versioned
+- binary
+- backend-specific by design
+
+It does not replace the JSON IR. It is an execution artifact for optimized runtimes.
 
 ### Why the IR exists
 

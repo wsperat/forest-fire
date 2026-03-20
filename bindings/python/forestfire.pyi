@@ -37,9 +37,16 @@ class OptimizedModel:
     tree_type: str
     mean_: float | None
 
+    @classmethod
+    def deserialize_compiled(
+        cls,
+        serialized: bytes,
+        physical_cores: int | None = None,
+    ) -> "OptimizedModel": ...
     def predict(self, x: Table | Any) -> NDArray[np.float64]: ...
     def to_ir_json(self, pretty: bool = False) -> str: ...
     def serialize(self, pretty: bool = False) -> str: ...
+    def serialize_compiled(self) -> bytes: ...
 
 class Model:
     algorithm: str

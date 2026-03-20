@@ -41,6 +41,10 @@ const STANDARD_BATCH_INFERENCE_CHUNK_ROWS: usize = 4096;
 const OBLIVIOUS_SIMD_LANES: usize = 8;
 #[cfg(feature = "polars")]
 const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
+const COMPILED_ARTIFACT_MAGIC: [u8; 4] = *b"FFCA";
+const COMPILED_ARTIFACT_VERSION: u16 = 1;
+const COMPILED_ARTIFACT_BACKEND_CPU: u16 = 1;
+const COMPILED_ARTIFACT_HEADER_LEN: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
@@ -294,6 +298,49 @@ impl Display for OptimizeError {
 }
 
 impl Error for OptimizeError {}
+
+#[derive(Debug)]
+pub enum CompiledArtifactError {
+    ArtifactTooShort { actual: usize, minimum: usize },
+    InvalidMagic([u8; 4]),
+    UnsupportedVersion(u16),
+    UnsupportedBackend(u16),
+    Encode(String),
+    Decode(String),
+    InvalidSemanticModel(IrError),
+    InvalidRuntime(OptimizeError),
+}
+
+impl Display for CompiledArtifactError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompiledArtifactError::ArtifactTooShort { actual, minimum } => write!(
+                f,
+                "Compiled artifact is too short: expected at least {} bytes, found {}.",
+                minimum, actual
+            ),
+            CompiledArtifactError::InvalidMagic(magic) => {
+                write!(f, "Compiled artifact has invalid magic bytes: {:?}.", magic)
+            }
+            CompiledArtifactError::UnsupportedVersion(version) => {
+                write!(f, "Unsupported compiled artifact version: {}.", version)
+            }
+            CompiledArtifactError::UnsupportedBackend(backend) => {
+                write!(f, "Unsupported compiled artifact backend: {}.", backend)
+            }
+            CompiledArtifactError::Encode(message) => {
+                write!(f, "Failed to encode compiled artifact: {}.", message)
+            }
+            CompiledArtifactError::Decode(message) => {
+                write!(f, "Failed to decode compiled artifact: {}.", message)
+            }
+            CompiledArtifactError::InvalidSemanticModel(err) => err.fmt(f),
+            CompiledArtifactError::InvalidRuntime(err) => err.fmt(f),
+        }
+    }
+}
+
+impl Error for CompiledArtifactError {}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Parallelism {
@@ -646,7 +693,7 @@ impl TableAccess for InferenceTable {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum OptimizedRuntime {
     TargetMean {
         value: f64,
@@ -673,7 +720,7 @@ enum OptimizedRuntime {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum OptimizedClassifierNode {
     Leaf(f64),
     Binary {
@@ -688,7 +735,7 @@ enum OptimizedClassifierNode {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum OptimizedBinaryClassifierNode {
     Leaf(f64),
     Branch {
@@ -699,7 +746,7 @@ enum OptimizedBinaryClassifierNode {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum OptimizedBinaryRegressorNode {
     Leaf(f64),
     Branch {
@@ -714,6 +761,12 @@ enum OptimizedBinaryRegressorNode {
 struct InferenceExecutor {
     thread_count: usize,
     pool: Option<Arc<rayon::ThreadPool>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CompiledArtifactPayload {
+    semantic_ir: ModelPackageIr,
+    runtime: OptimizedRuntime,
 }
 
 impl InferenceExecutor {
@@ -910,6 +963,66 @@ impl OptimizedModel {
 
     pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
         self.source_model.serialize_pretty()
+    }
+
+    pub fn serialize_compiled(&self) -> Result<Vec<u8>, CompiledArtifactError> {
+        let payload = CompiledArtifactPayload {
+            semantic_ir: self.source_model.to_ir(),
+            runtime: self.runtime.clone(),
+        };
+        let mut payload_bytes = Vec::new();
+        ciborium::into_writer(&payload, &mut payload_bytes)
+            .map_err(|err| CompiledArtifactError::Encode(err.to_string()))?;
+        let mut bytes = Vec::with_capacity(COMPILED_ARTIFACT_HEADER_LEN + payload_bytes.len());
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_MAGIC);
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_BACKEND_CPU.to_le_bytes());
+        bytes.extend_from_slice(&payload_bytes);
+        Ok(bytes)
+    }
+
+    pub fn deserialize_compiled(
+        serialized: &[u8],
+        physical_cores: Option<usize>,
+    ) -> Result<Self, CompiledArtifactError> {
+        if serialized.len() < COMPILED_ARTIFACT_HEADER_LEN {
+            return Err(CompiledArtifactError::ArtifactTooShort {
+                actual: serialized.len(),
+                minimum: COMPILED_ARTIFACT_HEADER_LEN,
+            });
+        }
+
+        let magic = [serialized[0], serialized[1], serialized[2], serialized[3]];
+        if magic != COMPILED_ARTIFACT_MAGIC {
+            return Err(CompiledArtifactError::InvalidMagic(magic));
+        }
+
+        let version = u16::from_le_bytes([serialized[4], serialized[5]]);
+        if version != COMPILED_ARTIFACT_VERSION {
+            return Err(CompiledArtifactError::UnsupportedVersion(version));
+        }
+
+        let backend = u16::from_le_bytes([serialized[6], serialized[7]]);
+        if backend != COMPILED_ARTIFACT_BACKEND_CPU {
+            return Err(CompiledArtifactError::UnsupportedBackend(backend));
+        }
+
+        let payload: CompiledArtifactPayload = ciborium::from_reader(std::io::Cursor::new(
+            &serialized[COMPILED_ARTIFACT_HEADER_LEN..],
+        ))
+        .map_err(|err| CompiledArtifactError::Decode(err.to_string()))?;
+        let source_model = ir::model_from_ir(payload.semantic_ir)
+            .map_err(CompiledArtifactError::InvalidSemanticModel)?;
+        let thread_count = resolve_inference_thread_count(physical_cores)
+            .map_err(CompiledArtifactError::InvalidRuntime)?;
+        let executor =
+            InferenceExecutor::new(thread_count).map_err(CompiledArtifactError::InvalidRuntime)?;
+
+        Ok(Self {
+            source_model,
+            runtime: payload.runtime,
+            executor,
+        })
     }
 
     fn predict_column_major_binned_matrix(&self, matrix: &ColumnMajorBinnedMatrix) -> Vec<f64> {
@@ -2784,6 +2897,100 @@ mod tests {
 
         assert_predictions_close(&batch_preds, &single_row_preds);
         assert_predictions_close(&batch_preds, &base_preds);
+    }
+
+    #[test]
+    fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+        let compiled = optimized.serialize_compiled().unwrap();
+        let restored = OptimizedModel::deserialize_compiled(&compiled, Some(1)).unwrap();
+        let rows = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+        ];
+
+        assert_eq!(&compiled[..4], &COMPILED_ARTIFACT_MAGIC);
+        assert_eq!(
+            optimized.serialize().unwrap(),
+            restored.serialize().unwrap()
+        );
+        assert_eq!(
+            optimized.to_ir_json().unwrap(),
+            restored.to_ir_json().unwrap()
+        );
+        assert_predictions_close(
+            &optimized.predict_rows(rows.clone()).unwrap(),
+            &restored.predict_rows(rows).unwrap(),
+        );
+    }
+
+    #[test]
+    fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
+        let rows = (0..32)
+            .map(|idx| vec![f64::from((idx % 2) as u8), f64::from(((idx / 2) % 2) as u8)])
+            .collect::<Vec<_>>();
+        let targets = rows.iter().map(|row| row[0] + row[1] * 0.5).collect();
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+        let compiled = optimized.serialize_compiled().unwrap();
+        let restored = OptimizedModel::deserialize_compiled(&compiled, Some(2)).unwrap();
+
+        assert_eq!(
+            optimized.serialize().unwrap(),
+            restored.serialize().unwrap()
+        );
+        assert_predictions_close(
+            &optimized.predict_rows(rows.clone()).unwrap(),
+            &restored.predict_rows(rows).unwrap(),
+        );
+    }
+
+    #[test]
+    fn compiled_artifact_rejects_invalid_header() {
+        let err = OptimizedModel::deserialize_compiled(b"bad", Some(1)).unwrap_err();
+        assert!(matches!(
+            err,
+            CompiledArtifactError::ArtifactTooShort { .. }
+        ));
+
+        let err =
+            OptimizedModel::deserialize_compiled(b"NOPE\x01\0\x01\0payload", Some(1)).unwrap_err();
+        assert!(matches!(err, CompiledArtifactError::InvalidMagic(_)));
     }
 
     #[test]

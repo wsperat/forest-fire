@@ -232,6 +232,25 @@ Use:
 
 - `model.to_ir_json(pretty=False)`
 
+### Compiled optimized artifacts
+
+Optimized runtimes also support a dedicated compiled binary artifact:
+
+- `compiled = optimized.serialize_compiled()`
+- `restored = OptimizedModel.deserialize_compiled(compiled, physical_cores=None)`
+
+This is not a second semantic model format. The split is:
+
+- JSON IR for portability, inspection, and semantic stability
+- compiled artifact for faster reload of the optimized CPU runtime
+
+The compiled artifact stores both:
+
+- the semantic model payload needed to preserve the same IR
+- the already-lowered optimized runtime layout
+
+So reloading a compiled artifact avoids repeating the runtime-lowering step that `optimize_inference(...)` normally performs.
+
 The IR is designed to be inference-complete for the features implemented today. It records:
 
 - algorithm, task, tree type, and criterion

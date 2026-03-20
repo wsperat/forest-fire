@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 import pytest
-from forestfire import Table, train
+from forestfire import OptimizedModel, Table, train
 from numpy.typing import NDArray
 
 PREDICTION_TOLERANCE = 10e-6
@@ -268,6 +268,30 @@ def test_optimize_inference_rejects_zero_physical_cores() -> None:
 
     with pytest.raises(ValueError, match="Requested 0 physical cores"):
         model.optimize_inference(physical_cores=0)
+
+
+def test_compiled_optimized_model_round_trips() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([10.0, 12.0, 14.0, 20.0])
+    model = train(X, y, task="regression", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+    compiled = optimized.serialize_compiled()
+    restored = OptimizedModel.deserialize_compiled(compiled, physical_cores=1)
+
+    assert isinstance(compiled, bytes)
+    assert optimized.serialize() == restored.serialize()
+    assert optimized.to_ir_json() == restored.to_ir_json()
+    assert np.allclose(
+        optimized.predict(X),
+        restored.predict(X),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+
+
+def test_compiled_optimized_model_rejects_invalid_bytes() -> None:
+    with pytest.raises(ValueError):
+        OptimizedModel.deserialize_compiled(b"not-a-compiled-artifact")
 
 
 def test_train_id3_classifier(
