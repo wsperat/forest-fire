@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use wide::{u16x8, u32x8};
 
 pub mod ir;
 pub mod tree;
@@ -35,6 +36,8 @@ pub use tree::regressor::train_oblivious_regressor;
 
 const OPTIMIZED_MULTIWAY_LOOKUP_SIZE: usize = 512;
 const PARALLEL_INFERENCE_ROW_THRESHOLD: usize = 256;
+const PARALLEL_INFERENCE_CHUNK_ROWS: usize = 256;
+const OBLIVIOUS_SIMD_LANES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
@@ -536,6 +539,25 @@ impl InferenceTable {
             bins,
         }
     }
+
+    pub(crate) fn to_column_major_binned_matrix(&self) -> ColumnMajorBinnedMatrix {
+        let n_features = self.feature_columns.len();
+        let columns = (0..n_features)
+            .map(
+                |feature_index| match &self.binned_feature_columns[feature_index] {
+                    InferenceBinnedColumn::Numeric(values) => values.clone(),
+                    InferenceBinnedColumn::Binary(values) => {
+                        values.iter().map(|value| u16::from(*value)).collect()
+                    }
+                },
+            )
+            .collect();
+
+        ColumnMajorBinnedMatrix {
+            n_rows: self.n_rows,
+            columns,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -550,6 +572,34 @@ impl BinnedInferenceMatrix {
     fn row(&self, row_index: usize) -> &[u16] {
         let start = row_index * self.n_features;
         &self.bins[start..start + self.n_features]
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ColumnMajorBinnedMatrix {
+    n_rows: usize,
+    columns: Vec<Vec<u16>>,
+}
+
+impl ColumnMajorBinnedMatrix {
+    fn from_table_access(table: &dyn TableAccess) -> Self {
+        let columns = (0..table.n_features())
+            .map(|feature_index| {
+                (0..table.n_rows())
+                    .map(|row_index| table.binned_value(feature_index, row_index))
+                    .collect()
+            })
+            .collect();
+
+        Self {
+            n_rows: table.n_rows(),
+            columns,
+        }
+    }
+
+    #[inline(always)]
+    fn column(&self, feature_index: usize) -> &[u16] {
+        &self.columns[feature_index]
     }
 }
 
@@ -711,6 +761,28 @@ impl InferenceExecutor {
             .expect("thread pool exists when parallel inference is enabled")
             .install(|| (0..n_rows).into_par_iter().map(predict_row).collect())
     }
+
+    fn fill_chunks<F>(&self, outputs: &mut [f64], chunk_rows: usize, fill_chunk: F)
+    where
+        F: Fn(usize, &mut [f64]) + Sync + Send,
+    {
+        if self.thread_count == 1 || outputs.len() < PARALLEL_INFERENCE_ROW_THRESHOLD {
+            for (chunk_index, chunk) in outputs.chunks_mut(chunk_rows).enumerate() {
+                fill_chunk(chunk_index * chunk_rows, chunk);
+            }
+            return;
+        }
+
+        self.pool
+            .as_ref()
+            .expect("thread pool exists when parallel inference is enabled")
+            .install(|| {
+                outputs
+                    .par_chunks_mut(chunk_rows)
+                    .enumerate()
+                    .for_each(|(chunk_index, chunk)| fill_chunk(chunk_index * chunk_rows, chunk));
+            });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -734,6 +806,11 @@ impl OptimizedModel {
     }
 
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        if self.runtime.supports_simd_batch() {
+            let matrix = ColumnMajorBinnedMatrix::from_table_access(table);
+            return self.predict_column_major_binned_matrix(&matrix);
+        }
+
         self.executor.predict_rows(table.n_rows(), |row_index| {
             self.runtime.predict_table_row(table, row_index)
         })
@@ -741,8 +818,13 @@ impl OptimizedModel {
 
     pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
         let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
-        let matrix = table.to_binned_matrix();
-        Ok(self.predict_binned_matrix(&matrix))
+        if self.runtime.supports_simd_batch() {
+            let matrix = table.to_column_major_binned_matrix();
+            Ok(self.predict_column_major_binned_matrix(&matrix))
+        } else {
+            let matrix = table.to_binned_matrix();
+            Ok(self.predict_binned_matrix(&matrix))
+        }
     }
 
     pub fn predict_named_columns(
@@ -751,8 +833,13 @@ impl OptimizedModel {
     ) -> Result<Vec<f64>, PredictError> {
         let table =
             InferenceTable::from_named_columns(columns, self.source_model.feature_preprocessing())?;
-        let matrix = table.to_binned_matrix();
-        Ok(self.predict_binned_matrix(&matrix))
+        if self.runtime.supports_simd_batch() {
+            let matrix = table.to_column_major_binned_matrix();
+            Ok(self.predict_column_major_binned_matrix(&matrix))
+        } else {
+            let matrix = table.to_binned_matrix();
+            Ok(self.predict_binned_matrix(&matrix))
+        }
     }
 
     pub fn predict_sparse_binary_columns(
@@ -767,8 +854,13 @@ impl OptimizedModel {
             columns,
             self.source_model.feature_preprocessing(),
         )?;
-        let matrix = table.to_binned_matrix();
-        Ok(self.predict_binned_matrix(&matrix))
+        if self.runtime.supports_simd_batch() {
+            let matrix = table.to_column_major_binned_matrix();
+            Ok(self.predict_column_major_binned_matrix(&matrix))
+        } else {
+            let matrix = table.to_binned_matrix();
+            Ok(self.predict_binned_matrix(&matrix))
+        }
     }
 
     #[cfg(feature = "polars")]
@@ -828,9 +920,22 @@ impl OptimizedModel {
             self.runtime.predict_binned_row(matrix.row(row_index))
         })
     }
+
+    fn predict_column_major_binned_matrix(&self, matrix: &ColumnMajorBinnedMatrix) -> Vec<f64> {
+        self.runtime
+            .predict_column_major_matrix(matrix, &self.executor)
+    }
 }
 
 impl OptimizedRuntime {
+    fn supports_simd_batch(&self) -> bool {
+        matches!(
+            self,
+            OptimizedRuntime::ObliviousClassifier { .. }
+                | OptimizedRuntime::ObliviousRegressor { .. }
+        )
+    }
+
     fn from_model(model: &Model) -> Self {
         match model {
             Model::TargetMean(target_mean) => Self::TargetMean {
@@ -1016,6 +1121,75 @@ impl OptimizedRuntime {
             ),
         }
     }
+
+    fn predict_column_major_matrix(
+        &self,
+        matrix: &ColumnMajorBinnedMatrix,
+        executor: &InferenceExecutor,
+    ) -> Vec<f64> {
+        match self {
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            }
+            | OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_column_major_matrix(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                matrix,
+                executor,
+            ),
+            _ => executor.predict_rows(matrix.n_rows, |row_index| {
+                self.predict_binned_row_from_columns(matrix, row_index)
+            }),
+        }
+    }
+
+    #[inline(always)]
+    fn predict_binned_row_from_columns(
+        &self,
+        matrix: &ColumnMajorBinnedMatrix,
+        row_index: usize,
+    ) -> f64 {
+        match self {
+            OptimizedRuntime::TargetMean { value } => *value,
+            OptimizedRuntime::StandardClassifier { nodes, root } => {
+                predict_standard_classifier_row(nodes, *root, |feature_index| {
+                    matrix.column(feature_index)[row_index]
+                })
+            }
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| matrix.column(feature_index)[row_index],
+            ),
+            OptimizedRuntime::StandardRegressor { nodes, root } => {
+                predict_standard_regressor_row(nodes, *root, |feature_index| {
+                    matrix.column(feature_index)[row_index]
+                })
+            }
+            OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| matrix.column(feature_index)[row_index],
+            ),
+        }
+    }
 }
 
 #[inline(always)]
@@ -1095,6 +1269,97 @@ where
         leaf_index = (leaf_index << 1) | go_right;
     }
     leaf_values[leaf_index]
+}
+
+fn predict_oblivious_column_major_matrix(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    matrix: &ColumnMajorBinnedMatrix,
+    executor: &InferenceExecutor,
+) -> Vec<f64> {
+    let mut outputs = vec![0.0; matrix.n_rows];
+    executor.fill_chunks(
+        &mut outputs,
+        PARALLEL_INFERENCE_CHUNK_ROWS,
+        |start_row, chunk| {
+            predict_oblivious_chunk(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                matrix,
+                start_row,
+                chunk,
+            )
+        },
+    );
+    outputs
+}
+
+fn predict_oblivious_chunk(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) {
+    let processed = simd_predict_oblivious_chunk(
+        feature_indices,
+        threshold_bins,
+        leaf_values,
+        matrix,
+        start_row,
+        output,
+    );
+
+    for (offset, out) in output.iter_mut().enumerate().skip(processed) {
+        let row_index = start_row + offset;
+        *out = predict_oblivious_row(
+            feature_indices,
+            threshold_bins,
+            leaf_values,
+            |feature_index| matrix.column(feature_index)[row_index],
+        );
+    }
+}
+
+fn simd_predict_oblivious_chunk(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) -> usize {
+    let mut processed = 0usize;
+    let ones = u32x8::splat(1);
+
+    while processed + OBLIVIOUS_SIMD_LANES <= output.len() {
+        let base_row = start_row + processed;
+        let mut leaf_indices = u32x8::splat(0);
+
+        for (&feature_index, &threshold_bin) in feature_indices.iter().zip(threshold_bins) {
+            let column = matrix.column(feature_index);
+            let lanes: [u16; OBLIVIOUS_SIMD_LANES] = column
+                [base_row..base_row + OBLIVIOUS_SIMD_LANES]
+                .try_into()
+                .expect("lane width matches the fixed SIMD width");
+            let bins = u32x8::from(u16x8::new(lanes));
+            let threshold = u32x8::splat(u32::from(threshold_bin));
+            let bit = bins.cmp_gt(threshold) & ones;
+            leaf_indices = (leaf_indices << 1) | bit;
+        }
+
+        let lane_indices = leaf_indices.to_array();
+        for lane in 0..OBLIVIOUS_SIMD_LANES {
+            output[processed + lane] =
+                leaf_values[usize::try_from(lane_indices[lane]).expect("leaf index fits usize")];
+        }
+        processed += OBLIVIOUS_SIMD_LANES;
+    }
+
+    processed
 }
 
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
@@ -2104,6 +2369,32 @@ mod tests {
                     ("f1".to_string(), vec![1.0, 1.0]),
                 ]))
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn optimized_oblivious_model_matches_base_on_large_batch() {
+        let rows = (0..32)
+            .map(|idx| vec![f64::from((idx % 2) as u8), f64::from(((idx / 2) % 2) as u8)])
+            .collect::<Vec<_>>();
+        let targets = rows.iter().map(|row| row[0] + row[1]).collect::<Vec<_>>();
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(2)).unwrap();
+
+        assert_eq!(
+            model.predict_rows(rows.clone()).unwrap(),
+            optimized.predict_rows(rows).unwrap()
         );
     }
 
