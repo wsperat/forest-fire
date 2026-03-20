@@ -16,6 +16,7 @@ use wide::{u16x8, u32x8};
 mod bootstrap;
 mod forest;
 pub mod ir;
+mod sampling;
 mod training;
 pub mod tree;
 
@@ -80,6 +81,30 @@ pub enum TreeType {
     Oblivious,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxFeatures {
+    Auto,
+    All,
+    Sqrt,
+    Third,
+    Count(usize),
+}
+
+impl MaxFeatures {
+    pub fn resolve(self, task: Task, feature_count: usize) -> usize {
+        match self {
+            MaxFeatures::Auto => match task {
+                Task::Classification => MaxFeatures::Sqrt.resolve(task, feature_count),
+                Task::Regression => MaxFeatures::Third.resolve(task, feature_count),
+            },
+            MaxFeatures::All => feature_count.max(1),
+            MaxFeatures::Sqrt => ((feature_count as f64).sqrt().floor() as usize).max(1),
+            MaxFeatures::Third => (feature_count / 3).max(1),
+            MaxFeatures::Count(count) => count.min(feature_count).max(1),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputFeatureKind {
@@ -110,6 +135,8 @@ pub struct TrainConfig {
     pub criterion: Criterion,
     pub physical_cores: Option<usize>,
     pub n_trees: Option<usize>,
+    pub max_features: MaxFeatures,
+    pub seed: Option<u64>,
 }
 
 impl Default for TrainConfig {
@@ -121,6 +148,8 @@ impl Default for TrainConfig {
             criterion: Criterion::Auto,
             physical_cores: None,
             n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
         }
     }
 }
@@ -147,6 +176,7 @@ pub enum TrainError {
         criterion: Criterion,
     },
     InvalidTreeCount(usize),
+    InvalidMaxFeatures(usize),
 }
 
 impl Display for TrainError {
@@ -179,6 +209,13 @@ impl Display for TrainError {
                     f,
                     "Random forest requires at least one tree. Received {}.",
                     n_trees
+                )
+            }
+            TrainError::InvalidMaxFeatures(count) => {
+                write!(
+                    f,
+                    "max_features must be at least 1 when provided as an integer. Received {}.",
+                    count
                 )
             }
         }
@@ -1066,6 +1103,34 @@ impl OptimizedModel {
 
     pub fn mean_value(&self) -> Option<f64> {
         self.source_model.mean_value()
+    }
+
+    pub fn canaries(&self) -> usize {
+        self.source_model.canaries()
+    }
+
+    pub fn max_depth(&self) -> Option<usize> {
+        self.source_model.max_depth()
+    }
+
+    pub fn min_samples_split(&self) -> Option<usize> {
+        self.source_model.min_samples_split()
+    }
+
+    pub fn min_samples_leaf(&self) -> Option<usize> {
+        self.source_model.min_samples_leaf()
+    }
+
+    pub fn n_trees(&self) -> Option<usize> {
+        self.source_model.n_trees()
+    }
+
+    pub fn max_features(&self) -> Option<usize> {
+        self.source_model.max_features()
+    }
+
+    pub fn seed(&self) -> Option<u64> {
+        self.source_model.seed()
     }
 
     pub fn to_ir(&self) -> ModelPackageIr {
@@ -2112,6 +2177,34 @@ impl Model {
             | Model::DecisionTreeRegressor(_)
             | Model::RandomForest(_) => None,
         }
+    }
+
+    pub fn canaries(&self) -> usize {
+        self.training_metadata().canaries
+    }
+
+    pub fn max_depth(&self) -> Option<usize> {
+        self.training_metadata().max_depth
+    }
+
+    pub fn min_samples_split(&self) -> Option<usize> {
+        self.training_metadata().min_samples_split
+    }
+
+    pub fn min_samples_leaf(&self) -> Option<usize> {
+        self.training_metadata().min_samples_leaf
+    }
+
+    pub fn n_trees(&self) -> Option<usize> {
+        self.training_metadata().n_trees
+    }
+
+    pub fn max_features(&self) -> Option<usize> {
+        self.training_metadata().max_features
+    }
+
+    pub fn seed(&self) -> Option<u64> {
+        self.training_metadata().seed
     }
 
     pub fn to_ir(&self) -> ModelPackageIr {

@@ -1109,6 +1109,14 @@
           "format": "uint",
           "minimum": 0.0
         },
+        "max_features": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
         "min_samples_leaf": {
           "type": [
             "integer",
@@ -1123,6 +1131,22 @@
             "null"
           ],
           "format": "uint",
+          "minimum": 0.0
+        },
+        "n_trees": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
           "minimum": 0.0
         },
         "task": {

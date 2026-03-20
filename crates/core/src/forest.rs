@@ -1,10 +1,11 @@
 use crate::bootstrap::BootstrapSampler;
 use crate::ir::TrainingMetadata;
 use crate::{
-    Criterion, FeaturePreprocessing, Model, Parallelism, PredictError, Task, TrainConfig,
-    TrainError, TreeType, capture_feature_preprocessing, training,
+    Criterion, FeaturePreprocessing, MaxFeatures, Model, Parallelism, PredictError, Task,
+    TrainConfig, TrainError, TreeType, capture_feature_preprocessing, training,
 };
 use forestfire_data::TableAccess;
+use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct RandomForest {
@@ -12,6 +13,8 @@ pub struct RandomForest {
     criterion: Criterion,
     tree_type: TreeType,
     trees: Vec<Model>,
+    max_features: usize,
+    seed: Option<u64>,
     num_features: usize,
     feature_preprocessing: Vec<FeaturePreprocessing>,
 }
@@ -27,6 +30,8 @@ impl RandomForest {
         criterion: Criterion,
         tree_type: TreeType,
         trees: Vec<Model>,
+        max_features: usize,
+        seed: Option<u64>,
         num_features: usize,
         feature_preprocessing: Vec<FeaturePreprocessing>,
     ) -> Self {
@@ -35,6 +40,8 @@ impl RandomForest {
             criterion,
             tree_type,
             trees,
+            max_features,
+            seed,
             num_features,
             feature_preprocessing,
         }
@@ -46,33 +53,56 @@ impl RandomForest {
         criterion: Criterion,
         parallelism: Parallelism,
     ) -> Result<Self, TrainError> {
-        let n_trees = config.n_trees.unwrap_or(10);
+        let n_trees = config.n_trees.unwrap_or(1000);
         if n_trees == 0 {
             return Err(TrainError::InvalidTreeCount(n_trees));
+        }
+        if matches!(config.max_features, MaxFeatures::Count(0)) {
+            return Err(TrainError::InvalidMaxFeatures(0));
         }
 
         let sampler = BootstrapSampler::new(train_set.n_rows());
         let feature_preprocessing = capture_feature_preprocessing(train_set);
-        let mut trees = Vec::with_capacity(n_trees);
-
-        for tree_index in 0..n_trees {
-            let sampled_rows = sampler.sample(tree_index as u64);
+        let max_features = config
+            .max_features
+            .resolve(config.task, train_set.binned_feature_count());
+        let base_seed = config.seed.unwrap_or(0x5EED_F0E5_7u64);
+        let tree_parallelism = Parallelism {
+            thread_count: parallelism.thread_count,
+        };
+        let per_tree_parallelism = Parallelism::sequential();
+        let train_tree = |tree_index: usize| -> Result<Model, TrainError> {
+            let tree_seed = mix_seed(base_seed, tree_index as u64);
+            let sampled_rows = sampler.sample(tree_seed);
             let sampled_table = SampledTable::new(train_set, sampled_rows);
-            let tree = training::train_single_model(
+            training::train_single_model_with_feature_subset(
                 &sampled_table,
                 config.task,
                 config.tree_type,
                 criterion,
-                parallelism,
-            )?;
-            trees.push(tree);
-        }
+                per_tree_parallelism,
+                Some(max_features),
+                tree_seed,
+            )
+        };
+        let trees = if tree_parallelism.enabled() {
+            (0..n_trees)
+                .into_par_iter()
+                .map(train_tree)
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            (0..n_trees)
+                .map(train_tree)
+                .collect::<Result<Vec<_>, _>>()?
+        };
 
         Ok(Self::new(
             config.task,
             criterion,
             config.tree_type,
             trees,
+            max_features,
+            config.seed,
             train_set.n_features(),
             feature_preprocessing,
         ))
@@ -140,6 +170,9 @@ impl RandomForest {
     pub fn training_metadata(&self) -> TrainingMetadata {
         let mut metadata = self.trees[0].training_metadata();
         metadata.algorithm = "rf".to_string();
+        metadata.n_trees = Some(self.trees.len());
+        metadata.max_features = Some(self.max_features);
+        metadata.seed = self.seed;
         metadata
     }
 
@@ -191,6 +224,10 @@ impl RandomForest {
             })
             .collect()
     }
+}
+
+fn mix_seed(base_seed: u64, value: u64) -> u64 {
+    base_seed ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17)
 }
 
 impl<'a> SampledTable<'a> {

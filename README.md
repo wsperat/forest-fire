@@ -153,6 +153,9 @@ train(
     canaries=2,
     bins="auto",
     physical_cores=None,
+    n_trees=None,
+    max_features=None,
+    seed=None,
 )
 ```
 
@@ -166,9 +169,10 @@ train(&table, TrainConfig { ... })
 
 #### `algorithm`
 
-Current value:
+Current values:
 
 - `dt`
+- `rf`
 
 Why it exists:
 

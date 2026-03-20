@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::error::Error;
 
 use forestfire_core::{
-    Criterion, Model, OptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType, train,
+    Criterion, MaxFeatures, Model, OptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType,
+    train,
 };
 use forestfire_data::{NumericBins, Table};
 
@@ -52,6 +53,8 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 criterion,
                 physical_cores: None,
                 n_trees: None,
+                max_features: MaxFeatures::Auto,
+                seed: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -83,6 +86,8 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 criterion,
                 physical_cores: None,
                 n_trees: None,
+                max_features: MaxFeatures::Auto,
+                seed: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -119,6 +124,8 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             criterion: Criterion::Gini,
             physical_cores: None,
             n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -168,6 +175,8 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             criterion: Criterion::Mean,
             physical_cores: None,
             n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
         },
     )?;
 

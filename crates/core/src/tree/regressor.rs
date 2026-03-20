@@ -3,6 +3,7 @@ use crate::ir::{
     ObliviousLevel, ObliviousSplit as IrObliviousSplit, TrainingMetadata, TreeDefinition,
     criterion_name, feature_name, threshold_upper_bound,
 };
+use crate::sampling::sample_feature_subset;
 use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use rand::rngs::StdRng;
@@ -24,6 +25,8 @@ pub struct RegressionTreeOptions {
     pub max_depth: usize,
     pub min_samples_split: usize,
     pub min_samples_leaf: usize,
+    pub max_features: Option<usize>,
+    pub random_seed: u64,
 }
 
 impl Default for RegressionTreeOptions {
@@ -32,6 +35,8 @@ impl Default for RegressionTreeOptions {
             max_depth: 8,
             min_samples_split: 2,
             min_samples_leaf: 1,
+            max_features: None,
+            random_seed: 0,
         }
     }
 }
@@ -157,12 +162,26 @@ pub(crate) fn train_cart_regressor_with_criterion_and_parallelism(
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_cart_regressor_with_criterion_parallelism_and_options(
+        train_set,
+        criterion,
+        parallelism,
+        RegressionTreeOptions::default(),
+    )
+}
+
+pub(crate) fn train_cart_regressor_with_criterion_parallelism_and_options(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+    parallelism: Parallelism,
+    options: RegressionTreeOptions,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_regressor(
         train_set,
         RegressionTreeAlgorithm::Cart,
         criterion,
         parallelism,
-        RegressionTreeOptions::default(),
+        options,
     )
 }
 
@@ -188,12 +207,26 @@ pub(crate) fn train_oblivious_regressor_with_criterion_and_parallelism(
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_oblivious_regressor_with_criterion_parallelism_and_options(
+        train_set,
+        criterion,
+        parallelism,
+        RegressionTreeOptions::default(),
+    )
+}
+
+pub(crate) fn train_oblivious_regressor_with_criterion_parallelism_and_options(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+    parallelism: Parallelism,
+    options: RegressionTreeOptions,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_regressor(
         train_set,
         RegressionTreeAlgorithm::Oblivious,
         criterion,
         parallelism,
-        RegressionTreeOptions::default(),
+        options,
     )
 }
 
@@ -219,12 +252,26 @@ pub(crate) fn train_randomized_regressor_with_criterion_and_parallelism(
     criterion: Criterion,
     parallelism: Parallelism,
 ) -> Result<DecisionTreeRegressor, RegressionTreeError> {
+    train_randomized_regressor_with_criterion_parallelism_and_options(
+        train_set,
+        criterion,
+        parallelism,
+        RegressionTreeOptions::default(),
+    )
+}
+
+pub(crate) fn train_randomized_regressor_with_criterion_parallelism_and_options(
+    train_set: &dyn TableAccess,
+    criterion: Criterion,
+    parallelism: Parallelism,
+    options: RegressionTreeOptions,
+) -> Result<DecisionTreeRegressor, RegressionTreeError> {
     train_regressor(
         train_set,
         RegressionTreeAlgorithm::Randomized,
         criterion,
         parallelism,
-        RegressionTreeOptions::default(),
+        options,
     )
 }
 
@@ -367,6 +414,9 @@ impl DecisionTreeRegressor {
             max_depth: Some(self.options.max_depth),
             min_samples_split: Some(self.options.min_samples_split),
             min_samples_leaf: Some(self.options.min_samples_leaf),
+            n_trees: None,
+            max_features: self.options.max_features,
+            seed: None,
             class_labels: None,
         }
     }
@@ -625,8 +675,13 @@ fn build_node(
         return push_leaf(nodes, leaf_value, rows.len(), leaf_variance);
     }
 
+    let feature_indices = candidate_feature_indices(
+        context.table.binned_feature_count(),
+        context.options.max_features,
+        node_seed(context.options.random_seed, depth, rows, 0xA11C_E5E1u64),
+    );
     let best_split = if context.parallelism.enabled() {
-        (0..context.table.binned_feature_count())
+        feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
                 score_split(
@@ -641,7 +696,8 @@ fn build_node(
             })
             .max_by(|left, right| left.score.total_cmp(&right.score))
     } else {
-        (0..context.table.binned_feature_count())
+        feature_indices
+            .into_iter()
             .filter_map(|feature_index| {
                 score_split(
                     context.table,
@@ -708,9 +764,14 @@ fn train_oblivious_structure(
     }];
     let mut splits = Vec::new();
 
-    for _depth in 0..options.max_depth {
+    for depth in 0..options.max_depth {
+        let feature_indices = candidate_feature_indices(
+            table.binned_feature_count(),
+            options.max_features,
+            node_seed(options.random_seed, depth, &[], 0x0B11_A10Cu64),
+        );
         let best_split = if parallelism.enabled() {
-            (0..table.binned_feature_count())
+            feature_indices
                 .into_par_iter()
                 .filter_map(|feature_index| {
                     score_oblivious_split(
@@ -724,7 +785,8 @@ fn train_oblivious_structure(
                 })
                 .max_by(|left, right| left.score.total_cmp(&right.score))
         } else {
-            (0..table.binned_feature_count())
+            feature_indices
+                .into_iter()
                 .filter_map(|feature_index| {
                     score_oblivious_split(
                         table,
@@ -1090,6 +1152,31 @@ fn choose_random_threshold(
     let mut rng = StdRng::seed_from_u64(seed);
     let selected = rng.gen_range(0..candidate_thresholds.len());
     candidate_thresholds.get(selected).copied()
+}
+
+fn candidate_feature_indices(
+    feature_count: usize,
+    max_features: Option<usize>,
+    seed: u64,
+) -> Vec<usize> {
+    match max_features {
+        Some(count) => sample_feature_subset(feature_count, count, seed),
+        None => (0..feature_count).collect(),
+    }
+}
+
+fn node_seed(base_seed: u64, depth: usize, rows: &[usize], salt: u64) -> u64 {
+    rows.iter().fold(
+        base_seed
+            ^ salt
+            ^ (depth as u64)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .rotate_left(11),
+        |seed, row_index| {
+            seed.wrapping_mul(0xA076_1D64_78BD_642F)
+                ^ (*row_index as u64).wrapping_add(0xE703_7ED1_A0B4_28DB)
+        },
+    )
 }
 
 fn score_binary_oblivious_split(

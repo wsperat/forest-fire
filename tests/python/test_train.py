@@ -275,6 +275,13 @@ def test_train_random_forest_classifier_is_serialized_as_an_ensemble(
     assert forest.task == "classification"
     assert forest.criterion == "gini"
     assert forest.tree_type == "cart"
+    assert forest.canaries == 0
+    assert forest.max_depth == 8
+    assert forest.min_samples_split == 2
+    assert forest.min_samples_leaf == 1
+    assert forest.n_trees == 3
+    assert forest.max_features == 1
+    assert forest.seed is None
     assert np.array_equal(forest.predict(X), y)
     assert np.allclose(forest.predict_proba(X).sum(axis=1), 1.0)
 
@@ -368,6 +375,145 @@ def test_random_forest_round_trips_through_serialization(
     assert restored.algorithm == "rf"
     assert np.array_equal(restored.predict(X), model.predict(X))
     assert np.allclose(restored.predict_proba(X), model.predict_proba(X))
+
+
+def test_model_and_optimized_model_expose_hyperparameters(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(
+        X,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+    )
+    optimized = model.optimize_inference()
+
+    assert model.canaries == 0
+    assert model.max_depth == 8
+    assert model.min_samples_split == 2
+    assert model.min_samples_leaf == 1
+    assert model.n_trees is None
+    assert model.max_features is None
+    assert model.seed is None
+
+    assert optimized.canaries == model.canaries
+    assert optimized.max_depth == model.max_depth
+    assert optimized.min_samples_split == model.min_samples_split
+    assert optimized.min_samples_leaf == model.min_samples_leaf
+    assert optimized.n_trees == model.n_trees
+    assert optimized.max_features == model.max_features
+    assert optimized.seed == model.seed
+
+
+def test_random_forest_defaults_to_1000_trees(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    forest = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+    )
+
+    assert forest.n_trees == 1000
+    serialized = json.loads(forest.serialize())
+    assert len(serialized["model"]["trees"]) == 1000
+
+
+def test_random_forest_seed_makes_training_deterministic() -> None:
+    X = np.array([[0.0], [0.0], [0.0], [1.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0, 1.0, 0.0])
+
+    left = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=7,
+        max_features="all",
+        seed=17,
+    )
+    right = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=7,
+        max_features="all",
+        seed=17,
+    )
+
+    assert np.array_equal(left.predict(X), right.predict(X))
+    assert np.allclose(left.predict_proba(X), right.predict_proba(X))
+
+
+def test_random_forest_seed_changes_probability_estimates() -> None:
+    X = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+
+    left = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=9,
+        max_features=1,
+        seed=7,
+    )
+    right = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=9,
+        max_features=1,
+        seed=8,
+    )
+
+    assert np.allclose(left.predict_proba(X).sum(axis=1), 1.0)
+    assert np.allclose(right.predict_proba(X).sum(axis=1), 1.0)
+    assert not np.allclose(left.predict_proba(X), right.predict_proba(X))
+
+
+def test_random_forest_rejects_zero_max_features(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+
+    with pytest.raises(ValueError, match="max_features must be at least 1"):
+        train(
+            X,
+            y,
+            algorithm="rf",
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            n_trees=3,
+            max_features=0,
+        )
 
 
 def test_predict_accepts_feature_only_table(

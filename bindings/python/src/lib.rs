@@ -1,6 +1,6 @@
 use forestfire_core::{
-    Criterion, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm, TrainConfig,
-    TreeType, train as train_model,
+    Criterion, MaxFeatures, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm,
+    TrainConfig, TreeType, train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -893,6 +893,37 @@ fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
     }
 }
 
+fn parse_max_features(value: Option<&Bound<PyAny>>) -> PyResult<MaxFeatures> {
+    let Some(value) = value else {
+        return Ok(MaxFeatures::Auto);
+    };
+
+    if value.is_none() {
+        return Ok(MaxFeatures::Auto);
+    }
+
+    if let Ok(text) = value.extract::<String>() {
+        return match text.as_str() {
+            "auto" => Ok(MaxFeatures::Auto),
+            "all" => Ok(MaxFeatures::All),
+            "sqrt" => Ok(MaxFeatures::Sqrt),
+            "third" => Ok(MaxFeatures::Third),
+            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Unsupported max_features '{}'. Expected one of: auto, all, sqrt, third, or a positive integer",
+                text
+            ))),
+        };
+    }
+
+    if let Ok(count) = value.extract::<usize>() {
+        return Ok(MaxFeatures::Count(count));
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+        "Unsupported max_features value. Expected one of: auto, all, sqrt, third, or a positive integer",
+    ))
+}
+
 fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
     let Some(bins) = bins else {
         return Ok(NumericBins::Auto);
@@ -954,7 +985,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, n_trees=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, n_trees=None, max_features=None, seed=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -967,6 +998,8 @@ fn train(
     bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
     n_trees: Option<usize>,
+    max_features: Option<&Bound<PyAny>>,
+    seed: Option<u64>,
 ) -> PyResult<PyModel> {
     let task_was_auto = task == "auto";
     let resolved_task = resolve_task(x, y, task)?;
@@ -978,6 +1011,8 @@ fn train(
         criterion: parse_criterion(criterion)?,
         physical_cores,
         n_trees,
+        max_features: parse_max_features(max_features)?,
+        seed,
     };
     let model = train_model(&table, config)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
@@ -1055,6 +1090,41 @@ impl PyModel {
     #[getter]
     fn tree_type(&self) -> &'static str {
         tree_type_name(self.inner.tree_type())
+    }
+
+    #[getter]
+    fn canaries(&self) -> usize {
+        self.inner.canaries()
+    }
+
+    #[getter]
+    fn max_depth(&self) -> Option<usize> {
+        self.inner.max_depth()
+    }
+
+    #[getter]
+    fn min_samples_split(&self) -> Option<usize> {
+        self.inner.min_samples_split()
+    }
+
+    #[getter]
+    fn min_samples_leaf(&self) -> Option<usize> {
+        self.inner.min_samples_leaf()
+    }
+
+    #[getter]
+    fn n_trees(&self) -> Option<usize> {
+        self.inner.n_trees()
+    }
+
+    #[getter]
+    fn max_features(&self) -> Option<usize> {
+        self.inner.max_features()
+    }
+
+    #[getter]
+    fn seed(&self) -> Option<u64> {
+        self.inner.seed()
     }
 
     #[pyo3(signature = (pretty=false))]
@@ -1150,6 +1220,41 @@ impl PyOptimizedModel {
     #[getter]
     fn tree_type(&self) -> &'static str {
         tree_type_name(self.inner.tree_type())
+    }
+
+    #[getter]
+    fn canaries(&self) -> usize {
+        self.inner.canaries()
+    }
+
+    #[getter]
+    fn max_depth(&self) -> Option<usize> {
+        self.inner.max_depth()
+    }
+
+    #[getter]
+    fn min_samples_split(&self) -> Option<usize> {
+        self.inner.min_samples_split()
+    }
+
+    #[getter]
+    fn min_samples_leaf(&self) -> Option<usize> {
+        self.inner.min_samples_leaf()
+    }
+
+    #[getter]
+    fn n_trees(&self) -> Option<usize> {
+        self.inner.n_trees()
+    }
+
+    #[getter]
+    fn max_features(&self) -> Option<usize> {
+        self.inner.max_features()
+    }
+
+    #[getter]
+    fn seed(&self) -> Option<u64> {
+        self.inner.seed()
     }
 
     #[pyo3(signature = (pretty=false))]

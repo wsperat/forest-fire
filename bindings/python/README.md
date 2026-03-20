@@ -58,12 +58,15 @@ train(
     canaries=2,
     bins="auto",
     physical_cores=None,
+    n_trees=None,
+    max_features=None,
+    seed=None,
 )
 ```
 
 ### Current supported values
 
-- `algorithm="dt"`
+- `algorithm="dt" | "rf"`
 - `task="auto" | "regression" | "classification"`
 - `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`

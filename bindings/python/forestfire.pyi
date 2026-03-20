@@ -31,6 +31,8 @@ def train(
     bins: str | int = "auto",
     physical_cores: int | None = None,
     n_trees: int | None = None,
+    max_features: str | int | None = None,
+    seed: int | None = None,
 ) -> "Model": ...
 
 class OptimizedModel:
@@ -38,6 +40,13 @@ class OptimizedModel:
     task: str
     criterion: str
     tree_type: str
+    canaries: int
+    max_depth: int | None
+    min_samples_split: int | None
+    min_samples_leaf: int | None
+    n_trees: int | None
+    max_features: int | None
+    seed: int | None
 
     @classmethod
     def deserialize_compiled(
@@ -56,6 +65,13 @@ class Model:
     task: str
     criterion: str
     tree_type: str
+    canaries: int
+    max_depth: int | None
+    min_samples_split: int | None
+    min_samples_leaf: int | None
+    n_trees: int | None
+    max_features: int | None
+    seed: int | None
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model": ...

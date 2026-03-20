@@ -315,6 +315,12 @@ pub struct TrainingMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_samples_leaf: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub n_trees: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_features: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub class_labels: Option<Vec<f64>>,
 }
 
@@ -549,6 +555,10 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             criterion,
             tree_type,
             trees,
+            ir.training_metadata
+                .max_features
+                .unwrap_or(num_features.max(1)),
+            ir.training_metadata.seed,
             num_features,
             feature_preprocessing,
         )));
@@ -671,6 +681,8 @@ fn single_model_from_ir_parts(
                     max_depth: options.max_depth,
                     min_samples_split: options.min_samples_split,
                     min_samples_leaf: options.min_samples_leaf,
+                    max_features: None,
+                    random_seed: 0,
                 },
                 num_features,
                 feature_preprocessing,
@@ -698,6 +710,8 @@ fn single_model_from_ir_parts(
                         max_depth: options.max_depth,
                         min_samples_split: options.min_samples_split,
                         min_samples_leaf: options.min_samples_leaf,
+                        max_features: None,
+                        random_seed: 0,
                     },
                     num_features,
                     feature_preprocessing,
@@ -794,6 +808,8 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         max_depth: training.max_depth.unwrap_or(8),
         min_samples_split: training.min_samples_split.unwrap_or(2),
         min_samples_leaf: training.min_samples_leaf.unwrap_or(1),
+        max_features: None,
+        random_seed: 0,
     }
 }
 
