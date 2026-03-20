@@ -36,6 +36,7 @@ struct NoCanaryTable<'a> {
 }
 
 impl RandomForest {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         task: Task,
         criterion: Criterion,
@@ -82,7 +83,7 @@ impl RandomForest {
         let max_features = config
             .max_features
             .resolve(config.task, train_set.binned_feature_count());
-        let base_seed = config.seed.unwrap_or(0x5EED_F0E5_7u64);
+        let base_seed = config.seed.unwrap_or(0x0005_EEDF_0E57_u64);
         let tree_parallelism = Parallelism {
             thread_count: parallelism.thread_count,
         };
@@ -93,15 +94,19 @@ impl RandomForest {
             let sampled_table = SampledTable::new(&train_set, sampled_rows);
             let model = training::train_single_model_with_feature_subset(
                 &sampled_table,
-                config.task,
-                config.tree_type,
-                criterion,
-                per_tree_parallelism,
-                config.max_depth.unwrap_or(8),
-                config.min_samples_split.unwrap_or(2),
-                config.min_samples_leaf.unwrap_or(1),
-                Some(max_features),
-                tree_seed,
+                training::SingleModelFeatureSubsetConfig {
+                    base: training::SingleModelConfig {
+                        task: config.task,
+                        tree_type: config.tree_type,
+                        criterion,
+                        parallelism: per_tree_parallelism,
+                        max_depth: config.max_depth.unwrap_or(8),
+                        min_samples_split: config.min_samples_split.unwrap_or(2),
+                        min_samples_leaf: config.min_samples_leaf.unwrap_or(1),
+                    },
+                    max_features: Some(max_features),
+                    random_seed: tree_seed,
+                },
             )?;
             Ok(TrainedTree { model, oob_rows })
         };

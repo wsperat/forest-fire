@@ -1227,17 +1227,17 @@ fn score_oblivious_split(
     min_samples_leaf: usize,
 ) -> Option<ObliviousSplitCandidate> {
     if table.is_binary_binned_feature(feature_index) {
-        if matches!(criterion, Criterion::Mean) {
-            if let Some(candidate) = score_binary_oblivious_split_mean_fast(
+        if matches!(criterion, Criterion::Mean)
+            && let Some(candidate) = score_binary_oblivious_split_mean_fast(
                 table,
                 row_indices,
                 targets,
                 feature_index,
                 leaves,
                 min_samples_leaf,
-            ) {
-                return Some(candidate);
-            }
+            )
+        {
+            return Some(candidate);
         }
         return score_binary_oblivious_split(
             table,
@@ -1249,17 +1249,17 @@ fn score_oblivious_split(
             min_samples_leaf,
         );
     }
-    if matches!(criterion, Criterion::Mean) {
-        if let Some(candidate) = score_numeric_oblivious_split_mean_fast(
+    if matches!(criterion, Criterion::Mean)
+        && let Some(candidate) = score_numeric_oblivious_split_mean_fast(
             table,
             row_indices,
             targets,
             feature_index,
             leaves,
             min_samples_leaf,
-        ) {
-            return Some(candidate);
-        }
+        )
+    {
+        return Some(candidate);
     }
     let candidate_thresholds = leaves
         .iter()
@@ -1550,6 +1550,7 @@ fn score_binary_split_choice_from_hist(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_binary_split_choice_mean_from_stats(
     context: &BuildContext<'_>,
     feature_index: usize,

@@ -85,6 +85,7 @@ struct SampledTable<'a> {
 }
 
 impl GradientBoostedTrees {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         task: Task,
         tree_type: TreeType,
@@ -504,8 +505,7 @@ fn validate_boosting_parameters(
         ));
     }
     if !other_gradient_fraction.is_finite()
-        || other_gradient_fraction < 0.0
-        || other_gradient_fraction >= 1.0
+        || !(0.0..1.0).contains(&other_gradient_fraction)
         || top_gradient_fraction + other_gradient_fraction > 1.0
     {
         return Err(BoostingError::InvalidOtherGradientFraction(

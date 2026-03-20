@@ -890,6 +890,7 @@ fn score_feature_from_hist(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_binary_split_from_stats(
     context: &BuildContext<'_>,
     feature_index: usize,

@@ -29,27 +29,31 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     run_with_parallelism(parallelism, || match config.algorithm {
         TrainAlgorithm::Dt => train_single_model(
             train_set,
-            config.task,
-            config.tree_type,
-            criterion,
-            parallelism,
-            max_depth,
-            min_samples_split,
-            min_samples_leaf,
+            SingleModelConfig {
+                task: config.task,
+                tree_type: config.tree_type,
+                criterion,
+                parallelism,
+                max_depth,
+                min_samples_split,
+                min_samples_leaf,
+            },
         ),
         TrainAlgorithm::Rf => train_random_forest(
             train_set,
-            config.task,
-            config.tree_type,
-            criterion,
-            parallelism,
-            config.n_trees.unwrap_or(1000),
-            max_depth,
-            min_samples_split,
-            min_samples_leaf,
-            config.max_features,
-            config.seed,
-            config.compute_oob,
+            RandomForestConfig {
+                task: config.task,
+                tree_type: config.tree_type,
+                criterion,
+                parallelism,
+                n_trees: config.n_trees.unwrap_or(1000),
+                max_depth,
+                min_samples_split,
+                min_samples_leaf,
+                max_features: config.max_features,
+                seed: config.seed,
+                compute_oob: config.compute_oob,
+            },
         ),
         TrainAlgorithm::Gbm => train_gradient_boosting(
             train_set,
@@ -62,49 +66,74 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     })
 }
 
-pub(crate) fn train_single_model(
-    train_set: &dyn TableAccess,
+pub(crate) struct SingleModelConfig {
+    pub(crate) task: Task,
+    pub(crate) tree_type: TreeType,
+    pub(crate) criterion: Criterion,
+    pub(crate) parallelism: Parallelism,
+    pub(crate) max_depth: usize,
+    pub(crate) min_samples_split: usize,
+    pub(crate) min_samples_leaf: usize,
+}
+
+pub(crate) struct SingleModelFeatureSubsetConfig {
+    pub(crate) base: SingleModelConfig,
+    pub(crate) max_features: Option<usize>,
+    pub(crate) random_seed: u64,
+}
+
+struct RandomForestConfig {
     task: Task,
     tree_type: TreeType,
     criterion: Criterion,
     parallelism: Parallelism,
+    n_trees: usize,
     max_depth: usize,
     min_samples_split: usize,
     min_samples_leaf: usize,
+    max_features: crate::MaxFeatures,
+    seed: Option<u64>,
+    compute_oob: bool,
+}
+
+pub(crate) fn train_single_model(
+    train_set: &dyn TableAccess,
+    config: SingleModelConfig,
 ) -> Result<Model, TrainError> {
     train_single_model_with_feature_subset(
         train_set,
-        task,
-        tree_type,
-        criterion,
-        parallelism,
-        max_depth,
-        min_samples_split,
-        min_samples_leaf,
-        None,
-        0,
+        SingleModelFeatureSubsetConfig {
+            base: config,
+            max_features: None,
+            random_seed: 0,
+        },
     )
 }
 
 pub(crate) fn train_single_model_with_feature_subset(
     train_set: &dyn TableAccess,
-    task: Task,
-    tree_type: TreeType,
-    criterion: Criterion,
-    parallelism: Parallelism,
-    max_depth: usize,
-    min_samples_split: usize,
-    min_samples_leaf: usize,
-    max_features: Option<usize>,
-    random_seed: u64,
+    config: SingleModelFeatureSubsetConfig,
 ) -> Result<Model, TrainError> {
+    let SingleModelFeatureSubsetConfig {
+        base:
+            SingleModelConfig {
+                task,
+                tree_type,
+                criterion,
+                parallelism,
+                max_depth,
+                min_samples_split,
+                min_samples_leaf,
+            },
+        max_features,
+        random_seed,
+    } = config;
     let classifier_options = tree::classifier::DecisionTreeOptions {
         max_depth,
         min_samples_split,
         min_samples_leaf,
         max_features,
         random_seed,
-        ..tree::classifier::DecisionTreeOptions::default()
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -112,7 +141,6 @@ pub(crate) fn train_single_model_with_feature_subset(
         min_samples_leaf,
         max_features,
         random_seed,
-        ..tree::regressor::RegressionTreeOptions::default()
     };
 
     match (task, tree_type, criterion) {
@@ -214,40 +242,30 @@ pub(crate) fn train_single_model_with_feature_subset(
 
 fn train_random_forest(
     train_set: &dyn TableAccess,
-    task: Task,
-    tree_type: TreeType,
-    criterion: Criterion,
-    parallelism: Parallelism,
-    n_trees: usize,
-    max_depth: usize,
-    min_samples_split: usize,
-    min_samples_leaf: usize,
-    max_features: crate::MaxFeatures,
-    seed: Option<u64>,
-    compute_oob: bool,
+    config: RandomForestConfig,
 ) -> Result<Model, TrainError> {
     RandomForest::train(
         train_set,
         TrainConfig {
             algorithm: TrainAlgorithm::Rf,
-            task,
-            tree_type,
-            criterion,
-            max_depth: Some(max_depth),
-            min_samples_split: Some(min_samples_split),
-            min_samples_leaf: Some(min_samples_leaf),
+            task: config.task,
+            tree_type: config.tree_type,
+            criterion: config.criterion,
+            max_depth: Some(config.max_depth),
+            min_samples_split: Some(config.min_samples_split),
+            min_samples_leaf: Some(config.min_samples_leaf),
             physical_cores: None,
-            n_trees: Some(n_trees),
-            max_features,
-            seed,
-            compute_oob,
+            n_trees: Some(config.n_trees),
+            max_features: config.max_features,
+            seed: config.seed,
+            compute_oob: config.compute_oob,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
         },
-        criterion,
-        parallelism,
+        config.criterion,
+        config.parallelism,
     )
     .map(Model::RandomForest)
 }

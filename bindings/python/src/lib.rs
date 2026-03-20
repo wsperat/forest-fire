@@ -314,7 +314,7 @@ fn predict_proba_input_with_optimized_model_result(
 
 fn train_model_detached(py: Python<'_>, table: Table, config: TrainConfig) -> PyResult<Model> {
     py.detach(move || train_model(&table, config).map_err(|err| err.to_string()))
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
 }
 
 fn optimize_model_detached(
@@ -327,7 +327,7 @@ fn optimize_model_detached(
             .optimize_inference(physical_cores)
             .map_err(|err| err.to_string())
     })
-    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err))
+    .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
 }
 
 fn predict_input_with_model_detached(
@@ -336,7 +336,7 @@ fn predict_input_with_model_detached(
     input: InferenceInput,
 ) -> PyResult<Vec<f64>> {
     py.detach(|| predict_input_with_model_result(model, input))
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
 }
 
 fn predict_proba_input_with_model_detached(
@@ -345,7 +345,7 @@ fn predict_proba_input_with_model_detached(
     input: InferenceInput,
 ) -> PyResult<Vec<Vec<f64>>> {
     py.detach(|| predict_proba_input_with_model_result(model, input))
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
 }
 
 fn predict_input_with_optimized_model_detached(
@@ -354,7 +354,7 @@ fn predict_input_with_optimized_model_detached(
     input: InferenceInput,
 ) -> PyResult<Vec<f64>> {
     py.detach(|| predict_input_with_optimized_model_result(model, input))
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
 }
 
 fn predict_proba_input_with_optimized_model_detached(
@@ -363,7 +363,7 @@ fn predict_proba_input_with_optimized_model_detached(
     input: InferenceInput,
 ) -> PyResult<Vec<Vec<f64>>> {
     py.detach(|| predict_proba_input_with_optimized_model_result(model, input))
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
 }
 
 fn decoded_predictions<'py>(
@@ -424,16 +424,16 @@ fn string_label_for_leaf(
     labels.and_then(|labels| leaf_class_index.and_then(|index| labels.get(index).cloned()))
 }
 
-fn split_details(
-    split: &serde_json::Value,
-) -> (
+type SplitDetails = (
     Option<usize>,
     Option<String>,
     Option<String>,
     Option<u16>,
     Option<f64>,
     Option<String>,
-) {
+);
+
+fn split_details(split: &serde_json::Value) -> SplitDetails {
     (
         split
             .get("feature_index")

@@ -60,6 +60,10 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 compute_oob: false,
+                learning_rate: None,
+                bootstrap: false,
+                top_gradient_fraction: None,
+                other_gradient_fraction: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -98,6 +102,10 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 compute_oob: false,
+                learning_rate: None,
+                bootstrap: false,
+                top_gradient_fraction: None,
+                other_gradient_fraction: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -141,6 +149,10 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             max_features: MaxFeatures::Auto,
             seed: None,
             compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -197,6 +209,10 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             max_features: MaxFeatures::Auto,
             seed: None,
             compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         },
     )?;
 

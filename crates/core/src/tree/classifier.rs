@@ -1608,6 +1608,7 @@ struct ObliviousSplitCandidate {
     score: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_oblivious_split(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -2062,6 +2063,7 @@ fn score_binary_cart_split(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_binary_oblivious_split(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -2113,6 +2115,7 @@ fn score_binary_oblivious_split(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_numeric_oblivious_split_fast(
     table: &dyn TableAccess,
     row_indices: &[usize],

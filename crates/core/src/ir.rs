@@ -673,6 +673,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn single_model_from_ir_parts(
     task: Task,
     tree_type: TreeType,
