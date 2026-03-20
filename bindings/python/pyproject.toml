@@ -12,6 +12,9 @@ classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: 3",
 ]
+dependencies = [
+  "pyarrow>=18,<20",
+]
 
 [tool.maturin]
 module-name = "forestfire"
@@ -21,5 +24,6 @@ include = ["forestfire.pyi"]
 dev = [
   "pytest>=8,<9",
   "numpy>=2,<3",
+  "pyarrow>=18,<20",
   "maturin>=1.4,<2",
 ]

@@ -291,7 +291,7 @@ These methods work for:
 
 ### `to_dataframe(...)`
 
-Returns a polars `DataFrame` with one row per inspectable tree element.
+Returns a polars `DataFrame` when `polars` is installed. If not, it falls back to a `pyarrow.Table`.
 
 - standard trees produce rows for split nodes, leaf nodes, and unmatched fallback leaves on multiway splits
 - oblivious trees produce rows for each level and each leaf
@@ -324,7 +324,7 @@ Common columns include:
 - `variance`
 - `class_counts`
 
-This is meant for inspection and analysis workflows that are easier in tabular form, similar to LightGBM's tree dataframe export, but returned as a polars frame.
+This is meant for inspection and analysis workflows that are easier in tabular form, similar to LightGBM's tree dataframe export.
 
 ### `tree_structure(...)`
 

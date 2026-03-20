@@ -156,11 +156,17 @@ fn build_inference_input(x: &Bound<PyAny>) -> PyResult<InferenceInput> {
         });
     }
 
+    if let Ok(rows) = extract_rows_or_single_row(x) {
+        return Ok(InferenceInput::Rows(rows));
+    }
+
     if let Ok(columns) = extract_named_columns(x) {
         return Ok(InferenceInput::NamedColumns(columns));
     }
 
-    Ok(InferenceInput::Rows(extract_rows_or_single_row(x)?))
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "Input could not be interpreted as rows or named columns.",
+    ))
 }
 
 fn is_scipy_sparse_matrix(x: &Bound<PyAny>) -> PyResult<bool> {
@@ -338,9 +344,17 @@ fn build_dataframe<'py, T: serde::Serialize>(
     py: Python<'py>,
     value: &T,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let polars = py.import("polars")?;
     let rows = to_python_json_value(py, value)?;
-    polars.getattr("DataFrame")?.call1((rows,))
+    match py.import("polars") {
+        Ok(polars) => polars.getattr("DataFrame")?.call1((rows.clone(),)),
+        Err(_) => {
+            let pyarrow = py.import("pyarrow")?;
+            pyarrow
+                .getattr("Table")?
+                .getattr("from_pylist")?
+                .call1((rows,))
+        }
+    }
 }
 
 fn string_label_for_leaf(
@@ -1273,11 +1287,6 @@ fn extract_named_columns(x: &Bound<PyAny>) -> PyResult<BTreeMap<String, Vec<f64>
     if x.hasattr("collect")? {
         let collected = x.call_method0("collect")?;
         return extract_named_columns(&collected);
-    }
-
-    if x.hasattr("to_pydict")? {
-        let columns = x.call_method0("to_pydict")?;
-        return extract_named_columns_from_dict(columns.cast::<PyDict>()?);
     }
 
     if let Ok(columns) = x.cast::<PyDict>() {

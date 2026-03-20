@@ -1229,37 +1229,70 @@ def test_random_forest_tree_introspection_accepts_tree_index() -> None:
 
 @pytest.mark.parametrize("tree_type", ["cart", "id3"])
 def test_model_to_dataframe_exposes_standard_tree_rows(tree_type: str) -> None:
-    pl = pytest.importorskip("polars")
+    try:
+        import polars as frame_lib
+
+        expected_type = frame_lib.DataFrame
+    except ModuleNotFoundError:
+        pa = pytest.importorskip("pyarrow")
+        frame_lib = pa
+        expected_type = pa.Table
     X = np.array([[0.0], [0.0], [1.0], [1.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
     model = train(X, y, task="classification", tree_type=tree_type, canaries=0)
 
     df = model.to_dataframe()
 
-    assert isinstance(df, pl.DataFrame)
-    assert df.height > 0
-    assert "leaf" in set(df["node_type"].to_list())
-    assert set(df["representation"].to_list()) == {"node_tree"}
-    assert "split_feature" in df.columns
-    assert "leaf_value" in df.columns
+    assert isinstance(df, expected_type)
+    if expected_type.__name__ == "DataFrame":
+        assert df.height > 0
+        assert "leaf" in set(df["node_type"].to_list())
+        assert set(df["representation"].to_list()) == {"node_tree"}
+        assert "split_feature" in df.columns
+        assert "leaf_value" in df.columns
+    else:
+        assert df.num_rows > 0
+        assert "leaf" in set(df.column("node_type").to_pylist())
+        assert set(df.column("representation").to_pylist()) == {"node_tree"}
+        assert "split_feature" in df.column_names
+        assert "leaf_value" in df.column_names
 
 
 def test_model_to_dataframe_exposes_oblivious_tree_rows() -> None:
-    pl = pytest.importorskip("polars")
+    try:
+        import polars as frame_lib
+
+        expected_type = frame_lib.DataFrame
+    except ModuleNotFoundError:
+        pa = pytest.importorskip("pyarrow")
+        frame_lib = pa
+        expected_type = pa.Table
     X = np.array([[0.0], [0.0], [1.0], [1.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
     model = train(X, y, task="classification", tree_type="oblivious", canaries=0)
 
     df = model.to_dataframe()
 
-    assert isinstance(df, pl.DataFrame)
-    assert df.height > 0
-    assert set(df["representation"].to_list()) == {"oblivious_levels"}
-    assert {"level", "leaf"}.issubset(set(df["node_type"].to_list()))
+    assert isinstance(df, expected_type)
+    if expected_type.__name__ == "DataFrame":
+        assert df.height > 0
+        assert set(df["representation"].to_list()) == {"oblivious_levels"}
+        assert {"level", "leaf"}.issubset(set(df["node_type"].to_list()))
+    else:
+        assert df.num_rows > 0
+        assert set(df.column("representation").to_pylist()) == {"oblivious_levels"}
+        assert {"level", "leaf"}.issubset(set(df.column("node_type").to_pylist()))
 
 
 def test_random_forest_to_dataframe_supports_tree_index_filtering() -> None:
-    pl = pytest.importorskip("polars")
+    try:
+        import polars as frame_lib
+
+        expected_type = frame_lib.DataFrame
+    except ModuleNotFoundError:
+        pa = pytest.importorskip("pyarrow")
+        frame_lib = pa
+        expected_type = pa.Table
     X = np.array([[0.0], [0.0], [1.0], [1.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
     forest = train(
@@ -1276,24 +1309,38 @@ def test_random_forest_to_dataframe_supports_tree_index_filtering() -> None:
     full_df = forest.to_dataframe()
     tree_df = forest.to_dataframe(tree_index=1)
 
-    assert isinstance(full_df, pl.DataFrame)
-    assert isinstance(tree_df, pl.DataFrame)
-    assert set(full_df["tree_index"].to_list()) == {0, 1, 2}
-    assert set(tree_df["tree_index"].to_list()) == {1}
+    assert isinstance(full_df, expected_type)
+    assert isinstance(tree_df, expected_type)
+    if expected_type.__name__ == "DataFrame":
+        assert set(full_df["tree_index"].to_list()) == {0, 1, 2}
+        assert set(tree_df["tree_index"].to_list()) == {1}
+    else:
+        assert set(full_df.column("tree_index").to_pylist()) == {0, 1, 2}
+        assert set(tree_df.column("tree_index").to_pylist()) == {1}
 
 
 def test_optimized_model_to_dataframe_matches_base_model() -> None:
-    pl = pytest.importorskip("polars")
+    try:
+        import polars as pl
+    except ModuleNotFoundError:
+        pl = None
+    pa = pytest.importorskip("pyarrow") if pl is None else None
     X = np.array([[0.0], [0.0], [1.0], [1.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
     model = train(X, y, task="classification", tree_type="oblivious", canaries=0)
     optimized = model.optimize_inference(physical_cores=1)
 
-    base_df = model.to_dataframe().sort(["tree_index", "node_index"])
-    optimized_df = optimized.to_dataframe().sort(["tree_index", "node_index"])
+    base_df = model.to_dataframe()
+    optimized_df = optimized.to_dataframe()
 
-    assert isinstance(base_df, pl.DataFrame)
-    assert base_df.equals(optimized_df)
+    if pl is not None:
+        base_df = base_df.sort(["tree_index", "node_index"])
+        optimized_df = optimized_df.sort(["tree_index", "node_index"])
+        assert isinstance(base_df, pl.DataFrame)
+        assert base_df.equals(optimized_df)
+    else:
+        assert isinstance(base_df, pa.Table)
+        assert base_df.equals(optimized_df)
 
 
 def test_train_id3_classifier(
