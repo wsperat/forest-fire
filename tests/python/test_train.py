@@ -1227,6 +1227,75 @@ def test_random_forest_tree_introspection_accepts_tree_index() -> None:
     assert node["kind"] in {"binary_branch", "multiway_branch", "leaf"}
 
 
+@pytest.mark.parametrize("tree_type", ["cart", "id3"])
+def test_model_to_dataframe_exposes_standard_tree_rows(tree_type: str) -> None:
+    pl = pytest.importorskip("polars")
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    model = train(X, y, task="classification", tree_type=tree_type, canaries=0)
+
+    df = model.to_dataframe()
+
+    assert isinstance(df, pl.DataFrame)
+    assert df.height > 0
+    assert "leaf" in set(df["node_type"].to_list())
+    assert set(df["representation"].to_list()) == {"node_tree"}
+    assert "split_feature" in df.columns
+    assert "leaf_value" in df.columns
+
+
+def test_model_to_dataframe_exposes_oblivious_tree_rows() -> None:
+    pl = pytest.importorskip("polars")
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    model = train(X, y, task="classification", tree_type="oblivious", canaries=0)
+
+    df = model.to_dataframe()
+
+    assert isinstance(df, pl.DataFrame)
+    assert df.height > 0
+    assert set(df["representation"].to_list()) == {"oblivious_levels"}
+    assert {"level", "leaf"}.issubset(set(df["node_type"].to_list()))
+
+
+def test_random_forest_to_dataframe_supports_tree_index_filtering() -> None:
+    pl = pytest.importorskip("polars")
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    forest = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=3,
+        seed=7,
+    )
+
+    full_df = forest.to_dataframe()
+    tree_df = forest.to_dataframe(tree_index=1)
+
+    assert isinstance(full_df, pl.DataFrame)
+    assert isinstance(tree_df, pl.DataFrame)
+    assert set(full_df["tree_index"].to_list()) == {0, 1, 2}
+    assert set(tree_df["tree_index"].to_list()) == {1}
+
+
+def test_optimized_model_to_dataframe_matches_base_model() -> None:
+    pl = pytest.importorskip("polars")
+    X = np.array([[0.0], [0.0], [1.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    model = train(X, y, task="classification", tree_type="oblivious", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    base_df = model.to_dataframe().sort(["tree_index", "node_index"])
+    optimized_df = optimized.to_dataframe().sort(["tree_index", "node_index"])
+
+    assert isinstance(base_df, pl.DataFrame)
+    assert base_df.equals(optimized_df)
+
+
 def test_train_id3_classifier(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:

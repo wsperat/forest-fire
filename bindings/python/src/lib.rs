@@ -1,6 +1,6 @@
 use forestfire_core::{
-    Criterion, MaxFeatures, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm,
-    TrainConfig, TreeType, train as train_model,
+    Criterion, IntrospectionError, MaxFeatures, Model, OptimizedModel as CoreOptimizedModel, Task,
+    TrainAlgorithm, TrainConfig, TreeType, train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -26,6 +26,34 @@ struct PyOptimizedModel {
 #[derive(Clone)]
 struct PyTable {
     inner: Table,
+}
+
+#[derive(serde::Serialize)]
+struct TreeDataFrameRow {
+    tree_index: usize,
+    representation: String,
+    node_type: String,
+    node_index: String,
+    depth: usize,
+    parent_index: Option<String>,
+    left_child: Option<String>,
+    right_child: Option<String>,
+    branch_bins: Option<Vec<u16>>,
+    branch_children: Option<Vec<String>>,
+    split_feature: Option<usize>,
+    split_feature_name: Option<String>,
+    split_type: Option<String>,
+    threshold_bin: Option<u16>,
+    threshold_upper_bound: Option<f64>,
+    operator: Option<String>,
+    leaf_value: Option<f64>,
+    leaf_class_index: Option<usize>,
+    leaf_label: Option<String>,
+    sample_count: usize,
+    impurity: Option<f64>,
+    gain: Option<f64>,
+    variance: Option<f64>,
+    class_counts: Option<Vec<usize>>,
 }
 
 fn table_kind_name(kind: TableKind) -> &'static str {
@@ -304,6 +332,730 @@ fn to_python_json_value<'py, T: serde::Serialize>(
     let serialized = serde_json::to_string(value)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
     json.getattr("loads")?.call1((serialized,))
+}
+
+fn build_dataframe<'py, T: serde::Serialize>(
+    py: Python<'py>,
+    value: &T,
+) -> PyResult<Bound<'py, PyAny>> {
+    let polars = py.import("polars")?;
+    let rows = to_python_json_value(py, value)?;
+    polars.getattr("DataFrame")?.call1((rows,))
+}
+
+fn string_label_for_leaf(
+    labels: Option<&[String]>,
+    leaf_class_index: Option<usize>,
+) -> Option<String> {
+    labels.and_then(|labels| leaf_class_index.and_then(|index| labels.get(index).cloned()))
+}
+
+fn split_details(
+    split: &serde_json::Value,
+) -> (
+    Option<usize>,
+    Option<String>,
+    Option<String>,
+    Option<u16>,
+    Option<f64>,
+    Option<String>,
+) {
+    (
+        split
+            .get("feature_index")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize),
+        split
+            .get("feature_name")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        split
+            .get("split_type")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        split
+            .get("threshold_bin")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u16),
+        split
+            .get("threshold_upper_bound")
+            .and_then(|value| value.as_f64()),
+        split
+            .get("operator")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+    )
+}
+
+fn leaf_payload_details(
+    leaf: &serde_json::Value,
+    string_class_labels: Option<&[String]>,
+) -> (Option<f64>, Option<usize>, Option<String>) {
+    match leaf.get("prediction_kind").and_then(|value| value.as_str()) {
+        Some("regression_value") => (
+            leaf.get("value").and_then(|value| value.as_f64()),
+            None,
+            None,
+        ),
+        Some("class_index") => {
+            let class_index = leaf
+                .get("class_index")
+                .and_then(|value| value.as_u64())
+                .map(|value| value as usize);
+            (
+                leaf.get("class_value").and_then(|value| value.as_f64()),
+                class_index,
+                string_label_for_leaf(string_class_labels, class_index),
+            )
+        }
+        _ => (None, None, None),
+    }
+}
+
+fn tree_rows_from_model(
+    model: &Model,
+    string_class_labels: Option<&[String]>,
+    tree_index: usize,
+) -> PyResult<Vec<TreeDataFrameRow>> {
+    let summary = model
+        .tree_structure(tree_index)
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    let mut rows = Vec::new();
+
+    match summary.representation.as_str() {
+        "node_tree" => {
+            let mut nodes = Vec::new();
+            let mut node_index = 0usize;
+            loop {
+                match model.tree_node(tree_index, node_index) {
+                    Ok(node) => {
+                        nodes.push(node);
+                        node_index += 1;
+                    }
+                    Err(IntrospectionError::NodeIndexOutOfBounds { .. }) => break,
+                    Err(err) => {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            err.to_string(),
+                        ));
+                    }
+                }
+            }
+
+            let mut parents = BTreeMap::<String, String>::new();
+            for node in &nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id, children, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        parents.insert(children.left.to_string(), parent.clone());
+                        parents.insert(children.right.to_string(), parent);
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id, branches, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        for branch in branches {
+                            parents.insert(branch.child.to_string(), parent.clone());
+                        }
+                    }
+                    forestfire_core::ir::NodeTreeNode::Leaf { .. } => {}
+                }
+            }
+
+            for node in nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::Leaf {
+                        node_id,
+                        depth,
+                        leaf,
+                        stats,
+                    } => {
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "leaf".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id,
+                        depth,
+                        split,
+                        children,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: Some(children.left.to_string()),
+                            right_child: Some(children.right.to_string()),
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id,
+                        depth,
+                        split,
+                        branches,
+                        unmatched_leaf,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: Some(branches.iter().map(|branch| branch.bin).collect()),
+                            branch_children: Some(
+                                branches
+                                    .iter()
+                                    .map(|branch| branch.child.to_string())
+                                    .collect(),
+                            ),
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts.clone(),
+                        });
+
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&unmatched_leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "unmatched_leaf".to_string(),
+                            node_index: format!("{node_id}.missing"),
+                            depth: depth + 1,
+                            parent_index: Some(node_id.to_string()),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: None,
+                            gain: None,
+                            variance: None,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                }
+            }
+        }
+        "oblivious_levels" => {
+            for level_index in 0..summary.actual_depth {
+                let level = model.tree_level(tree_index, level_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let split = serde_json::to_value(&level.split).unwrap();
+                let (
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                ) = split_details(&split);
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "level".to_string(),
+                    node_index: format!("level_{level_index}"),
+                    depth: level.level,
+                    parent_index: (level.level > 0).then(|| format!("level_{}", level.level - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                    leaf_value: None,
+                    leaf_class_index: None,
+                    leaf_label: None,
+                    sample_count: level.stats.sample_count,
+                    impurity: level.stats.impurity,
+                    gain: level.stats.gain,
+                    variance: level.stats.variance,
+                    class_counts: level.stats.class_counts,
+                });
+            }
+
+            for leaf_index in 0..summary.leaf_count {
+                let leaf = model.tree_leaf(tree_index, leaf_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                    &serde_json::to_value(&leaf.leaf).unwrap(),
+                    string_class_labels,
+                );
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "leaf".to_string(),
+                    node_index: format!("leaf_{leaf_index}"),
+                    depth: summary.actual_depth,
+                    parent_index: (summary.actual_depth > 0)
+                        .then(|| format!("level_{}", summary.actual_depth - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature: None,
+                    split_feature_name: None,
+                    split_type: None,
+                    threshold_bin: None,
+                    threshold_upper_bound: None,
+                    operator: None,
+                    leaf_value,
+                    leaf_class_index,
+                    leaf_label,
+                    sample_count: leaf.stats.sample_count,
+                    impurity: leaf.stats.impurity,
+                    gain: leaf.stats.gain,
+                    variance: leaf.stats.variance,
+                    class_counts: leaf.stats.class_counts,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    Ok(rows)
+}
+
+fn dataframe_from_model<'py>(
+    py: Python<'py>,
+    model: &Model,
+    string_class_labels: Option<&[String]>,
+    tree_index: Option<usize>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let mut rows = Vec::new();
+    let indices = if let Some(tree_index) = tree_index {
+        vec![tree_index]
+    } else {
+        (0..model.tree_count()).collect()
+    };
+    for tree_index in indices {
+        rows.extend(tree_rows_from_model(
+            model,
+            string_class_labels,
+            tree_index,
+        )?);
+    }
+    build_dataframe(py, &rows)
+}
+
+fn tree_rows_from_optimized_model(
+    model: &CoreOptimizedModel,
+    string_class_labels: Option<&[String]>,
+    tree_index: usize,
+) -> PyResult<Vec<TreeDataFrameRow>> {
+    let summary = model
+        .tree_structure(tree_index)
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+    let mut rows = Vec::new();
+
+    match summary.representation.as_str() {
+        "node_tree" => {
+            let mut nodes = Vec::new();
+            let mut node_index = 0usize;
+            loop {
+                match model.tree_node(tree_index, node_index) {
+                    Ok(node) => {
+                        nodes.push(node);
+                        node_index += 1;
+                    }
+                    Err(IntrospectionError::NodeIndexOutOfBounds { .. }) => break,
+                    Err(err) => {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            err.to_string(),
+                        ));
+                    }
+                }
+            }
+
+            let mut parents = BTreeMap::<String, String>::new();
+            for node in &nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id, children, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        parents.insert(children.left.to_string(), parent.clone());
+                        parents.insert(children.right.to_string(), parent);
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id, branches, ..
+                    } => {
+                        let parent = node_id.to_string();
+                        for branch in branches {
+                            parents.insert(branch.child.to_string(), parent.clone());
+                        }
+                    }
+                    forestfire_core::ir::NodeTreeNode::Leaf { .. } => {}
+                }
+            }
+
+            for node in nodes {
+                match node {
+                    forestfire_core::ir::NodeTreeNode::Leaf {
+                        node_id,
+                        depth,
+                        leaf,
+                        stats,
+                    } => {
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "leaf".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::BinaryBranch {
+                        node_id,
+                        depth,
+                        split,
+                        children,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: Some(children.left.to_string()),
+                            right_child: Some(children.right.to_string()),
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                    forestfire_core::ir::NodeTreeNode::MultiwayBranch {
+                        node_id,
+                        depth,
+                        split,
+                        branches,
+                        unmatched_leaf,
+                        stats,
+                    } => {
+                        let split = serde_json::to_value(&split).unwrap();
+                        let (
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                        ) = split_details(&split);
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "split".to_string(),
+                            node_index: node_id.to_string(),
+                            depth,
+                            parent_index: parents.get(&node_id.to_string()).cloned(),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: Some(branches.iter().map(|branch| branch.bin).collect()),
+                            branch_children: Some(
+                                branches
+                                    .iter()
+                                    .map(|branch| branch.child.to_string())
+                                    .collect(),
+                            ),
+                            split_feature,
+                            split_feature_name,
+                            split_type,
+                            threshold_bin,
+                            threshold_upper_bound,
+                            operator,
+                            leaf_value: None,
+                            leaf_class_index: None,
+                            leaf_label: None,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity,
+                            gain: stats.gain,
+                            variance: stats.variance,
+                            class_counts: stats.class_counts.clone(),
+                        });
+
+                        let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                            &serde_json::to_value(&unmatched_leaf).unwrap(),
+                            string_class_labels,
+                        );
+                        rows.push(TreeDataFrameRow {
+                            tree_index,
+                            representation: "node_tree".to_string(),
+                            node_type: "unmatched_leaf".to_string(),
+                            node_index: format!("{node_id}.missing"),
+                            depth: depth + 1,
+                            parent_index: Some(node_id.to_string()),
+                            left_child: None,
+                            right_child: None,
+                            branch_bins: None,
+                            branch_children: None,
+                            split_feature: None,
+                            split_feature_name: None,
+                            split_type: None,
+                            threshold_bin: None,
+                            threshold_upper_bound: None,
+                            operator: None,
+                            leaf_value,
+                            leaf_class_index,
+                            leaf_label,
+                            sample_count: stats.sample_count,
+                            impurity: None,
+                            gain: None,
+                            variance: None,
+                            class_counts: stats.class_counts,
+                        });
+                    }
+                }
+            }
+        }
+        "oblivious_levels" => {
+            for level_index in 0..summary.actual_depth {
+                let level = model.tree_level(tree_index, level_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let split = serde_json::to_value(&level.split).unwrap();
+                let (
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                ) = split_details(&split);
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "level".to_string(),
+                    node_index: format!("level_{level_index}"),
+                    depth: level.level,
+                    parent_index: (level.level > 0).then(|| format!("level_{}", level.level - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature,
+                    split_feature_name,
+                    split_type,
+                    threshold_bin,
+                    threshold_upper_bound,
+                    operator,
+                    leaf_value: None,
+                    leaf_class_index: None,
+                    leaf_label: None,
+                    sample_count: level.stats.sample_count,
+                    impurity: level.stats.impurity,
+                    gain: level.stats.gain,
+                    variance: level.stats.variance,
+                    class_counts: level.stats.class_counts,
+                });
+            }
+
+            for leaf_index in 0..summary.leaf_count {
+                let leaf = model.tree_leaf(tree_index, leaf_index).map_err(|err| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+                })?;
+                let (leaf_value, leaf_class_index, leaf_label) = leaf_payload_details(
+                    &serde_json::to_value(&leaf.leaf).unwrap(),
+                    string_class_labels,
+                );
+                rows.push(TreeDataFrameRow {
+                    tree_index,
+                    representation: "oblivious_levels".to_string(),
+                    node_type: "leaf".to_string(),
+                    node_index: format!("leaf_{leaf_index}"),
+                    depth: summary.actual_depth,
+                    parent_index: (summary.actual_depth > 0)
+                        .then(|| format!("level_{}", summary.actual_depth - 1)),
+                    left_child: None,
+                    right_child: None,
+                    branch_bins: None,
+                    branch_children: None,
+                    split_feature: None,
+                    split_feature_name: None,
+                    split_type: None,
+                    threshold_bin: None,
+                    threshold_upper_bound: None,
+                    operator: None,
+                    leaf_value,
+                    leaf_class_index,
+                    leaf_label,
+                    sample_count: leaf.stats.sample_count,
+                    impurity: leaf.stats.impurity,
+                    gain: leaf.stats.gain,
+                    variance: leaf.stats.variance,
+                    class_counts: leaf.stats.class_counts,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    Ok(rows)
+}
+
+fn dataframe_from_optimized_model<'py>(
+    py: Python<'py>,
+    model: &CoreOptimizedModel,
+    string_class_labels: Option<&[String]>,
+    tree_index: Option<usize>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let mut rows = Vec::new();
+    let indices = if let Some(tree_index) = tree_index {
+        vec![tree_index]
+    } else {
+        (0..model.tree_count()).collect()
+    };
+    for tree_index in indices {
+        rows.extend(tree_rows_from_optimized_model(
+            model,
+            string_class_labels,
+            tree_index,
+        )?);
+    }
+    build_dataframe(py, &rows)
 }
 
 fn build_sparse_training_table(
@@ -1172,6 +1924,20 @@ impl PyModel {
         to_python_json_value(py, &leaf)
     }
 
+    #[pyo3(signature = (tree_index=None))]
+    fn to_dataframe<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: Option<usize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        dataframe_from_model(
+            py,
+            &self.inner,
+            self.string_class_labels.as_deref(),
+            tree_index,
+        )
+    }
+
     #[pyo3(signature = (physical_cores=None))]
     fn optimize_inference(&self, physical_cores: Option<usize>) -> PyResult<PyOptimizedModel> {
         let inner = self
@@ -1395,6 +2161,20 @@ impl PyOptimizedModel {
             .tree_leaf(tree_index, leaf_index)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
         to_python_json_value(py, &leaf)
+    }
+
+    #[pyo3(signature = (tree_index=None))]
+    fn to_dataframe<'py>(
+        &self,
+        py: Python<'py>,
+        tree_index: Option<usize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        dataframe_from_optimized_model(
+            py,
+            &self.inner,
+            self.string_class_labels.as_deref(),
+            tree_index,
+        )
     }
 
     #[getter]

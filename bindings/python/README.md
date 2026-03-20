@@ -281,12 +281,50 @@ Both `Model` and `OptimizedModel` expose:
 - `tree_node(node_index, tree_index=0)` for standard trees
 - `tree_level(level_index, tree_index=0)` for oblivious trees
 - `tree_leaf(leaf_index, tree_index=0)` for all trees
+- `to_dataframe(tree_index=None)`
 
 These methods work for:
 
 - standalone decision trees
 - forests via `tree_index`
 - optimized models, which delegate to the same semantic tree information as the base model
+
+### `to_dataframe(...)`
+
+Returns a polars `DataFrame` with one row per inspectable tree element.
+
+- standard trees produce rows for split nodes, leaf nodes, and unmatched fallback leaves on multiway splits
+- oblivious trees produce rows for each level and each leaf
+- forests include a `tree_index` column, and `tree_index=...` filters to one constituent tree
+
+Common columns include:
+
+- `tree_index`
+- `representation`
+- `node_type`
+- `node_index`
+- `depth`
+- `parent_index`
+- `split_feature`
+- `split_feature_name`
+- `split_type`
+- `threshold_bin`
+- `threshold_upper_bound`
+- `operator`
+- `left_child`
+- `right_child`
+- `branch_bins`
+- `branch_children`
+- `leaf_value`
+- `leaf_class_index`
+- `leaf_label`
+- `sample_count`
+- `impurity`
+- `gain`
+- `variance`
+- `class_counts`
+
+This is meant for inspection and analysis workflows that are easier in tabular form, similar to LightGBM's tree dataframe export, but returned as a polars frame.
 
 ### `tree_structure(...)`
 
@@ -367,6 +405,7 @@ forest = train(X, y, algorithm="rf", task="classification", tree_type="cart")
 print(forest.tree_count)
 print(forest.tree_structure(tree_index=3))
 print(forest.tree_node(0, tree_index=3))
+print(forest.to_dataframe(tree_index=3).head())
 ```
 
 ### How it works
