@@ -133,6 +133,7 @@ pub struct TrainConfig {
     pub task: Task,
     pub tree_type: TreeType,
     pub criterion: Criterion,
+    pub max_depth: Option<usize>,
     pub min_samples_split: Option<usize>,
     pub min_samples_leaf: Option<usize>,
     pub physical_cores: Option<usize>,
@@ -148,6 +149,7 @@ impl Default for TrainConfig {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Auto,
+            max_depth: None,
             min_samples_split: None,
             min_samples_leaf: None,
             physical_cores: None,
@@ -179,6 +181,7 @@ pub enum TrainError {
         tree_type: TreeType,
         criterion: Criterion,
     },
+    InvalidMaxDepth(usize),
     InvalidMinSamplesSplit(usize),
     InvalidMinSamplesLeaf(usize),
     InvalidTreeCount(usize),
@@ -210,6 +213,9 @@ impl Display for TrainError {
                 "Unsupported training configuration: task={:?}, tree_type={:?}, criterion={:?}.",
                 task, tree_type, criterion
             ),
+            TrainError::InvalidMaxDepth(value) => {
+                write!(f, "max_depth must be at least 1. Received {}.", value)
+            }
             TrainError::InvalidMinSamplesSplit(value) => {
                 write!(
                     f,

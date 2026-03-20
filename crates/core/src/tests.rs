@@ -42,6 +42,8 @@ fn unified_train_dispatches_regression_cart() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -85,6 +87,8 @@ fn unified_train_dispatches_randomized_for_both_tasks() {
             task: Task::Regression,
             tree_type: TreeType::Randomized,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -99,6 +103,8 @@ fn unified_train_dispatches_randomized_for_both_tasks() {
             task: Task::Classification,
             tree_type: TreeType::Randomized,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -128,6 +134,8 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
             task: Task::Regression,
             tree_type: TreeType::Id3,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -177,6 +185,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Regression,
                 tree_type: TreeType::Cart,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -194,6 +204,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Regression,
                 tree_type: TreeType::Randomized,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -211,6 +223,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Regression,
                 tree_type: TreeType::Oblivious,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -228,6 +242,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Id3,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -245,6 +261,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::C45,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -262,6 +280,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Cart,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -279,6 +299,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Randomized,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -296,6 +318,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Oblivious,
                 criterion: Criterion::Auto,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
 
@@ -349,6 +373,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -362,6 +388,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Regression,
             tree_type: TreeType::Randomized,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -375,6 +403,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -388,6 +418,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
         let parallel = train(
             &regression_table,
             TrainConfig {
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
                 physical_cores: Some(2),
@@ -408,6 +440,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Id3,
             criterion: Criterion::Entropy,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -421,6 +455,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::C45,
             criterion: Criterion::Entropy,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -434,6 +470,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -447,6 +485,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Randomized,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -460,6 +500,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -473,6 +515,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
         let parallel = train(
             &classification_table,
             TrainConfig {
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
                 physical_cores: Some(2),
@@ -495,6 +539,8 @@ fn unified_train_rejects_zero_physical_cores() {
     let err = train(
         &table,
         TrainConfig {
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
             physical_cores: Some(0),
@@ -530,6 +576,8 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -547,6 +595,8 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -585,6 +635,8 @@ fn ir_exports_regression_tree_with_training_binning() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -641,6 +693,8 @@ fn ir_exports_classifier_with_multiway_postprocessing() {
             task: Task::Classification,
             tree_type: TreeType::Id3,
             criterion: Criterion::Entropy,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -692,6 +746,8 @@ fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -745,6 +801,8 @@ fn serialized_model_round_trips_through_deserialize() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -786,6 +844,8 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -833,6 +893,8 @@ fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -879,6 +941,8 @@ fn optimized_oblivious_model_matches_base_on_large_batch() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -916,6 +980,8 @@ fn optimized_cart_model_batch_and_single_row_predictions_match() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -956,6 +1022,8 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -999,6 +1067,8 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1048,6 +1118,8 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1095,6 +1167,8 @@ fn optimized_model_rejects_zero_physical_cores() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1134,6 +1208,8 @@ fn model_predicts_from_raw_rows_without_building_a_training_table() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1177,6 +1253,8 @@ fn model_predicts_from_named_columns() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1218,6 +1296,8 @@ fn model_rejects_missing_named_feature() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1256,6 +1336,8 @@ fn model_rejects_unexpected_named_feature() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1298,6 +1380,8 @@ fn model_rejects_invalid_binary_value_during_inference() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1341,6 +1425,8 @@ fn model_predicts_from_sparse_binary_columns() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1380,6 +1466,8 @@ fn model_predicts_from_polars_dataframe() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1422,6 +1510,8 @@ fn model_predicts_from_polars_lazyframe() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1464,6 +1554,8 @@ fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1528,6 +1620,8 @@ fn model_rejects_polars_nulls() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1571,6 +1665,8 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 
@@ -1612,6 +1708,8 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
 

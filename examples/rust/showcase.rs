@@ -51,6 +51,8 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 task: Task::Regression,
                 tree_type,
                 criterion,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
                 physical_cores: None,
@@ -86,6 +88,8 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 task: Task::Classification,
                 tree_type,
                 criterion,
+                max_depth: None,
+
                 min_samples_split: None,
                 min_samples_leaf: None,
                 physical_cores: None,
@@ -126,6 +130,8 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
             physical_cores: None,
@@ -179,6 +185,8 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
+            max_depth: None,
+
             min_samples_split: None,
             min_samples_leaf: None,
             physical_cores: None,

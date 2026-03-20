@@ -388,13 +388,14 @@ def test_model_and_optimized_model_expose_hyperparameters(
         task="classification",
         tree_type="cart",
         canaries=0,
+        max_depth=4,
         min_samples_split=3,
         min_samples_leaf=2,
     )
     optimized = model.optimize_inference()
 
     assert model.canaries == 0
-    assert model.max_depth == 8
+    assert model.max_depth == 4
     assert model.min_samples_split == 3
     assert model.min_samples_leaf == 2
     assert model.n_trees is None
@@ -428,6 +429,22 @@ def test_train_accepts_min_samples_hyperparameters(
     assert model.min_samples_leaf == 2
 
 
+def test_train_accepts_max_depth_hyperparameter(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        max_depth=3,
+    )
+
+    assert model.max_depth == 3
+
+
 def test_train_rejects_zero_min_samples_values(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -438,6 +455,9 @@ def test_train_rejects_zero_min_samples_values(
 
     with pytest.raises(ValueError, match="min_samples_leaf must be at least 1"):
         train(X, y, min_samples_leaf=0)
+
+    with pytest.raises(ValueError, match="max_depth must be at least 1"):
+        train(X, y, max_depth=0)
 
 
 def test_random_forest_defaults_to_1000_trees(
@@ -456,6 +476,162 @@ def test_random_forest_defaults_to_1000_trees(
     assert forest.n_trees == 1000
     serialized = json.loads(forest.serialize())
     assert len(serialized["model"]["trees"]) == 1000
+
+
+@pytest.mark.parametrize("tree_type", ["id3", "c45", "cart", "randomized", "oblivious"])
+def test_classification_tree_max_depth_affects_learning(tree_type: str) -> None:
+    X = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+
+    shallow = train(
+        X, y, task="classification", tree_type=tree_type, canaries=0, max_depth=1
+    )
+    deep = train(
+        X, y, task="classification", tree_type=tree_type, canaries=0, max_depth=8
+    )
+
+    assert not np.array_equal(shallow.predict(X), deep.predict(X))
+
+
+@pytest.mark.parametrize("tree_type", ["id3", "c45", "cart", "randomized", "oblivious"])
+def test_classification_tree_min_samples_split_affects_learning(tree_type: str) -> None:
+    X = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+
+    constrained = train(
+        X,
+        y,
+        task="classification",
+        tree_type=tree_type,
+        canaries=0,
+        min_samples_split=len(X) + 1,
+    )
+    baseline = train(X, y, task="classification", tree_type=tree_type, canaries=0)
+
+    assert np.unique(constrained.predict(X)).size == 1
+    assert not np.array_equal(constrained.predict(X), baseline.predict(X))
+
+
+@pytest.mark.parametrize("tree_type", ["id3", "c45", "cart", "randomized", "oblivious"])
+def test_classification_tree_min_samples_leaf_affects_learning(tree_type: str) -> None:
+    X = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+
+    constrained = train(
+        X,
+        y,
+        task="classification",
+        tree_type=tree_type,
+        canaries=0,
+        min_samples_leaf=5,
+    )
+    baseline = train(X, y, task="classification", tree_type=tree_type, canaries=0)
+
+    assert np.unique(constrained.predict(X)).size == 1
+    assert not np.array_equal(constrained.predict(X), baseline.predict(X))
+
+
+@pytest.mark.parametrize("tree_type", ["cart", "randomized", "oblivious"])
+def test_regression_tree_max_depth_affects_learning(tree_type: str) -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
+
+    shallow = train(
+        X, y, task="regression", tree_type=tree_type, canaries=0, max_depth=1
+    )
+    deep = train(X, y, task="regression", tree_type=tree_type, canaries=0, max_depth=8)
+
+    assert not np.allclose(shallow.predict(X), deep.predict(X))
+
+
+@pytest.mark.parametrize("tree_type", ["cart", "randomized", "oblivious"])
+def test_regression_tree_min_samples_split_affects_learning(tree_type: str) -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
+
+    constrained = train(
+        X,
+        y,
+        task="regression",
+        tree_type=tree_type,
+        canaries=0,
+        min_samples_split=len(X) + 1,
+    )
+    baseline = train(X, y, task="regression", tree_type=tree_type, canaries=0)
+
+    assert np.unique(constrained.predict(X)).size == 1
+    assert not np.allclose(constrained.predict(X), baseline.predict(X))
+
+
+@pytest.mark.parametrize("tree_type", ["cart", "randomized", "oblivious"])
+def test_regression_tree_min_samples_leaf_affects_learning(tree_type: str) -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
+
+    constrained = train(
+        X,
+        y,
+        task="regression",
+        tree_type=tree_type,
+        canaries=0,
+        min_samples_leaf=5,
+    )
+    baseline = train(X, y, task="regression", tree_type=tree_type, canaries=0)
+
+    assert np.unique(constrained.predict(X)).size == 1
+    assert not np.allclose(constrained.predict(X), baseline.predict(X))
+
+
+def test_random_forest_ignores_canaries(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    forest = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=5,
+        n_trees=3,
+    )
+
+    assert forest.canaries == 0
+    serialized = json.loads(forest.serialize())
+    assert serialized["training_metadata"]["canaries"] == 0
 
 
 def test_random_forest_seed_makes_training_deterministic() -> None:

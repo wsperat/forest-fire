@@ -8,6 +8,10 @@ use rayon::ThreadPoolBuilder;
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
     let criterion = resolve_criterion(config.task, config.tree_type, config.criterion)?;
     let parallelism = resolve_parallelism(config.physical_cores)?;
+    let max_depth = config.max_depth.unwrap_or(8);
+    if max_depth == 0 {
+        return Err(TrainError::InvalidMaxDepth(max_depth));
+    }
     let min_samples_split = config.min_samples_split.unwrap_or(2);
     if min_samples_split == 0 {
         return Err(TrainError::InvalidMinSamplesSplit(min_samples_split));
@@ -24,6 +28,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             config.tree_type,
             criterion,
             parallelism,
+            max_depth,
             min_samples_split,
             min_samples_leaf,
         ),
@@ -34,6 +39,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             criterion,
             parallelism,
             config.n_trees.unwrap_or(1000),
+            max_depth,
             min_samples_split,
             min_samples_leaf,
             config.max_features,
@@ -48,6 +54,7 @@ pub(crate) fn train_single_model(
     tree_type: TreeType,
     criterion: Criterion,
     parallelism: Parallelism,
+    max_depth: usize,
     min_samples_split: usize,
     min_samples_leaf: usize,
 ) -> Result<Model, TrainError> {
@@ -57,6 +64,7 @@ pub(crate) fn train_single_model(
         tree_type,
         criterion,
         parallelism,
+        max_depth,
         min_samples_split,
         min_samples_leaf,
         None,
@@ -70,12 +78,14 @@ pub(crate) fn train_single_model_with_feature_subset(
     tree_type: TreeType,
     criterion: Criterion,
     parallelism: Parallelism,
+    max_depth: usize,
     min_samples_split: usize,
     min_samples_leaf: usize,
     max_features: Option<usize>,
     random_seed: u64,
 ) -> Result<Model, TrainError> {
     let classifier_options = tree::classifier::DecisionTreeOptions {
+        max_depth,
         min_samples_split,
         min_samples_leaf,
         max_features,
@@ -83,6 +93,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         ..tree::classifier::DecisionTreeOptions::default()
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
+        max_depth,
         min_samples_split,
         min_samples_leaf,
         max_features,
@@ -194,6 +205,7 @@ fn train_random_forest(
     criterion: Criterion,
     parallelism: Parallelism,
     n_trees: usize,
+    max_depth: usize,
     min_samples_split: usize,
     min_samples_leaf: usize,
     max_features: crate::MaxFeatures,
@@ -206,6 +218,7 @@ fn train_random_forest(
             task,
             tree_type,
             criterion,
+            max_depth: Some(max_depth),
             min_samples_split: Some(min_samples_split),
             min_samples_leaf: Some(min_samples_leaf),
             physical_cores: None,

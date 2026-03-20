@@ -996,7 +996,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -1008,6 +1008,7 @@ fn train(
     canaries: usize,
     bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
+    max_depth: Option<usize>,
     min_samples_split: Option<usize>,
     min_samples_leaf: Option<usize>,
     n_trees: Option<usize>,
@@ -1022,6 +1023,7 @@ fn train(
         task: resolved_task,
         tree_type: resolve_tree_type(tree_type, task_was_auto)?,
         criterion: parse_criterion(criterion)?,
+        max_depth: parse_optional_positive_usize(max_depth, "max_depth")?,
         min_samples_split: parse_optional_positive_usize(min_samples_split, "min_samples_split")?,
         min_samples_leaf: parse_optional_positive_usize(min_samples_leaf, "min_samples_leaf")?,
         physical_cores,

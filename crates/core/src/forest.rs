@@ -24,6 +24,10 @@ struct SampledTable<'a> {
     row_indices: Vec<usize>,
 }
 
+struct NoCanaryTable<'a> {
+    base: &'a dyn TableAccess,
+}
+
 impl RandomForest {
     pub fn new(
         task: Task,
@@ -61,8 +65,9 @@ impl RandomForest {
             return Err(TrainError::InvalidMaxFeatures(0));
         }
 
+        let train_set = NoCanaryTable::new(train_set);
         let sampler = BootstrapSampler::new(train_set.n_rows());
-        let feature_preprocessing = capture_feature_preprocessing(train_set);
+        let feature_preprocessing = capture_feature_preprocessing(&train_set);
         let max_features = config
             .max_features
             .resolve(config.task, train_set.binned_feature_count());
@@ -74,13 +79,14 @@ impl RandomForest {
         let train_tree = |tree_index: usize| -> Result<Model, TrainError> {
             let tree_seed = mix_seed(base_seed, tree_index as u64);
             let sampled_rows = sampler.sample(tree_seed);
-            let sampled_table = SampledTable::new(train_set, sampled_rows);
+            let sampled_table = SampledTable::new(&train_set, sampled_rows);
             training::train_single_model_with_feature_subset(
                 &sampled_table,
                 config.task,
                 config.tree_type,
                 criterion,
                 per_tree_parallelism,
+                config.max_depth.unwrap_or(8),
                 config.min_samples_split.unwrap_or(2),
                 config.min_samples_leaf.unwrap_or(1),
                 Some(max_features),
@@ -242,6 +248,12 @@ impl<'a> SampledTable<'a> {
     }
 }
 
+impl<'a> NoCanaryTable<'a> {
+    fn new(base: &'a dyn TableAccess) -> Self {
+        Self { base }
+    }
+}
+
 impl TableAccess for SampledTable<'_> {
     fn n_rows(&self) -> usize {
         self.row_indices.len()
@@ -292,5 +304,55 @@ impl TableAccess for SampledTable<'_> {
 
     fn target_value(&self, row_index: usize) -> f64 {
         self.base.target_value(self.resolve_row(row_index))
+    }
+}
+
+impl TableAccess for NoCanaryTable<'_> {
+    fn n_rows(&self) -> usize {
+        self.base.n_rows()
+    }
+
+    fn n_features(&self) -> usize {
+        self.base.n_features()
+    }
+
+    fn canaries(&self) -> usize {
+        0
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        self.base.numeric_bin_cap()
+    }
+
+    fn binned_feature_count(&self) -> usize {
+        self.base.binned_feature_count() - self.base.canaries()
+    }
+
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        self.base.feature_value(feature_index, row_index)
+    }
+
+    fn is_binary_feature(&self, index: usize) -> bool {
+        self.base.is_binary_feature(index)
+    }
+
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        self.base.binned_value(feature_index, row_index)
+    }
+
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        self.base.binned_boolean_value(feature_index, row_index)
+    }
+
+    fn binned_column_kind(&self, index: usize) -> forestfire_data::BinnedColumnKind {
+        self.base.binned_column_kind(index)
+    }
+
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        self.base.is_binary_binned_feature(index)
+    }
+
+    fn target_value(&self, row_index: usize) -> f64 {
+        self.base.target_value(row_index)
     }
 }

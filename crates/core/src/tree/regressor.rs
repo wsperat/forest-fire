@@ -765,6 +765,12 @@ fn train_oblivious_structure(
     let mut splits = Vec::new();
 
     for depth in 0..options.max_depth {
+        if leaves
+            .iter()
+            .all(|leaf| leaf.rows.len() < options.min_samples_split)
+        {
+            break;
+        }
         let feature_indices = candidate_feature_indices(
             table.binned_feature_count(),
             options.max_features,

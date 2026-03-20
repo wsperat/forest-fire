@@ -30,6 +30,7 @@ def train(
     canaries: int = 2,
     bins: str | int = "auto",
     physical_cores: int | None = None,
+    max_depth: int | None = None,
     min_samples_split: int | None = None,
     min_samples_leaf: int | None = None,
     n_trees: int | None = None,
