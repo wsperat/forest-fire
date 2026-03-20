@@ -36,7 +36,6 @@ pub use tree::regressor::RegressionTreeOptions;
 pub use tree::regressor::train_cart_regressor;
 pub use tree::regressor::train_oblivious_regressor;
 
-const OPTIMIZED_MULTIWAY_LOOKUP_SIZE: usize = 512;
 const PARALLEL_INFERENCE_ROW_THRESHOLD: usize = 256;
 const PARALLEL_INFERENCE_CHUNK_ROWS: usize = 256;
 const STANDARD_BATCH_INFERENCE_CHUNK_ROWS: usize = 4096;
@@ -395,6 +394,38 @@ enum InferenceBinnedColumn {
 }
 
 #[derive(Debug, Clone)]
+enum CompactBinnedColumn {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+}
+
+impl CompactBinnedColumn {
+    #[inline(always)]
+    fn value_at(&self, row_index: usize) -> u16 {
+        match self {
+            CompactBinnedColumn::U8(values) => u16::from(values[row_index]),
+            CompactBinnedColumn::U16(values) => values[row_index],
+        }
+    }
+
+    #[inline(always)]
+    fn slice_u8(&self, start: usize, len: usize) -> Option<&[u8]> {
+        match self {
+            CompactBinnedColumn::U8(values) => Some(&values[start..start + len]),
+            CompactBinnedColumn::U16(_) => None,
+        }
+    }
+
+    #[inline(always)]
+    fn slice_u16(&self, start: usize, len: usize) -> Option<&[u16]> {
+        match self {
+            CompactBinnedColumn::U8(_) => None,
+            CompactBinnedColumn::U16(values) => Some(&values[start..start + len]),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct InferenceTable {
     feature_columns: Vec<InferenceFeatureColumn>,
     binned_feature_columns: Vec<InferenceBinnedColumn>,
@@ -582,10 +613,10 @@ impl InferenceTable {
         let columns = (0..n_features)
             .map(
                 |feature_index| match &self.binned_feature_columns[feature_index] {
-                    InferenceBinnedColumn::Numeric(values) => values.clone(),
-                    InferenceBinnedColumn::Binary(values) => {
-                        values.iter().map(|value| u16::from(*value)).collect()
-                    }
+                    InferenceBinnedColumn::Numeric(values) => compact_binned_column(values),
+                    InferenceBinnedColumn::Binary(values) => CompactBinnedColumn::U8(
+                        values.iter().map(|value| u8::from(*value)).collect(),
+                    ),
                 },
             )
             .collect();
@@ -600,16 +631,32 @@ impl InferenceTable {
 #[derive(Debug, Clone)]
 struct ColumnMajorBinnedMatrix {
     n_rows: usize,
-    columns: Vec<Vec<u16>>,
+    columns: Vec<CompactBinnedColumn>,
 }
 
 impl ColumnMajorBinnedMatrix {
     fn from_table_access(table: &dyn TableAccess) -> Self {
         let columns = (0..table.n_features())
             .map(|feature_index| {
-                (0..table.n_rows())
-                    .map(|row_index| table.binned_value(feature_index, row_index))
-                    .collect()
+                if table.is_binary_binned_feature(feature_index) {
+                    CompactBinnedColumn::U8(
+                        (0..table.n_rows())
+                            .map(|row_index| {
+                                u8::from(
+                                    table
+                                        .binned_boolean_value(feature_index, row_index)
+                                        .unwrap_or(false),
+                                )
+                            })
+                            .collect(),
+                    )
+                } else {
+                    compact_binned_column(
+                        &(0..table.n_rows())
+                            .map(|row_index| table.binned_value(feature_index, row_index))
+                            .collect::<Vec<_>>(),
+                    )
+                }
             })
             .collect();
 
@@ -620,7 +667,7 @@ impl ColumnMajorBinnedMatrix {
     }
 
     #[inline(always)]
-    fn column(&self, feature_index: usize) -> &[u16] {
+    fn column(&self, feature_index: usize) -> &CompactBinnedColumn {
         &self.columns[feature_index]
     }
 }
@@ -633,6 +680,14 @@ fn infer_numeric_bin(value: f64, boundaries: &[NumericBinBoundary]) -> u16 {
             || boundaries.last().map_or(0, |boundary| boundary.bin),
             |boundary| boundary.bin,
         )
+}
+
+fn compact_binned_column(values: &[u16]) -> CompactBinnedColumn {
+    if values.iter().all(|value| *value <= u16::from(u8::MAX)) {
+        CompactBinnedColumn::U8(values.iter().map(|value| *value as u8).collect())
+    } else {
+        CompactBinnedColumn::U16(values.to_vec())
+    }
 }
 
 impl TableAccess for InferenceTable {
@@ -740,6 +795,7 @@ enum OptimizedClassifierNode {
     Multiway {
         feature_index: usize,
         child_lookup: Vec<usize>,
+        max_bin_index: usize,
         fallback_value: f64,
     },
 }
@@ -1101,16 +1157,19 @@ impl OptimizedRuntime {
                             branches,
                             ..
                         } => {
-                            let mut child_lookup = vec![usize::MAX; OPTIMIZED_MULTIWAY_LOOKUP_SIZE];
+                            let max_bin_index = branches
+                                .iter()
+                                .map(|(bin, _)| usize::from(*bin))
+                                .max()
+                                .unwrap_or(0);
+                            let mut child_lookup = vec![usize::MAX; max_bin_index + 1];
                             for (bin, child_index) in branches {
-                                let idx = usize::from(*bin);
-                                if idx < OPTIMIZED_MULTIWAY_LOOKUP_SIZE {
-                                    child_lookup[idx] = *child_index;
-                                }
+                                child_lookup[usize::from(*bin)] = *child_index;
                             }
                             OptimizedClassifierNode::Multiway {
                                 feature_index: *feature_index,
                                 child_lookup,
+                                max_bin_index,
                                 fallback_value: classifier.class_labels()[*fallback_class_index],
                             }
                         }
@@ -1242,12 +1301,12 @@ impl OptimizedRuntime {
             OptimizedRuntime::TargetMean { value } => *value,
             OptimizedRuntime::BinaryClassifier { nodes } => {
                 predict_binary_classifier_row(nodes, |feature_index| {
-                    matrix.column(feature_index)[row_index]
+                    matrix.column(feature_index).value_at(row_index)
                 })
             }
             OptimizedRuntime::StandardClassifier { nodes, root } => {
                 predict_standard_classifier_row(nodes, *root, |feature_index| {
-                    matrix.column(feature_index)[row_index]
+                    matrix.column(feature_index).value_at(row_index)
                 })
             }
             OptimizedRuntime::ObliviousClassifier {
@@ -1258,11 +1317,11 @@ impl OptimizedRuntime {
                 feature_indices,
                 threshold_bins,
                 leaf_values,
-                |feature_index| matrix.column(feature_index)[row_index],
+                |feature_index| matrix.column(feature_index).value_at(row_index),
             ),
             OptimizedRuntime::BinaryRegressor { nodes } => {
                 predict_binary_regressor_row(nodes, |feature_index| {
-                    matrix.column(feature_index)[row_index]
+                    matrix.column(feature_index).value_at(row_index)
                 })
             }
             OptimizedRuntime::ObliviousRegressor {
@@ -1273,7 +1332,7 @@ impl OptimizedRuntime {
                 feature_indices,
                 threshold_bins,
                 leaf_values,
-                |feature_index| matrix.column(feature_index)[row_index],
+                |feature_index| matrix.column(feature_index).value_at(row_index),
             ),
         }
     }
@@ -1303,9 +1362,14 @@ where
             OptimizedClassifierNode::Multiway {
                 feature_index,
                 child_lookup,
+                max_bin_index,
                 fallback_value,
             } => {
-                let child_index = child_lookup[usize::from(bin_at(*feature_index))];
+                let bin = usize::from(bin_at(*feature_index));
+                if bin > *max_bin_index {
+                    return *fallback_value;
+                }
+                let child_index = child_lookup[bin];
                 if child_index == usize::MAX {
                     return *fallback_value;
                 }
@@ -1412,15 +1476,33 @@ fn predict_binary_classifier_chunk(
                 let column = matrix.column(*feature_index);
                 let mut partition = start;
                 let mut jump_start = end;
-                while partition < jump_start {
-                    let row_offset = row_indices[partition];
-                    let go_right = column[start_row + row_offset] > *threshold_bin;
-                    let goes_jump = go_right == *jump_if_greater;
-                    if goes_jump {
-                        jump_start -= 1;
-                        row_indices.swap(partition, jump_start);
-                    } else {
-                        partition += 1;
+                match column {
+                    CompactBinnedColumn::U8(values) if *threshold_bin <= u16::from(u8::MAX) => {
+                        let threshold = *threshold_bin as u8;
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = values[start_row + row_offset] > threshold;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
+                    }
+                    _ => {
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = column.value_at(start_row + row_offset) > *threshold_bin;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
                     }
                 }
 
@@ -1480,15 +1562,33 @@ fn predict_binary_regressor_chunk(
                 let column = matrix.column(*feature_index);
                 let mut partition = start;
                 let mut jump_start = end;
-                while partition < jump_start {
-                    let row_offset = row_indices[partition];
-                    let go_right = column[start_row + row_offset] > *threshold_bin;
-                    let goes_jump = go_right == *jump_if_greater;
-                    if goes_jump {
-                        jump_start -= 1;
-                        row_indices.swap(partition, jump_start);
-                    } else {
-                        partition += 1;
+                match column {
+                    CompactBinnedColumn::U8(values) if *threshold_bin <= u16::from(u8::MAX) => {
+                        let threshold = *threshold_bin as u8;
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = values[start_row + row_offset] > threshold;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
+                    }
+                    _ => {
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = column.value_at(start_row + row_offset) > *threshold_bin;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
                     }
                 }
 
@@ -1723,7 +1823,7 @@ fn predict_oblivious_chunk(
             feature_indices,
             threshold_bins,
             leaf_values,
-            |feature_index| matrix.column(feature_index)[row_index],
+            |feature_index| matrix.column(feature_index).value_at(row_index),
         );
     }
 }
@@ -1745,11 +1845,28 @@ fn simd_predict_oblivious_chunk(
 
         for (&feature_index, &threshold_bin) in feature_indices.iter().zip(threshold_bins) {
             let column = matrix.column(feature_index);
-            let lanes: [u16; OBLIVIOUS_SIMD_LANES] = column
-                [base_row..base_row + OBLIVIOUS_SIMD_LANES]
-                .try_into()
-                .expect("lane width matches the fixed SIMD width");
-            let bins = u32x8::from(u16x8::new(lanes));
+            let bins = if let Some(lanes) = column.slice_u8(base_row, OBLIVIOUS_SIMD_LANES) {
+                let lanes: [u8; OBLIVIOUS_SIMD_LANES] = lanes
+                    .try_into()
+                    .expect("lane width matches the fixed SIMD width");
+                u32x8::new([
+                    u32::from(lanes[0]),
+                    u32::from(lanes[1]),
+                    u32::from(lanes[2]),
+                    u32::from(lanes[3]),
+                    u32::from(lanes[4]),
+                    u32::from(lanes[5]),
+                    u32::from(lanes[6]),
+                    u32::from(lanes[7]),
+                ])
+            } else {
+                let lanes: [u16; OBLIVIOUS_SIMD_LANES] = column
+                    .slice_u16(base_row, OBLIVIOUS_SIMD_LANES)
+                    .expect("column is u16 when not u8")
+                    .try_into()
+                    .expect("lane width matches the fixed SIMD width");
+                u32x8::from(u16x8::new(lanes))
+            };
             let threshold = u32x8::splat(u32::from(threshold_bin));
             let bit = bins.cmp_gt(threshold) & ones;
             leaf_indices = (leaf_indices << 1) | bit;
