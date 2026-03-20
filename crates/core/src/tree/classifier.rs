@@ -1361,7 +1361,7 @@ enum MultiwayMetric {
 mod tests {
     use super::*;
     use crate::{FeaturePreprocessing, Model, NumericBinBoundary};
-    use forestfire_data::DenseTable;
+    use forestfire_data::{DenseTable, NumericBins};
 
     fn and_table() -> DenseTable {
         DenseTable::new(
@@ -1399,11 +1399,18 @@ mod tests {
 
     fn canary_target_table() -> DenseTable {
         let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
-        let probe = DenseTable::with_canaries(x.clone(), vec![0.0; 8], 1).unwrap();
+        let probe =
+            DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
         let canary_index = probe.n_features();
+        let mut observed_bins = (0..probe.n_rows())
+            .map(|row_idx| probe.binned_value(canary_index, row_idx))
+            .collect::<Vec<_>>();
+        observed_bins.sort_unstable();
+        observed_bins.dedup();
+        let threshold = observed_bins[observed_bins.len() / 2];
         let y = (0..probe.n_rows())
             .map(|row_idx| {
-                if probe.binned_value(canary_index, row_idx) > 255 {
+                if probe.binned_value(canary_index, row_idx) >= threshold {
                     1.0
                 } else {
                     0.0
@@ -1411,7 +1418,7 @@ mod tests {
             })
             .collect();
 
-        DenseTable::with_canaries(x, y, 1).unwrap()
+        DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
     }
 
     #[test]

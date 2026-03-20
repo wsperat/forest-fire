@@ -28,6 +28,7 @@ model = train(
     task="classification",
     tree_type="cart",
     criterion="gini",
+    bins="auto",
     physical_cores=4,
 )
 
@@ -50,6 +51,7 @@ train(
     tree_type="target_mean",
     criterion="auto",
     canaries=2,
+    bins="auto",
     physical_cores=None,
 )
 ```
@@ -104,6 +106,31 @@ Current stopping behavior:
 - standard trees stop at the current node
 - oblivious trees stop the remaining depth growth
 
+#### `bins`
+
+Current values:
+
+- `"auto"`
+- integer `1..=512`
+
+Why it exists:
+
+- split search benefits from bounded numeric cardinality
+- power-of-two bin counts fit the optimized runtimes cleanly
+- different datasets need different bin budgets
+
+Current `auto` behavior:
+
+- per numeric feature, ForestFire picks the highest power of two up to `512`
+- the chosen count is also capped by the number of distinct observed values
+- that keeps every realized bin populated while avoiding a larger-than-useful bin space
+
+Why this is the default:
+
+- tiny datasets do not waste work on hundreds of empty bins
+- larger datasets can still use up to `512` bins
+- the result stays regular enough for fast training and inference kernels
+
 #### `physical_cores`
 
 This controls CPU usage during fitting. The library uses physical cores as the public knob because split scoring is memory-sensitive and that tends to be a more honest resource limit than logical threads.
@@ -133,7 +160,7 @@ This controls CPU usage during fitting. The library uses physical cores as the p
 
 ### `DenseTable`
 
-`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into `512` bins, and binary `0/1` columns are stored as booleans so they are both smaller and cheaper to split on.
+`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into a power-of-two number of bins, using the highest populated count up to `512` by default, and binary `0/1` columns are stored as booleans so they are both smaller and cheaper to split on.
 
 ### `SparseTable`
 

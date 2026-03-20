@@ -2,7 +2,7 @@ use forestfire_core::{
     Criterion, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm, TrainConfig,
     TreeType, train as train_model,
 };
-use forestfire_data::{Table, TableAccess, TableKind};
+use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::types::{PyBytes, PyDict, PyType};
 use pyo3::{Bound, prelude::*};
@@ -37,11 +37,17 @@ fn build_training_table(
     x: &Bound<PyAny>,
     y: Option<&Bound<PyAny>>,
     canaries: usize,
+    bins: NumericBins,
 ) -> PyResult<Table> {
     if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
         if y.is_some() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "y must be omitted when x is already a Table.",
+            ));
+        }
+        if bins != NumericBins::Auto {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "bins must be omitted when x is already a Table.",
             ));
         }
         return Ok(table.inner.clone());
@@ -53,28 +59,33 @@ fn build_training_table(
         )
     })?;
     if is_scipy_sparse_matrix(x)? {
-        return build_sparse_training_table(x, y, canaries);
+        return build_sparse_training_table(x, y, canaries, bins);
     }
     let x_rows = extract_matrix(x)?;
     let y_values = extract_vector(y)?;
 
-    Table::with_canaries(x_rows, y_values, canaries)
+    Table::with_options(x_rows, y_values, canaries, bins)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
-fn build_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
+fn build_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
     if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        if bins != NumericBins::Auto {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "bins must be omitted when x is already a Table.",
+            ));
+        }
         return Ok(table.inner.clone());
     }
 
     if is_scipy_sparse_matrix(x)? {
-        return build_sparse_feature_table(x);
+        return build_sparse_feature_table(x, bins);
     }
 
     let x_rows = extract_matrix(x)?;
     let y_values = vec![0.0; x_rows.len()];
 
-    Table::with_canaries(x_rows, y_values, 0)
+    Table::with_options(x_rows, y_values, 0, bins)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
@@ -195,24 +206,26 @@ fn build_sparse_training_table(
     x: &Bound<PyAny>,
     y: &Bound<PyAny>,
     canaries: usize,
+    bins: NumericBins,
 ) -> PyResult<Table> {
     let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
     let y_values = extract_vector(y)?;
-    let table = forestfire_data::SparseTable::from_sparse_binary_columns(
-        n_rows, n_features, columns, y_values, canaries,
+    let table = forestfire_data::SparseTable::from_sparse_binary_columns_with_options(
+        n_rows, n_features, columns, y_values, canaries, bins,
     )
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
     Ok(Table::Sparse(table))
 }
 
-fn build_sparse_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
+fn build_sparse_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
     let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
-    let table = forestfire_data::SparseTable::from_sparse_binary_columns(
+    let table = forestfire_data::SparseTable::from_sparse_binary_columns_with_options(
         n_rows,
         n_features,
         columns,
         vec![0.0; n_rows],
         0,
+        bins,
     )
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
     Ok(Table::Sparse(table))
@@ -565,6 +578,32 @@ fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
     }
 }
 
+fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
+    let Some(bins) = bins else {
+        return Ok(NumericBins::Auto);
+    };
+
+    if let Ok(value) = bins.extract::<usize>() {
+        return NumericBins::fixed(value)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()));
+    }
+
+    if let Ok(value) = bins.extract::<String>() {
+        if value == "auto" {
+            return Ok(NumericBins::Auto);
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported bins value '{}'. Expected 'auto' or an integer between 1 and {}.",
+            value, MAX_NUMERIC_BINS
+        )));
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+        "Unsupported bins value. Expected 'auto' or an integer between 1 and {}.",
+        MAX_NUMERIC_BINS
+    )))
+}
+
 fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
@@ -599,7 +638,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, physical_cores=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -609,9 +648,10 @@ fn train(
     tree_type: &str,
     criterion: &str,
     canaries: usize,
+    bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
 ) -> PyResult<PyModel> {
-    let table = build_training_table(x, y, canaries)?;
+    let table = build_training_table(x, y, canaries, parse_bins(bins)?)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
         task: parse_task(task)?,
@@ -788,12 +828,18 @@ impl PyOptimizedModel {
 #[pymethods]
 impl PyTable {
     #[new]
-    #[pyo3(signature = (x, y=None, canaries=2))]
-    fn new(x: &Bound<PyAny>, y: Option<&Bound<PyAny>>, canaries: usize) -> PyResult<Self> {
+    #[pyo3(signature = (x, y=None, canaries=2, bins=None))]
+    fn new(
+        x: &Bound<PyAny>,
+        y: Option<&Bound<PyAny>>,
+        canaries: usize,
+        bins: Option<&Bound<PyAny>>,
+    ) -> PyResult<Self> {
+        let bins = parse_bins(bins)?;
         let inner = if let Some(y) = y {
-            build_training_table(x, Some(y), canaries)?
+            build_training_table(x, Some(y), canaries, bins)?
         } else {
-            build_feature_table(x)?
+            build_feature_table(x, bins)?
         };
 
         Ok(Self { inner })

@@ -1,4 +1,6 @@
-use forestfire_data::{BinnedColumnKind, TableAccess, numeric_bin_boundaries};
+use forestfire_data::{
+    BinnedColumnKind, MAX_NUMERIC_BINS, NumericBins, TableAccess, numeric_bin_boundaries,
+};
 #[cfg(feature = "polars")]
 use polars::prelude::{Column, DataFrame, DataType, IdxSize, LazyFrame};
 use rayon::ThreadPoolBuilder;
@@ -367,10 +369,13 @@ pub(crate) fn capture_feature_preprocessing(table: &dyn TableAccess) -> Vec<Feat
                     .map(|row_index| table.feature_value(feature_index, row_index))
                     .collect::<Vec<_>>();
                 FeaturePreprocessing::Numeric {
-                    bin_boundaries: numeric_bin_boundaries(&values)
-                        .into_iter()
-                        .map(|(bin, upper_bound)| NumericBinBoundary { bin, upper_bound })
-                        .collect(),
+                    bin_boundaries: numeric_bin_boundaries(
+                        &values,
+                        NumericBins::Fixed(table.numeric_bin_cap()),
+                    )
+                    .into_iter()
+                    .map(|(bin, upper_bound)| NumericBinBoundary { bin, upper_bound })
+                    .collect(),
                 }
             }
         })
@@ -641,6 +646,10 @@ impl TableAccess for InferenceTable {
 
     fn canaries(&self) -> usize {
         0
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        MAX_NUMERIC_BINS
     }
 
     fn binned_feature_count(&self) -> usize {

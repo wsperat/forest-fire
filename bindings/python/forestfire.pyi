@@ -17,6 +17,7 @@ class Table:
         x: Any,
         y: Any | None = None,
         canaries: int = 2,
+        bins: str | int = "auto",
     ) -> None: ...
 
 def train(
@@ -27,6 +28,7 @@ def train(
     tree_type: str = "target_mean",
     criterion: str = "auto",
     canaries: int = 2,
+    bins: str | int = "auto",
     physical_cores: int | None = None,
 ) -> "Model": ...
 

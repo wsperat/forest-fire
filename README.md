@@ -42,6 +42,7 @@ model = train(
     task="classification",
     tree_type="cart",
     criterion="gini",
+    bins="auto",
     physical_cores=4,
 )
 
@@ -77,6 +78,7 @@ fn main() -> Result<()> {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
+            bins: NumericBins::Auto,
             physical_cores: Some(4),
         },
     )?;
@@ -145,6 +147,7 @@ train(
     tree_type="target_mean",
     criterion="auto",
     canaries=2,
+    bins="auto",
     physical_cores=None,
 )
 ```
@@ -240,6 +243,31 @@ Current stopping behavior:
 - standard trees: growth stops at that node
 - oblivious trees: growth stops for the remaining tree
 
+#### `bins`
+
+Current values:
+
+- `"auto"` in Python / `NumericBins::Auto` in Rust
+- integer `1..=512` in Python / `NumericBins::Fixed(usize)` in Rust
+
+Why it exists:
+
+- split search gets much cheaper once numeric features are mapped into a bounded bin space
+- power-of-two bin counts fit the optimized inference kernels cleanly
+- the right bin budget depends on how much distinct signal a feature actually has
+
+Current `auto` behavior:
+
+- for each numeric feature, ForestFire chooses the highest power of two up to `512`
+- the chosen count is capped by the number of distinct observed values
+- that keeps every realized bin populated while still giving the learner as much split resolution as the data supports
+
+Why that is the default:
+
+- small datasets do not waste work on hundreds of empty bins
+- larger datasets can still climb up to `512` bins
+- the resulting representation stays regular for both training and optimized prediction
+
 #### `physical_cores`
 
 Default:
@@ -284,7 +312,7 @@ Key design choices:
 
 - Arrow-backed column storage for scan-friendly feature access
 - boolean storage for binary `0/1` columns to reduce memory use
-- numeric rank-binning into `512` bins to make repeated split scoring cheaper
+- numeric rank-binning into a power-of-two bin count, using the highest populated count up to `512` by default
 - canaries built at the table layer so every learner sees the same stopping reference
 
 Why the numeric binning is rank-based:
@@ -292,6 +320,7 @@ Why the numeric binning is rank-based:
 - tree splits mostly care about order, not absolute scale
 - rank-based bins are stable under monotonic rescaling
 - it gives a compact, bounded representation for split search
+- adaptive power-of-two counts avoid empty-bin overhead on small or low-cardinality features
 
 ### `SparseTable`
 

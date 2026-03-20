@@ -82,6 +82,37 @@ def test_table_builds_dense_layout_for_mixed_data() -> None:
     assert table.n_features == 2
 
 
+def test_table_accepts_auto_and_fixed_bins() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 1.0, 2.0, 3.0])
+
+    auto_table = Table(X, y, bins="auto")
+    fixed_table = Table(X, y, bins=64)
+
+    assert auto_table.kind == "dense"
+    assert fixed_table.kind == "dense"
+
+
+@pytest.mark.parametrize("bins", [0, 513])
+def test_table_rejects_invalid_integer_bins(bins: int) -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="between 1 and 512"):
+        Table(X, y, bins=bins)
+
+
+def test_table_rejects_invalid_string_bins() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(
+        ValueError,
+        match="Expected 'auto' or an integer between 1 and 512",
+    ):
+        Table(X, y, bins="dynamic")
+
+
 def test_train_accepts_prebuilt_table(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -343,8 +374,8 @@ def test_train_oblivious_classifier(
 
 
 def test_train_cart_regressor() -> None:
-    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
-    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
 
     model = train(X, y, algorithm="dt", task="regression", tree_type="cart", canaries=0)
 
@@ -357,8 +388,8 @@ def test_train_cart_regressor() -> None:
 
 
 def test_train_oblivious_regressor() -> None:
-    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
-    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
 
     model = train(
         X, y, algorithm="dt", task="regression", tree_type="oblivious", canaries=0
@@ -456,6 +487,24 @@ def test_train_rejects_unknown_algorithm() -> None:
         train(X, y, algorithm="rf")
 
 
+def test_train_accepts_fixed_bins() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0])
+
+    model = train(X, y, task="regression", tree_type="cart", bins=64, canaries=0)
+
+    preds = model.predict(X)
+    assert preds.shape == (4,)
+
+
+def test_train_rejects_invalid_bins() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="between 1 and 512"):
+        train(X, y, bins=1024)
+
+
 def test_train_rejects_y_when_x_is_already_a_table(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -464,6 +513,18 @@ def test_train_rejects_y_when_x_is_already_a_table(
 
     with pytest.raises(ValueError, match="y must be omitted"):
         train(table, y)
+
+
+def test_train_rejects_bins_when_x_is_already_a_table(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    table = Table(X, y, canaries=0)
+
+    with pytest.raises(
+        ValueError, match="bins must be omitted when x is already a Table"
+    ):
+        train(table, task="classification", tree_type="cart", bins=64)
 
 
 def test_train_rejects_unknown_task() -> None:

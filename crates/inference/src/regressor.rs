@@ -76,8 +76,10 @@ mod tests {
                 vec![3.0],
                 vec![4.0],
                 vec![5.0],
+                vec![6.0],
+                vec![7.0],
             ],
-            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0],
+            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0],
             0,
         )
         .unwrap();
@@ -98,6 +100,6 @@ mod tests {
         let via_inherent = m.predict_table(&table);
 
         assert_eq!(via_trait, via_inherent);
-        assert_eq!(via_trait, vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0]);
+        assert_eq!(via_trait, vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0]);
     }
 }
