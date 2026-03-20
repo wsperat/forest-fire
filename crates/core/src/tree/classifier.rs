@@ -367,6 +367,10 @@ impl DecisionTreeClassifier {
         &self.class_labels
     }
 
+    pub(crate) fn structure(&self) -> &TreeStructure {
+        &self.structure
+    }
+
     pub(crate) fn num_features(&self) -> usize {
         self.num_features
     }

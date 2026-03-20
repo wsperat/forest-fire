@@ -196,6 +196,44 @@ def test_predict_accepts_plain_python_rows(
     assert np.array_equal(preds, np.array([0.0, 0.0, 1.0]))
 
 
+def test_optimize_inference_preserves_predictions_and_ir(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert optimized.algorithm == model.algorithm
+    assert optimized.task == model.task
+    assert optimized.criterion == model.criterion
+    assert optimized.tree_type == model.tree_type
+    assert optimized.mean_ == model.mean_
+    assert optimized.serialize() == model.serialize()
+    assert optimized.to_ir_json() == model.to_ir_json()
+    assert np.array_equal(optimized.predict(X), model.predict(X))
+
+
+def test_optimized_inference_accepts_named_feature_dict(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    preds = optimized.predict({"f0": [0.0, 0.0, 1.0, 1.0], "f1": [0.0, 1.0, 0.0, 1.0]})
+
+    assert np.array_equal(preds, y)
+
+
+def test_optimize_inference_rejects_zero_physical_cores() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+    model = train(X, y)
+
+    with pytest.raises(ValueError, match="Requested 0 physical cores"):
+        model.optimize_inference(physical_cores=0)
+
+
 def test_train_id3_classifier(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:

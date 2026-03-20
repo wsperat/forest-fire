@@ -1,5 +1,6 @@
 use forestfire_core::{
-    Criterion, Model, Task, TrainAlgorithm, TrainConfig, TreeType, train as train_model,
+    Criterion, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm, TrainConfig,
+    TreeType, train as train_model,
 };
 use forestfire_data::{Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -10,6 +11,11 @@ use std::collections::BTreeMap;
 #[pyclass(name = "Model")]
 struct PyModel {
     inner: Model,
+}
+
+#[pyclass(name = "OptimizedModel")]
+struct PyOptimizedModel {
+    inner: CoreOptimizedModel,
 }
 
 #[pyclass(name = "Table")]
@@ -570,6 +576,84 @@ impl PyModel {
         Ok(PyArray1::from_vec(py, preds))
     }
 
+    #[pyo3(signature = (physical_cores=None))]
+    fn optimize_inference(&self, physical_cores: Option<usize>) -> PyResult<PyOptimizedModel> {
+        let inner = self
+            .inner
+            .optimize_inference(physical_cores)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(PyOptimizedModel { inner })
+    }
+
+    #[getter]
+    fn algorithm(&self) -> &'static str {
+        algorithm_name(self.inner.algorithm())
+    }
+
+    #[getter]
+    fn task(&self) -> &'static str {
+        task_name(self.inner.task())
+    }
+
+    #[getter]
+    fn criterion(&self) -> &'static str {
+        criterion_name(self.inner.criterion())
+    }
+
+    #[getter]
+    fn tree_type(&self) -> &'static str {
+        tree_type_name(self.inner.tree_type())
+    }
+
+    #[getter]
+    fn mean_(&self) -> Option<f64> {
+        self.inner.mean_value()
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.to_ir_json_pretty()
+        } else {
+            self.inner.to_ir_json()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.serialize_pretty()
+        } else {
+            self.inner.serialize()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+}
+
+#[pymethods]
+impl PyOptimizedModel {
+    fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let preds = match build_inference_input(x)? {
+            InferenceInput::Rows(rows) => self.inner.predict_rows(rows),
+            InferenceInput::NamedColumns(columns) => self.inner.predict_named_columns(columns),
+            InferenceInput::SparseBinaryColumns {
+                n_rows,
+                n_features,
+                columns,
+            } => self
+                .inner
+                .predict_sparse_binary_columns(n_rows, n_features, columns),
+            InferenceInput::TrainingTable(table) => Ok(self.inner.predict_table(&table)),
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(PyArray1::from_vec(py, preds))
+    }
+
     #[getter]
     fn algorithm(&self) -> &'static str {
         algorithm_name(self.inner.algorithm())
@@ -654,8 +738,9 @@ impl PyTable {
 #[pymodule]
 fn forestfire(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyModel>()?;
+    m.add_class::<PyOptimizedModel>()?;
     m.add_class::<PyTable>()?;
     m.add_function(wrap_pyfunction!(train, m)?)?;
-    m.add("__all__", vec!["Model", "Table", "train"])?;
+    m.add("__all__", vec!["Model", "OptimizedModel", "Table", "train"])?;
     Ok(())
 }

@@ -2,11 +2,13 @@ use forestfire_data::{BinnedColumnKind, TableAccess, numeric_bin_boundaries};
 #[cfg(feature = "polars")]
 use polars::prelude::{Column, DataFrame, DataType, LazyFrame};
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 pub mod ir;
 pub mod tree;
@@ -30,6 +32,9 @@ pub use tree::regressor::RegressionTreeError;
 pub use tree::regressor::RegressionTreeOptions;
 pub use tree::regressor::train_cart_regressor;
 pub use tree::regressor::train_oblivious_regressor;
+
+const OPTIMIZED_MULTIWAY_LOOKUP_SIZE: usize = 512;
+const PARALLEL_INFERENCE_ROW_THRESHOLD: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
@@ -258,6 +263,32 @@ impl From<polars::error::PolarsError> for PredictError {
     }
 }
 
+#[derive(Debug)]
+pub enum OptimizeError {
+    InvalidPhysicalCoreCount { requested: usize, available: usize },
+    ThreadPoolBuildFailed(String),
+}
+
+impl Display for OptimizeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OptimizeError::InvalidPhysicalCoreCount {
+                requested,
+                available,
+            } => write!(
+                f,
+                "Requested {} physical cores, but the available physical core count is {}.",
+                requested, available
+            ),
+            OptimizeError::ThreadPoolBuildFailed(message) => {
+                write!(f, "Failed to build inference thread pool: {}.", message)
+            }
+        }
+    }
+}
+
+impl Error for OptimizeError {}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Parallelism {
     thread_count: usize,
@@ -306,14 +337,14 @@ enum InferenceBinnedColumn {
 }
 
 #[derive(Debug, Clone)]
-struct InferenceTable {
+pub(crate) struct InferenceTable {
     feature_columns: Vec<InferenceFeatureColumn>,
     binned_feature_columns: Vec<InferenceBinnedColumn>,
     n_rows: usize,
 }
 
 impl InferenceTable {
-    fn from_rows(
+    pub(crate) fn from_rows(
         rows: Vec<Vec<f64>>,
         preprocessing: &[FeaturePreprocessing],
     ) -> Result<Self, PredictError> {
@@ -341,7 +372,7 @@ impl InferenceTable {
         Self::from_columns(columns, preprocessing)
     }
 
-    fn from_named_columns(
+    pub(crate) fn from_named_columns(
         columns: BTreeMap<String, Vec<f64>>,
         preprocessing: &[FeaturePreprocessing],
     ) -> Result<Self, PredictError> {
@@ -383,7 +414,7 @@ impl InferenceTable {
         Self::from_columns(ordered, preprocessing)
     }
 
-    fn from_sparse_binary_columns(
+    pub(crate) fn from_sparse_binary_columns(
         n_rows: usize,
         n_features: usize,
         columns: Vec<Vec<usize>>,
@@ -487,6 +518,39 @@ impl InferenceTable {
             n_rows,
         })
     }
+
+    pub(crate) fn to_binned_matrix(&self) -> BinnedInferenceMatrix {
+        let n_features = self.feature_columns.len();
+        let mut bins = vec![0u16; self.n_rows * n_features];
+
+        for row_index in 0..self.n_rows {
+            let row_offset = row_index * n_features;
+            for feature_index in 0..n_features {
+                bins[row_offset + feature_index] = self.binned_value(feature_index, row_index);
+            }
+        }
+
+        BinnedInferenceMatrix {
+            n_rows: self.n_rows,
+            n_features,
+            bins,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BinnedInferenceMatrix {
+    n_rows: usize,
+    n_features: usize,
+    bins: Vec<u16>,
+}
+
+impl BinnedInferenceMatrix {
+    #[inline(always)]
+    fn row(&self, row_index: usize) -> &[u16] {
+        let start = row_index * self.n_features;
+        &self.bins[start..start + self.n_features]
+    }
 }
 
 fn infer_numeric_bin(value: f64, boundaries: &[NumericBinBoundary]) -> u16 {
@@ -560,6 +624,477 @@ impl TableAccess for InferenceTable {
     fn target_value(&self, _row_index: usize) -> f64 {
         0.0
     }
+}
+
+#[derive(Debug, Clone)]
+enum OptimizedRuntime {
+    TargetMean {
+        value: f64,
+    },
+    StandardClassifier {
+        nodes: Vec<OptimizedClassifierNode>,
+        root: usize,
+    },
+    ObliviousClassifier {
+        feature_indices: Vec<usize>,
+        threshold_bins: Vec<u16>,
+        leaf_values: Vec<f64>,
+    },
+    StandardRegressor {
+        nodes: Vec<OptimizedRegressorNode>,
+        root: usize,
+    },
+    ObliviousRegressor {
+        feature_indices: Vec<usize>,
+        threshold_bins: Vec<u16>,
+        leaf_values: Vec<f64>,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum OptimizedClassifierNode {
+    Leaf(f64),
+    Binary {
+        feature_index: usize,
+        threshold_bin: u16,
+        children: [usize; 2],
+    },
+    Multiway {
+        feature_index: usize,
+        child_lookup: Vec<usize>,
+        fallback_value: f64,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum OptimizedRegressorNode {
+    Leaf(f64),
+    Binary {
+        feature_index: usize,
+        threshold_bin: u16,
+        children: [usize; 2],
+    },
+}
+
+#[derive(Debug, Clone)]
+struct InferenceExecutor {
+    thread_count: usize,
+    pool: Option<Arc<rayon::ThreadPool>>,
+}
+
+impl InferenceExecutor {
+    fn new(thread_count: usize) -> Result<Self, OptimizeError> {
+        let pool = if thread_count > 1 {
+            Some(Arc::new(
+                ThreadPoolBuilder::new()
+                    .num_threads(thread_count)
+                    .build()
+                    .map_err(|err| OptimizeError::ThreadPoolBuildFailed(err.to_string()))?,
+            ))
+        } else {
+            None
+        };
+
+        Ok(Self { thread_count, pool })
+    }
+
+    fn predict_rows<F>(&self, n_rows: usize, predict_row: F) -> Vec<f64>
+    where
+        F: Fn(usize) -> f64 + Sync + Send,
+    {
+        if self.thread_count == 1 || n_rows < PARALLEL_INFERENCE_ROW_THRESHOLD {
+            return (0..n_rows).map(predict_row).collect();
+        }
+
+        self.pool
+            .as_ref()
+            .expect("thread pool exists when parallel inference is enabled")
+            .install(|| (0..n_rows).into_par_iter().map(predict_row).collect())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OptimizedModel {
+    source_model: Model,
+    runtime: OptimizedRuntime,
+    executor: InferenceExecutor,
+}
+
+impl OptimizedModel {
+    fn new(source_model: Model, physical_cores: Option<usize>) -> Result<Self, OptimizeError> {
+        let thread_count = resolve_inference_thread_count(physical_cores)?;
+        let runtime = OptimizedRuntime::from_model(&source_model);
+        let executor = InferenceExecutor::new(thread_count)?;
+
+        Ok(Self {
+            source_model,
+            runtime,
+            executor,
+        })
+    }
+
+    pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        self.executor.predict_rows(table.n_rows(), |row_index| {
+            self.runtime.predict_table_row(table, row_index)
+        })
+    }
+
+    pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
+        let matrix = table.to_binned_matrix();
+        Ok(self.predict_binned_matrix(&matrix))
+    }
+
+    pub fn predict_named_columns(
+        &self,
+        columns: BTreeMap<String, Vec<f64>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table =
+            InferenceTable::from_named_columns(columns, self.source_model.feature_preprocessing())?;
+        let matrix = table.to_binned_matrix();
+        Ok(self.predict_binned_matrix(&matrix))
+    }
+
+    pub fn predict_sparse_binary_columns(
+        &self,
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_sparse_binary_columns(
+            n_rows,
+            n_features,
+            columns,
+            self.source_model.feature_preprocessing(),
+        )?;
+        let matrix = table.to_binned_matrix();
+        Ok(self.predict_binned_matrix(&matrix))
+    }
+
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_dataframe(&self, df: &DataFrame) -> Result<Vec<f64>, PredictError> {
+        let columns = polars_named_columns(df)?;
+        self.predict_named_columns(columns)
+    }
+
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_lazyframe(&self, lf: &LazyFrame) -> Result<Vec<f64>, PredictError> {
+        let df = lf.clone().collect()?;
+        self.predict_polars_dataframe(&df)
+    }
+
+    pub fn algorithm(&self) -> TrainAlgorithm {
+        self.source_model.algorithm()
+    }
+
+    pub fn task(&self) -> Task {
+        self.source_model.task()
+    }
+
+    pub fn criterion(&self) -> Criterion {
+        self.source_model.criterion()
+    }
+
+    pub fn tree_type(&self) -> TreeType {
+        self.source_model.tree_type()
+    }
+
+    pub fn mean_value(&self) -> Option<f64> {
+        self.source_model.mean_value()
+    }
+
+    pub fn to_ir(&self) -> ModelPackageIr {
+        self.source_model.to_ir()
+    }
+
+    pub fn to_ir_json(&self) -> Result<String, serde_json::Error> {
+        self.source_model.to_ir_json()
+    }
+
+    pub fn to_ir_json_pretty(&self) -> Result<String, serde_json::Error> {
+        self.source_model.to_ir_json_pretty()
+    }
+
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        self.source_model.serialize()
+    }
+
+    pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
+        self.source_model.serialize_pretty()
+    }
+
+    fn predict_binned_matrix(&self, matrix: &BinnedInferenceMatrix) -> Vec<f64> {
+        self.executor.predict_rows(matrix.n_rows, |row_index| {
+            self.runtime.predict_binned_row(matrix.row(row_index))
+        })
+    }
+}
+
+impl OptimizedRuntime {
+    fn from_model(model: &Model) -> Self {
+        match model {
+            Model::TargetMean(target_mean) => Self::TargetMean {
+                value: target_mean.mean,
+            },
+            Model::DecisionTreeClassifier(classifier) => Self::from_classifier(classifier),
+            Model::DecisionTreeRegressor(regressor) => Self::from_regressor(regressor),
+        }
+    }
+
+    fn from_classifier(classifier: &DecisionTreeClassifier) -> Self {
+        match classifier.structure() {
+            tree::classifier::TreeStructure::Standard { nodes, root } => {
+                let optimized_nodes = nodes
+                    .iter()
+                    .map(|node| match node {
+                        tree::classifier::TreeNode::Leaf { class_index, .. } => {
+                            OptimizedClassifierNode::Leaf(classifier.class_labels()[*class_index])
+                        }
+                        tree::classifier::TreeNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            left_child,
+                            right_child,
+                            ..
+                        } => OptimizedClassifierNode::Binary {
+                            feature_index: *feature_index,
+                            threshold_bin: *threshold_bin,
+                            children: [*left_child, *right_child],
+                        },
+                        tree::classifier::TreeNode::MultiwaySplit {
+                            feature_index,
+                            fallback_class_index,
+                            branches,
+                            ..
+                        } => {
+                            let mut child_lookup = vec![usize::MAX; OPTIMIZED_MULTIWAY_LOOKUP_SIZE];
+                            for (bin, child_index) in branches {
+                                let idx = usize::from(*bin);
+                                if idx < OPTIMIZED_MULTIWAY_LOOKUP_SIZE {
+                                    child_lookup[idx] = *child_index;
+                                }
+                            }
+                            OptimizedClassifierNode::Multiway {
+                                feature_index: *feature_index,
+                                child_lookup,
+                                fallback_value: classifier.class_labels()[*fallback_class_index],
+                            }
+                        }
+                    })
+                    .collect();
+
+                Self::StandardClassifier {
+                    nodes: optimized_nodes,
+                    root: *root,
+                }
+            }
+            tree::classifier::TreeStructure::Oblivious {
+                splits,
+                leaf_class_indices,
+                ..
+            } => Self::ObliviousClassifier {
+                feature_indices: splits.iter().map(|split| split.feature_index).collect(),
+                threshold_bins: splits.iter().map(|split| split.threshold_bin).collect(),
+                leaf_values: leaf_class_indices
+                    .iter()
+                    .map(|class_index| classifier.class_labels()[*class_index])
+                    .collect(),
+            },
+        }
+    }
+
+    fn from_regressor(regressor: &DecisionTreeRegressor) -> Self {
+        match regressor.structure() {
+            tree::regressor::RegressionTreeStructure::Standard { nodes, root } => {
+                let optimized_nodes = nodes
+                    .iter()
+                    .map(|node| match node {
+                        tree::regressor::RegressionNode::Leaf { value, .. } => {
+                            OptimizedRegressorNode::Leaf(*value)
+                        }
+                        tree::regressor::RegressionNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            left_child,
+                            right_child,
+                            ..
+                        } => OptimizedRegressorNode::Binary {
+                            feature_index: *feature_index,
+                            threshold_bin: *threshold_bin,
+                            children: [*left_child, *right_child],
+                        },
+                    })
+                    .collect();
+
+                Self::StandardRegressor {
+                    nodes: optimized_nodes,
+                    root: *root,
+                }
+            }
+            tree::regressor::RegressionTreeStructure::Oblivious {
+                splits,
+                leaf_values,
+                ..
+            } => Self::ObliviousRegressor {
+                feature_indices: splits.iter().map(|split| split.feature_index).collect(),
+                threshold_bins: splits.iter().map(|split| split.threshold_bin).collect(),
+                leaf_values: leaf_values.clone(),
+            },
+        }
+    }
+
+    #[inline(always)]
+    fn predict_table_row(&self, table: &dyn TableAccess, row_index: usize) -> f64 {
+        match self {
+            OptimizedRuntime::TargetMean { value } => *value,
+            OptimizedRuntime::StandardClassifier { nodes, root } => {
+                predict_standard_classifier_row(nodes, *root, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+            }
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| table.binned_value(feature_index, row_index),
+            ),
+            OptimizedRuntime::StandardRegressor { nodes, root } => {
+                predict_standard_regressor_row(nodes, *root, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+            }
+            OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| table.binned_value(feature_index, row_index),
+            ),
+        }
+    }
+
+    #[inline(always)]
+    fn predict_binned_row(&self, row_bins: &[u16]) -> f64 {
+        match self {
+            OptimizedRuntime::TargetMean { value } => *value,
+            OptimizedRuntime::StandardClassifier { nodes, root } => {
+                predict_standard_classifier_row(nodes, *root, |feature_index| {
+                    row_bins[feature_index]
+                })
+            }
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| row_bins[feature_index],
+            ),
+            OptimizedRuntime::StandardRegressor { nodes, root } => {
+                predict_standard_regressor_row(nodes, *root, |feature_index| {
+                    row_bins[feature_index]
+                })
+            }
+            OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| row_bins[feature_index],
+            ),
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_standard_classifier_row<F>(
+    nodes: &[OptimizedClassifierNode],
+    root: usize,
+    bin_at: F,
+) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut node_index = root;
+    loop {
+        match &nodes[node_index] {
+            OptimizedClassifierNode::Leaf(value) => return *value,
+            OptimizedClassifierNode::Binary {
+                feature_index,
+                threshold_bin,
+                children,
+            } => {
+                let go_right = usize::from(bin_at(*feature_index) > *threshold_bin);
+                node_index = children[go_right];
+            }
+            OptimizedClassifierNode::Multiway {
+                feature_index,
+                child_lookup,
+                fallback_value,
+            } => {
+                let child_index = child_lookup[usize::from(bin_at(*feature_index))];
+                if child_index == usize::MAX {
+                    return *fallback_value;
+                }
+                node_index = child_index;
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_standard_regressor_row<F>(
+    nodes: &[OptimizedRegressorNode],
+    root: usize,
+    bin_at: F,
+) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut node_index = root;
+    loop {
+        match &nodes[node_index] {
+            OptimizedRegressorNode::Leaf(value) => return *value,
+            OptimizedRegressorNode::Binary {
+                feature_index,
+                threshold_bin,
+                children,
+            } => {
+                let go_right = usize::from(bin_at(*feature_index) > *threshold_bin);
+                node_index = children[go_right];
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_oblivious_row<F>(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    bin_at: F,
+) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut leaf_index = 0usize;
+    for (&feature_index, &threshold_bin) in feature_indices.iter().zip(threshold_bins) {
+        let go_right = usize::from(bin_at(feature_index) > threshold_bin);
+        leaf_index = (leaf_index << 1) | go_right;
+    }
+    leaf_values[leaf_index]
 }
 
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
@@ -705,6 +1240,20 @@ fn resolve_parallelism(physical_cores: Option<usize>) -> Result<Parallelism, Tra
     })
 }
 
+fn resolve_inference_thread_count(physical_cores: Option<usize>) -> Result<usize, OptimizeError> {
+    let available = num_cpus::get_physical().max(1);
+    let requested = physical_cores.unwrap_or(available);
+
+    if requested == 0 {
+        return Err(OptimizeError::InvalidPhysicalCoreCount {
+            requested,
+            available,
+        });
+    }
+
+    Ok(requested.min(available))
+}
+
 fn run_with_parallelism<T, F>(parallelism: Parallelism, train_fn: F) -> Result<T, TrainError>
 where
     T: Send,
@@ -834,6 +1383,13 @@ impl Model {
 
     pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
         self.to_ir_json_pretty()
+    }
+
+    pub fn optimize_inference(
+        &self,
+        physical_cores: Option<usize>,
+    ) -> Result<OptimizedModel, OptimizeError> {
+        OptimizedModel::new(self.clone(), physical_cores)
     }
 
     pub fn json_schema() -> schemars::schema::RootSchema {
@@ -1466,6 +2022,112 @@ mod tests {
         assert_eq!(model.tree_type(), restored.tree_type());
         assert_eq!(model.criterion(), restored.criterion());
         assert_eq!(model.predict_table(&table), restored.predict_table(&table));
+    }
+
+    #[test]
+    fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+
+        assert_eq!(model.to_ir_json().unwrap(), optimized.to_ir_json().unwrap());
+        assert_eq!(model.serialize().unwrap(), optimized.serialize().unwrap());
+        assert_eq!(model.predict_table(&table), optimized.predict_table(&table));
+        assert_eq!(
+            model
+                .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+                .unwrap(),
+            optimized
+                .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 1.0, 1.0, 2.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(2)).unwrap();
+
+        assert_eq!(model.to_ir_json().unwrap(), optimized.to_ir_json().unwrap());
+        assert_eq!(model.predict_table(&table), optimized.predict_table(&table));
+        assert_eq!(
+            model
+                .predict_named_columns(BTreeMap::from([
+                    ("f0".to_string(), vec![0.0, 1.0]),
+                    ("f1".to_string(), vec![1.0, 1.0]),
+                ]))
+                .unwrap(),
+            optimized
+                .predict_named_columns(BTreeMap::from([
+                    ("f0".to_string(), vec![0.0, 1.0]),
+                    ("f1".to_string(), vec![1.0, 1.0]),
+                ]))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn optimized_model_rejects_zero_physical_cores() {
+        let table = DenseTable::with_canaries(vec![vec![0.0]], vec![1.0], 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::TargetMean,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model.optimize_inference(Some(0)).unwrap_err();
+
+        assert!(matches!(
+            err,
+            OptimizeError::InvalidPhysicalCoreCount { requested: 0, .. }
+        ));
     }
 
     #[test]

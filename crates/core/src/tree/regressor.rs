@@ -296,6 +296,10 @@ impl DecisionTreeRegressor {
         self.num_features
     }
 
+    pub(crate) fn structure(&self) -> &RegressionTreeStructure {
+        &self.structure
+    }
+
     pub(crate) fn feature_preprocessing(&self) -> &[FeaturePreprocessing] {
         &self.feature_preprocessing
     }
