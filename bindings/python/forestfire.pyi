@@ -37,6 +37,10 @@ def train(
     max_features: str | int | None = None,
     seed: int | None = None,
     compute_oob: bool = False,
+    learning_rate: float | None = None,
+    bootstrap: bool = False,
+    top_gradient_fraction: float | None = None,
+    other_gradient_fraction: float | None = None,
 ) -> "Model": ...
 
 class OptimizedModel:
@@ -53,6 +57,10 @@ class OptimizedModel:
     seed: int | None
     compute_oob: bool
     oob_score: float | None
+    learning_rate: float | None
+    bootstrap: bool
+    top_gradient_fraction: float | None
+    other_gradient_fraction: float | None
     tree_count: int
 
     @classmethod
@@ -87,6 +95,10 @@ class Model:
     seed: int | None
     compute_oob: bool
     oob_score: float | None
+    learning_rate: float | None
+    bootstrap: bool
+    top_gradient_fraction: float | None
+    other_gradient_fraction: float | None
     tree_count: int
 
     @classmethod

@@ -1601,8 +1601,9 @@ fn parse_algorithm(algorithm: &str) -> PyResult<TrainAlgorithm> {
     match algorithm {
         "dt" => Ok(TrainAlgorithm::Dt),
         "rf" => Ok(TrainAlgorithm::Rf),
+        "gbm" => Ok(TrainAlgorithm::Gbm),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported algorithm '{}'. Expected one of: dt, rf",
+            "Unsupported algorithm '{}'. Expected one of: dt, rf, gbm",
             algorithm
         ))),
     }
@@ -1776,6 +1777,32 @@ fn parse_optional_positive_usize(value: Option<usize>, name: &str) -> PyResult<O
     }
 }
 
+fn parse_optional_positive_f64(value: Option<f64>, name: &str) -> PyResult<Option<f64>> {
+    match value {
+        Some(value) if !value.is_finite() || value <= 0.0 => {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "{} must be a finite value greater than 0.",
+                name
+            )))
+        }
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
+    }
+}
+
+fn parse_optional_fraction(value: Option<f64>, name: &str) -> PyResult<Option<f64>> {
+    match value {
+        Some(value) if !value.is_finite() || !(0.0..=1.0).contains(&value) => {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "{} must be a finite value between 0 and 1.",
+                name
+            )))
+        }
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
+    }
+}
+
 fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
     let Some(bins) = bins else {
         return Ok(NumericBins::Auto);
@@ -1806,6 +1833,7 @@ fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
         TrainAlgorithm::Rf => "rf",
+        TrainAlgorithm::Gbm => "gbm",
     }
 }
 
@@ -1823,6 +1851,7 @@ fn criterion_name(criterion: Criterion) -> &'static str {
         Criterion::Entropy => "entropy",
         Criterion::Mean => "mean",
         Criterion::Median => "median",
+        Criterion::SecondOrder => "second_order",
     }
 }
 
@@ -1837,7 +1866,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -1857,6 +1886,10 @@ fn train(
     max_features: Option<&Bound<PyAny>>,
     seed: Option<u64>,
     compute_oob: bool,
+    learning_rate: Option<f64>,
+    bootstrap: bool,
+    top_gradient_fraction: Option<f64>,
+    other_gradient_fraction: Option<f64>,
 ) -> PyResult<PyModel> {
     let task_was_auto = task == "auto";
     let resolved_task = resolve_task(x, y, task)?;
@@ -1874,6 +1907,16 @@ fn train(
         max_features: parse_max_features(max_features)?,
         seed,
         compute_oob,
+        learning_rate: parse_optional_positive_f64(learning_rate, "learning_rate")?,
+        bootstrap,
+        top_gradient_fraction: parse_optional_fraction(
+            top_gradient_fraction,
+            "top_gradient_fraction",
+        )?,
+        other_gradient_fraction: parse_optional_fraction(
+            other_gradient_fraction,
+            "other_gradient_fraction",
+        )?,
     };
     let model = train_model_detached(py, table, config)?;
 
@@ -2085,6 +2128,26 @@ impl PyModel {
     #[getter]
     fn oob_score(&self) -> Option<f64> {
         self.inner.oob_score()
+    }
+
+    #[getter]
+    fn learning_rate(&self) -> Option<f64> {
+        self.inner.learning_rate()
+    }
+
+    #[getter]
+    fn bootstrap(&self) -> bool {
+        self.inner.bootstrap()
+    }
+
+    #[getter]
+    fn top_gradient_fraction(&self) -> Option<f64> {
+        self.inner.top_gradient_fraction()
+    }
+
+    #[getter]
+    fn other_gradient_fraction(&self) -> Option<f64> {
+        self.inner.other_gradient_fraction()
     }
 
     #[pyo3(signature = (pretty=false))]
@@ -2316,6 +2379,26 @@ impl PyOptimizedModel {
     #[getter]
     fn oob_score(&self) -> Option<f64> {
         self.inner.oob_score()
+    }
+
+    #[getter]
+    fn learning_rate(&self) -> Option<f64> {
+        self.inner.learning_rate()
+    }
+
+    #[getter]
+    fn bootstrap(&self) -> bool {
+        self.inner.bootstrap()
+    }
+
+    #[getter]
+    fn top_gradient_fraction(&self) -> Option<f64> {
+        self.inner.top_gradient_fraction()
+    }
+
+    #[getter]
+    fn other_gradient_fraction(&self) -> Option<f64> {
+        self.inner.other_gradient_fraction()
     }
 
     #[pyo3(signature = (pretty=false))]

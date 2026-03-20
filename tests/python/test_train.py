@@ -1537,7 +1537,72 @@ def test_train_rejects_unknown_algorithm() -> None:
     y = np.array([0.0, 1.0])
 
     with pytest.raises(ValueError, match="Unsupported algorithm"):
-        train(X, y, algorithm="gbm")
+        train(X, y, algorithm="unknown")
+
+
+def test_train_gradient_boosting_regressor_learns_signal() -> None:
+    X = np.array([[0.0], [0.0], [1.0], [1.0], [2.0], [2.0]], dtype=np.float64)
+    y = np.array([0.0, 0.0, 1.0, 1.0, 2.0, 2.0], dtype=np.float64)
+
+    model = train(
+        X,
+        y,
+        algorithm="gbm",
+        task="regression",
+        tree_type="cart",
+        n_trees=25,
+        learning_rate=0.2,
+        top_gradient_fraction=1.0,
+        other_gradient_fraction=0.0,
+        canaries=0,
+    )
+
+    preds = model.predict(X)
+    assert model.algorithm == "gbm"
+    assert model.criterion == "second_order"
+    assert model.learning_rate == 0.2
+    assert model.bootstrap is False
+    assert np.unique(preds).size > 1
+    assert preds[0] < preds[-1]
+
+
+def test_train_gradient_boosting_classifier_predicts_probabilities() -> None:
+    X = np.array([[0.0], [0.1], [0.9], [1.0]], dtype=np.float64)
+    y = np.array([0, 0, 1, 1], dtype=np.int64)
+
+    model = train(
+        X,
+        y,
+        algorithm="gbm",
+        task="classification",
+        tree_type="cart",
+        n_trees=25,
+        learning_rate=0.2,
+        bootstrap=True,
+        top_gradient_fraction=0.5,
+        other_gradient_fraction=0.25,
+        canaries=0,
+    )
+
+    probs = model.predict_proba(X)
+    assert model.algorithm == "gbm"
+    assert model.learning_rate == 0.2
+    assert model.bootstrap is True
+    assert model.top_gradient_fraction == 0.5
+    assert model.other_gradient_fraction == 0.25
+    assert probs.shape == (4, 2)
+    assert probs[0, 1] < 0.5
+    assert probs[-1, 1] > 0.5
+
+
+def test_train_gradient_boosting_rejects_multiclass_classification() -> None:
+    X = np.array([[0.0], [1.0], [2.0]], dtype=np.float64)
+    y = np.array([0, 1, 2], dtype=np.int64)
+
+    with pytest.raises(ValueError, match="binary classification only"):
+        train(
+            X, y, algorithm="gbm", task="classification", tree_type="cart", canaries=0
+        )
 
 
 def test_train_accepts_fixed_bins() -> None:

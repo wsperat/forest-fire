@@ -203,6 +203,10 @@ impl RandomForest {
         metadata.seed = self.seed;
         metadata.compute_oob = self.compute_oob;
         metadata.oob_score = self.oob_score;
+        metadata.learning_rate = None;
+        metadata.bootstrap = None;
+        metadata.top_gradient_fraction = None;
+        metadata.other_gradient_fraction = None;
         metadata
     }
 

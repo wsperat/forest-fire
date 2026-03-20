@@ -13,8 +13,9 @@ ForestFire is a tree-learning library with a Rust core and a Python API. The cur
 
 - Unified `train` API in Rust and Python
 - Automatic table selection between `DenseTable` and `SparseTable`
-- Classification trees: `id3`, `c45`, `cart`, `oblivious`
+- Classification trees: `id3`, `c45`, `cart`, `randomized`, `oblivious`
 - Regression trees: `cart`, `randomized`, `oblivious`
+- Learner families: `dt`, `rf`, `gbm`
 - Criterion selection via `gini`, `entropy`, `mean`, `median`, or `auto`
 - Canary-based automatic growth stopping
 - Physical-core-aware parallel training
@@ -157,6 +158,10 @@ train(
     max_features=None,
     seed=None,
     compute_oob=False,
+    learning_rate=None,
+    bootstrap=False,
+    top_gradient_fraction=None,
+    other_gradient_fraction=None,
 )
 ```
 
@@ -174,11 +179,13 @@ Current values:
 
 - `dt`
 - `rf`
+- `gbm`
 
 Why it exists:
 
 - It keeps the top-level API stable as the library grows beyond a single learner family.
 - It separates the learner family from the exact tree structure.
+- `gbm` uses stage-wise second-order trees for regression and binary classification.
 
 Why it is a string in Python but an enum in Rust:
 
@@ -235,6 +242,7 @@ Current `auto` resolution:
 - `id3`, `c45` classification -> `entropy`
 - `cart`, `randomized`, `oblivious` classification -> `gini`
 - regression models -> `mean`
+- `gbm` trains second-order trees internally when the public criterion is left as `auto`
 
 #### `canaries`
 
@@ -252,6 +260,7 @@ Current stopping behavior:
 
 - standard trees: growth stops at that node
 - oblivious trees: growth stops for the remaining tree
+- `gbm`: the current stage is discarded and boosting stops when the first/root split would be a canary
 
 #### `bins`
 
@@ -311,6 +320,31 @@ Behavior:
 - classification forests expose OOB accuracy
 - regression forests expose OOB `R^2`
 - non-forest models always report `compute_oob=False` and `oob_score=None`
+
+#### `learning_rate`
+
+Behavior:
+
+- only meaningful for `algorithm="gbm"`
+- scales each stage contribution before it is added to the ensemble
+- smaller values typically require more trees
+
+#### `bootstrap`
+
+Behavior:
+
+- only meaningful for `algorithm="gbm"`
+- when enabled, each stage starts from a bootstrap sample of rows
+- when disabled, each stage starts from the full table
+
+#### `top_gradient_fraction` and `other_gradient_fraction`
+
+Behavior:
+
+- only meaningful for `algorithm="gbm"`
+- ForestFire uses a LightGBM-style gradient-focused sampling step
+- `top_gradient_fraction` keeps the highest-gradient rows deterministically
+- `other_gradient_fraction` samples additional rows from the remainder
 
 ## Tree introspection
 
@@ -751,7 +785,6 @@ It does not replace the JSON IR. It is an execution artifact for optimized runti
 
 - missing-value handling
 - categorical preprocessing semantics
-- ensembles
 
 ### JSON Schema
 
@@ -763,10 +796,17 @@ It is generated from the Rust IR types and checked in as a contract artifact. Th
 
 ## Support matrix
 
-### Tasks and tree types
+### Algorithms, tasks, and tree types
 
-- `task="regression"` with `tree_type="cart" | "randomized" | "oblivious"`
-- `task="classification"` with `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
+- `algorithm="dt"`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
+- `algorithm="rf"`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
+- `algorithm="gbm"`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `cart`, `randomized`, `oblivious` with binary targets only
 
 ### Python input types
 
@@ -784,20 +824,24 @@ Run:
 
 ```bash
 task benchmark-inference
-task benchmark-training
-task benchmark-prediction
+task benchmark-training-rf
+task benchmark-training-extra-trees
+task benchmark-training-gbm
+task benchmark-prediction-rf
+task benchmark-prediction-extra-trees
+task benchmark-prediction-gbm
 ```
 
-The training and prediction benchmark scripts live in `benchmark/` and use the root `benchmark` dependency group to compare ForestFire against sklearn, LightGBM, and XGBoost for random-forest-style models. Extra-trees runs are benchmarked for ForestFire, sklearn, and LightGBM; XGBoost is recorded as unsupported there because it does not expose a direct extra-trees random-forest mode.
+The training and prediction benchmark scripts live in `benchmark/` and use the root `benchmark` dependency group to compare ForestFire against sklearn, LightGBM, and XGBoost for random forests, extra trees, and gradient boosting. Extra-trees runs are benchmarked for ForestFire, sklearn, and LightGBM; XGBoost is recorded as unsupported there because it does not expose a direct extra-trees random-forest mode.
 
 Artifacts are written to:
 
 - [docs/benchmarks/inference_benchmark_results.json](docs/benchmarks/inference_benchmark_results.json)
-- [docs/benchmarks/training_benchmark_results.json](docs/benchmarks/training_benchmark_results.json)
-- [docs/benchmarks/prediction_benchmark_results.json](docs/benchmarks/prediction_benchmark_results.json)
-- [docs/benchmarks/training_library_comparison.png](docs/benchmarks/training_library_comparison.png)
-- [docs/benchmarks/prediction_library_comparison.png](docs/benchmarks/prediction_library_comparison.png)
-- [docs/benchmarks/predict_proba_library_comparison.png](docs/benchmarks/predict_proba_library_comparison.png)
+- `docs/benchmarks/training_benchmark_results_<family>_<problem>.json`
+- `docs/benchmarks/prediction_benchmark_results_<family>_<problem>.json`
+- `docs/benchmarks/training_library_comparison_<family>_<problem>.png`
+- `docs/benchmarks/prediction_library_comparison_<family>_<problem>.png`
+- `docs/benchmarks/predict_proba_library_comparison_<family>_<problem>.png`
 - [docs/benchmarks/cart_runtime.png](docs/benchmarks/cart_runtime.png)
 - [docs/benchmarks/cart_speedup.png](docs/benchmarks/cart_speedup.png)
 - [docs/benchmarks/oblivious_runtime.png](docs/benchmarks/oblivious_runtime.png)

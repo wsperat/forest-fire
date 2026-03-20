@@ -24,7 +24,7 @@ def parse_args() -> BenchmarkConfig:
     parser.add_argument("--output-dir", type=Path, default=Path("docs/benchmarks"))
     parser.add_argument(
         "--family",
-        choices=("random_forest", "extra_trees"),
+        choices=("random_forest", "extra_trees", "gradient_boosting"),
         default="random_forest",
     )
     parser.add_argument(
@@ -138,7 +138,11 @@ def main() -> None:
         results.append(result)
 
     log("writing prediction benchmark json")
-    dump_results(config.output_dir / "prediction_benchmark_results.json", results)
+    dump_results(
+        config.output_dir
+        / f"prediction_benchmark_results_{config.family}_{config.problem}.json",
+        results,
+    )
     log("writing prediction comparison plot")
     plot_library_comparison(
         results,
@@ -148,7 +152,10 @@ def main() -> None:
             f"{config.predict_rows:,} rows | {config.n_estimators} estimators"
         ),
         ylabel="predict time (seconds)",
-        output_path=config.output_dir / "prediction_library_comparison.png",
+        output_path=(
+            config.output_dir
+            / f"prediction_library_comparison_{config.family}_{config.problem}.png"
+        ),
     )
     if config.problem == "classification":
         log("writing predict_proba comparison plot")
@@ -160,7 +167,13 @@ def main() -> None:
                 f"{config.predict_rows:,} rows | {config.n_estimators} estimators"
             ),
             ylabel="predict_proba time (seconds)",
-            output_path=config.output_dir / "predict_proba_library_comparison.png",
+            output_path=(
+                config.output_dir
+                / (
+                    "predict_proba_library_comparison_"
+                    f"{config.family}_{config.problem}.png"
+                )
+            ),
         )
     log("prediction benchmark complete")
 

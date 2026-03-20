@@ -13,6 +13,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use wide::{u16x8, u32x8};
 
+mod boosting;
 mod bootstrap;
 mod forest;
 pub mod ir;
@@ -20,6 +21,8 @@ mod sampling;
 mod training;
 pub mod tree;
 
+pub use boosting::BoostingError;
+pub use boosting::GradientBoostedTrees;
 pub use forest::RandomForest;
 pub use ir::IrError;
 pub use ir::ModelPackageIr;
@@ -55,6 +58,7 @@ const COMPILED_ARTIFACT_HEADER_LEN: usize = 8;
 pub enum TrainAlgorithm {
     Dt,
     Rf,
+    Gbm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +68,7 @@ pub enum Criterion {
     Entropy,
     Mean,
     Median,
+    SecondOrder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +146,10 @@ pub struct TrainConfig {
     pub max_features: MaxFeatures,
     pub seed: Option<u64>,
     pub compute_oob: bool,
+    pub learning_rate: Option<f64>,
+    pub bootstrap: bool,
+    pub top_gradient_fraction: Option<f64>,
+    pub other_gradient_fraction: Option<f64>,
 }
 
 impl Default for TrainConfig {
@@ -158,6 +167,10 @@ impl Default for TrainConfig {
             max_features: MaxFeatures::Auto,
             seed: None,
             compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         }
     }
 }
@@ -167,12 +180,14 @@ pub enum Model {
     DecisionTreeClassifier(DecisionTreeClassifier),
     DecisionTreeRegressor(DecisionTreeRegressor),
     RandomForest(RandomForest),
+    GradientBoostedTrees(GradientBoostedTrees),
 }
 
 #[derive(Debug)]
 pub enum TrainError {
     DecisionTree(DecisionTreeError),
     RegressionTree(RegressionTreeError),
+    Boosting(BoostingError),
     InvalidPhysicalCoreCount {
         requested: usize,
         available: usize,
@@ -195,6 +210,7 @@ impl Display for TrainError {
         match self {
             TrainError::DecisionTree(err) => err.fmt(f),
             TrainError::RegressionTree(err) => err.fmt(f),
+            TrainError::Boosting(err) => err.fmt(f),
             TrainError::InvalidPhysicalCoreCount {
                 requested,
                 available,
@@ -967,6 +983,17 @@ enum OptimizedRuntime {
     ForestRegressor {
         trees: Vec<OptimizedRuntime>,
     },
+    BoostedBinaryClassifier {
+        trees: Vec<OptimizedRuntime>,
+        tree_weights: Vec<f64>,
+        base_score: f64,
+        class_labels: Vec<f64>,
+    },
+    BoostedRegressor {
+        trees: Vec<OptimizedRuntime>,
+        tree_weights: Vec<f64>,
+        base_score: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1267,6 +1294,22 @@ impl OptimizedModel {
         self.source_model.oob_score()
     }
 
+    pub fn learning_rate(&self) -> Option<f64> {
+        self.source_model.learning_rate()
+    }
+
+    pub fn bootstrap(&self) -> bool {
+        self.source_model.bootstrap()
+    }
+
+    pub fn top_gradient_fraction(&self) -> Option<f64> {
+        self.source_model.top_gradient_fraction()
+    }
+
+    pub fn other_gradient_fraction(&self) -> Option<f64> {
+        self.source_model.other_gradient_fraction()
+    }
+
     pub fn tree_count(&self) -> usize {
         self.source_model.tree_count()
     }
@@ -1405,6 +1448,8 @@ impl OptimizedRuntime {
                 | OptimizedRuntime::ObliviousRegressor { .. }
                 | OptimizedRuntime::ForestClassifier { .. }
                 | OptimizedRuntime::ForestRegressor { .. }
+                | OptimizedRuntime::BoostedBinaryClassifier { .. }
+                | OptimizedRuntime::BoostedRegressor { .. }
         )
     }
 
@@ -1425,6 +1470,21 @@ impl OptimizedRuntime {
                 },
                 Task::Regression => Self::ForestRegressor {
                     trees: forest.trees().iter().map(Self::from_model).collect(),
+                },
+            },
+            Model::GradientBoostedTrees(model) => match model.task() {
+                Task::Classification => Self::BoostedBinaryClassifier {
+                    trees: model.trees().iter().map(Self::from_model).collect(),
+                    tree_weights: model.tree_weights().to_vec(),
+                    base_score: model.base_score(),
+                    class_labels: model
+                        .class_labels()
+                        .expect("classification boosting stores class labels"),
+                },
+                Task::Regression => Self::BoostedRegressor {
+                    trees: model.trees().iter().map(Self::from_model).collect(),
+                    tree_weights: model.tree_weights().to_vec(),
+                    base_score: model.base_score(),
                 },
             },
         }
@@ -1537,7 +1597,8 @@ impl OptimizedRuntime {
             OptimizedRuntime::BinaryClassifier { .. }
             | OptimizedRuntime::StandardClassifier { .. }
             | OptimizedRuntime::ObliviousClassifier { .. }
-            | OptimizedRuntime::ForestClassifier { .. } => {
+            | OptimizedRuntime::ForestClassifier { .. }
+            | OptimizedRuntime::BoostedBinaryClassifier { .. } => {
                 let probabilities = self
                     .predict_proba_table_row(table, row_index)
                     .expect("classifier runtime supports probability prediction");
@@ -1564,6 +1625,18 @@ impl OptimizedRuntime {
                     .map(|tree| tree.predict_table_row(table, row_index))
                     .sum::<f64>()
                     / trees.len() as f64
+            }
+            OptimizedRuntime::BoostedRegressor {
+                trees,
+                tree_weights,
+                base_score,
+            } => {
+                *base_score
+                    + trees
+                        .iter()
+                        .zip(tree_weights.iter().copied())
+                        .map(|(tree, weight)| weight * tree.predict_table_row(table, row_index))
+                        .sum::<f64>()
             }
         }
     }
@@ -1613,9 +1686,25 @@ impl OptimizedRuntime {
                 }
                 Ok(totals)
             }
+            OptimizedRuntime::BoostedBinaryClassifier {
+                trees,
+                tree_weights,
+                base_score,
+                ..
+            } => {
+                let raw_score = *base_score
+                    + trees
+                        .iter()
+                        .zip(tree_weights.iter().copied())
+                        .map(|(tree, weight)| weight * tree.predict_table_row(table, row_index))
+                        .sum::<f64>();
+                let positive = sigmoid(raw_score);
+                Ok(vec![1.0 - positive, positive])
+            }
             OptimizedRuntime::BinaryRegressor { .. }
             | OptimizedRuntime::ObliviousRegressor { .. }
-            | OptimizedRuntime::ForestRegressor { .. } => {
+            | OptimizedRuntime::ForestRegressor { .. }
+            | OptimizedRuntime::BoostedRegressor { .. } => {
                 Err(PredictError::ProbabilityPredictionRequiresClassification)
             }
         }
@@ -1630,7 +1719,8 @@ impl OptimizedRuntime {
             OptimizedRuntime::BinaryClassifier { .. }
             | OptimizedRuntime::StandardClassifier { .. }
             | OptimizedRuntime::ObliviousClassifier { .. }
-            | OptimizedRuntime::ForestClassifier { .. } => {
+            | OptimizedRuntime::ForestClassifier { .. }
+            | OptimizedRuntime::BoostedBinaryClassifier { .. } => {
                 if self.should_use_batch_matrix(table.n_rows()) {
                     let matrix = ColumnMajorBinnedMatrix::from_table_access(table);
                     self.predict_proba_column_major_matrix(&matrix, executor)
@@ -1642,7 +1732,8 @@ impl OptimizedRuntime {
             }
             OptimizedRuntime::BinaryRegressor { .. }
             | OptimizedRuntime::ObliviousRegressor { .. }
-            | OptimizedRuntime::ForestRegressor { .. } => {
+            | OptimizedRuntime::ForestRegressor { .. }
+            | OptimizedRuntime::BoostedRegressor { .. } => {
                 Err(PredictError::ProbabilityPredictionRequiresClassification)
             }
         }
@@ -1657,7 +1748,8 @@ impl OptimizedRuntime {
             OptimizedRuntime::BinaryClassifier { .. }
             | OptimizedRuntime::StandardClassifier { .. }
             | OptimizedRuntime::ObliviousClassifier { .. }
-            | OptimizedRuntime::ForestClassifier { .. } => self
+            | OptimizedRuntime::ForestClassifier { .. }
+            | OptimizedRuntime::BoostedBinaryClassifier { .. } => self
                 .predict_proba_column_major_matrix(matrix, executor)
                 .expect("classifier runtime supports probability prediction")
                 .into_iter()
@@ -1688,6 +1780,20 @@ impl OptimizedRuntime {
                 let tree_count = trees.len() as f64;
                 for total in &mut totals {
                     *total /= tree_count;
+                }
+                totals
+            }
+            OptimizedRuntime::BoostedRegressor {
+                trees,
+                tree_weights,
+                base_score,
+            } => {
+                let mut totals = vec![*base_score; matrix.n_rows];
+                for (tree, weight) in trees.iter().zip(tree_weights.iter().copied()) {
+                    let values = tree.predict_column_major_matrix(matrix, executor);
+                    for (total, value) in totals.iter_mut().zip(values) {
+                        *total += weight * value;
+                    }
                 }
                 totals
             }
@@ -1741,9 +1847,31 @@ impl OptimizedRuntime {
                 }
                 Ok(totals)
             }
+            OptimizedRuntime::BoostedBinaryClassifier {
+                trees,
+                tree_weights,
+                base_score,
+                ..
+            } => {
+                let mut raw_scores = vec![*base_score; matrix.n_rows];
+                for (tree, weight) in trees.iter().zip(tree_weights.iter().copied()) {
+                    let values = tree.predict_column_major_matrix(matrix, executor);
+                    for (raw_score, value) in raw_scores.iter_mut().zip(values) {
+                        *raw_score += weight * value;
+                    }
+                }
+                Ok(raw_scores
+                    .into_iter()
+                    .map(|raw_score| {
+                        let positive = sigmoid(raw_score);
+                        vec![1.0 - positive, positive]
+                    })
+                    .collect())
+            }
             OptimizedRuntime::BinaryRegressor { .. }
             | OptimizedRuntime::ObliviousRegressor { .. }
-            | OptimizedRuntime::ForestRegressor { .. } => {
+            | OptimizedRuntime::ForestRegressor { .. }
+            | OptimizedRuntime::BoostedRegressor { .. } => {
                 Err(PredictError::ProbabilityPredictionRequiresClassification)
             }
         }
@@ -1754,8 +1882,52 @@ impl OptimizedRuntime {
             OptimizedRuntime::BinaryClassifier { class_labels, .. }
             | OptimizedRuntime::StandardClassifier { class_labels, .. }
             | OptimizedRuntime::ObliviousClassifier { class_labels, .. }
-            | OptimizedRuntime::ForestClassifier { class_labels, .. } => class_labels,
+            | OptimizedRuntime::ForestClassifier { class_labels, .. }
+            | OptimizedRuntime::BoostedBinaryClassifier { class_labels, .. } => class_labels,
             _ => &[],
+        }
+    }
+
+    #[inline(always)]
+    fn predict_binned_row_from_columns(
+        &self,
+        matrix: &ColumnMajorBinnedMatrix,
+        row_index: usize,
+    ) -> f64 {
+        match self {
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_row(nodes, |feature_index| {
+                    matrix.column(feature_index).value_at(row_index)
+                })
+            }
+            OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| matrix.column(feature_index).value_at(row_index),
+            ),
+            OptimizedRuntime::BoostedRegressor {
+                trees,
+                tree_weights,
+                base_score,
+            } => {
+                *base_score
+                    + trees
+                        .iter()
+                        .zip(tree_weights.iter().copied())
+                        .map(|(tree, weight)| {
+                            weight * tree.predict_binned_row_from_columns(matrix, row_index)
+                        })
+                        .sum::<f64>()
+            }
+            _ => self.predict_column_major_matrix(
+                matrix,
+                &InferenceExecutor::new(1).expect("inference executor"),
+            )[row_index],
         }
     }
 
@@ -1805,9 +1977,27 @@ impl OptimizedRuntime {
                 }
                 Ok(totals)
             }
+            OptimizedRuntime::BoostedBinaryClassifier {
+                trees,
+                tree_weights,
+                base_score,
+                ..
+            } => {
+                let raw_score = *base_score
+                    + trees
+                        .iter()
+                        .zip(tree_weights.iter().copied())
+                        .map(|(tree, weight)| {
+                            weight * tree.predict_binned_row_from_columns(matrix, row_index)
+                        })
+                        .sum::<f64>();
+                let positive = sigmoid(raw_score);
+                Ok(vec![1.0 - positive, positive])
+            }
             OptimizedRuntime::BinaryRegressor { .. }
             | OptimizedRuntime::ObliviousRegressor { .. }
-            | OptimizedRuntime::ForestRegressor { .. } => {
+            | OptimizedRuntime::ForestRegressor { .. }
+            | OptimizedRuntime::BoostedRegressor { .. } => {
                 Err(PredictError::ProbabilityPredictionRequiresClassification)
             }
         }
@@ -2071,6 +2261,17 @@ fn class_label_from_probabilities(probabilities: &[f64], class_labels: &[f64]) -
         .map(|(index, _)| index)
         .expect("classification probability row is non-empty");
     class_labels[best_index]
+}
+
+#[inline(always)]
+fn sigmoid(value: f64) -> f64 {
+    if value >= 0.0 {
+        let exp = (-value).exp();
+        1.0 / (1.0 + exp)
+    } else {
+        let exp = value.exp();
+        exp / (1.0 + exp)
+    }
 }
 
 fn classifier_nodes_are_binary_only(nodes: &[tree::classifier::TreeNode]) -> bool {
@@ -2379,6 +2580,7 @@ impl Model {
             Model::DecisionTreeClassifier(model) => model.predict_table(table),
             Model::DecisionTreeRegressor(model) => model.predict_table(table),
             Model::RandomForest(model) => model.predict_table(table),
+            Model::GradientBoostedTrees(model) => model.predict_table(table),
         }
     }
 
@@ -2394,6 +2596,7 @@ impl Model {
         match self {
             Model::DecisionTreeClassifier(model) => Ok(model.predict_proba_table(table)),
             Model::RandomForest(model) => model.predict_proba_table(table),
+            Model::GradientBoostedTrees(model) => model.predict_proba_table(table),
             Model::DecisionTreeRegressor(_) => {
                 Err(PredictError::ProbabilityPredictionRequiresClassification)
             }
@@ -2485,6 +2688,7 @@ impl Model {
                 TrainAlgorithm::Dt
             }
             Model::RandomForest(_) => TrainAlgorithm::Rf,
+            Model::GradientBoostedTrees(_) => TrainAlgorithm::Gbm,
         }
     }
 
@@ -2493,6 +2697,7 @@ impl Model {
             Model::DecisionTreeRegressor(_) => Task::Regression,
             Model::DecisionTreeClassifier(_) => Task::Classification,
             Model::RandomForest(model) => model.task(),
+            Model::GradientBoostedTrees(model) => model.task(),
         }
     }
 
@@ -2501,6 +2706,7 @@ impl Model {
             Model::DecisionTreeClassifier(model) => model.criterion(),
             Model::DecisionTreeRegressor(model) => model.criterion(),
             Model::RandomForest(model) => model.criterion(),
+            Model::GradientBoostedTrees(model) => model.criterion(),
         }
     }
 
@@ -2519,6 +2725,7 @@ impl Model {
                 RegressionTreeAlgorithm::Oblivious => TreeType::Oblivious,
             },
             Model::RandomForest(model) => model.tree_type(),
+            Model::GradientBoostedTrees(model) => model.tree_type(),
         }
     }
 
@@ -2526,7 +2733,8 @@ impl Model {
         match self {
             Model::DecisionTreeClassifier(_)
             | Model::DecisionTreeRegressor(_)
-            | Model::RandomForest(_) => None,
+            | Model::RandomForest(_)
+            | Model::GradientBoostedTrees(_) => None,
         }
     }
 
@@ -2564,6 +2772,22 @@ impl Model {
 
     pub fn oob_score(&self) -> Option<f64> {
         self.training_metadata().oob_score
+    }
+
+    pub fn learning_rate(&self) -> Option<f64> {
+        self.training_metadata().learning_rate
+    }
+
+    pub fn bootstrap(&self) -> bool {
+        self.training_metadata().bootstrap.unwrap_or(false)
+    }
+
+    pub fn top_gradient_fraction(&self) -> Option<f64> {
+        self.training_metadata().top_gradient_fraction
+    }
+
+    pub fn other_gradient_fraction(&self) -> Option<f64> {
+        self.training_metadata().other_gradient_fraction
     }
 
     pub fn tree_count(&self) -> usize {
@@ -2724,6 +2948,7 @@ impl Model {
             Model::DecisionTreeClassifier(model) => model.num_features(),
             Model::DecisionTreeRegressor(model) => model.num_features(),
             Model::RandomForest(model) => model.num_features(),
+            Model::GradientBoostedTrees(model) => model.num_features(),
         }
     }
 
@@ -2732,6 +2957,7 @@ impl Model {
             Model::DecisionTreeClassifier(model) => model.feature_preprocessing(),
             Model::DecisionTreeRegressor(model) => model.feature_preprocessing(),
             Model::RandomForest(model) => model.feature_preprocessing(),
+            Model::GradientBoostedTrees(model) => model.feature_preprocessing(),
         }
     }
 
@@ -2739,6 +2965,7 @@ impl Model {
         match self {
             Model::DecisionTreeClassifier(model) => Some(model.class_labels().to_vec()),
             Model::RandomForest(model) => model.class_labels(),
+            Model::GradientBoostedTrees(model) => model.class_labels(),
             Model::DecisionTreeRegressor(_) => None,
         }
     }
@@ -2748,6 +2975,7 @@ impl Model {
             Model::DecisionTreeClassifier(model) => model.training_metadata(),
             Model::DecisionTreeRegressor(model) => model.training_metadata(),
             Model::RandomForest(model) => model.training_metadata(),
+            Model::GradientBoostedTrees(model) => model.training_metadata(),
         }
     }
 

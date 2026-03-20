@@ -24,7 +24,7 @@ def parse_args() -> BenchmarkConfig:
     parser.add_argument("--output-dir", type=Path, default=Path("docs/benchmarks"))
     parser.add_argument(
         "--family",
-        choices=("random_forest", "extra_trees"),
+        choices=("random_forest", "extra_trees", "gradient_boosting"),
         default="random_forest",
     )
     parser.add_argument(
@@ -127,7 +127,11 @@ def main() -> None:
         results.append(result)
 
     log("writing training benchmark json")
-    dump_results(config.output_dir / "training_benchmark_results.json", results)
+    dump_results(
+        config.output_dir
+        / f"training_benchmark_results_{config.family}_{config.problem}.json",
+        results,
+    )
     log("writing training comparison plot")
     plot_library_comparison(
         results,
@@ -137,7 +141,10 @@ def main() -> None:
             f"{config.train_rows:,} rows | {config.n_estimators} estimators"
         ),
         ylabel="fit time (seconds)",
-        output_path=config.output_dir / "training_library_comparison.png",
+        output_path=(
+            config.output_dir
+            / f"training_library_comparison_{config.family}_{config.problem}.png"
+        ),
     )
     log("training benchmark complete")
 

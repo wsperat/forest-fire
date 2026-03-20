@@ -65,12 +65,16 @@ train(
     max_features=None,
     seed=None,
     compute_oob=False,
+    learning_rate=None,
+    bootstrap=False,
+    top_gradient_fraction=None,
+    other_gradient_fraction=None,
 )
 ```
 
 ### Current supported values
 
-- `algorithm="dt" | "rf"`
+- `algorithm="dt" | "rf" | "gbm"`
 - `task="auto" | "regression" | "classification"`
 - `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
@@ -79,7 +83,11 @@ train(
 
 #### `algorithm`
 
-Only `dt` exists today, but the parameter is already part of the public surface so new learner families can be added without breaking the top-level API.
+`algorithm` selects the learner family:
+
+- `dt`: one tree
+- `rf`: bagged ensemble with bootstrap sampling and feature subsampling
+- `gbm`: stage-wise second-order boosting with shrinkage and gradient-focused row sampling
 
 #### `task`
 
@@ -108,6 +116,7 @@ Current `auto` behavior:
 - `id3`, `c45` -> `entropy`
 - classification `cart`, `randomized`, `oblivious` -> `gini`
 - regression models -> `mean`
+- `gbm` trains second-order trees internally when `criterion="auto"`
 
 #### `canaries`
 
@@ -117,6 +126,7 @@ Current stopping behavior:
 
 - standard trees stop at the current node
 - oblivious trees stop the remaining depth growth
+- `gbm` stops adding new stages when the first/root split that would be taken is a canary
 
 #### `bins`
 
@@ -160,6 +170,28 @@ Current meaning of `oob_score`:
 
 - classification: OOB accuracy
 - regression: OOB `R^2`
+
+#### `learning_rate`
+
+This is only meaningful for `algorithm="gbm"`.
+
+- Each stage prediction is multiplied by `learning_rate` before it is added to the ensemble.
+- Lower values generally need more trees.
+
+#### `bootstrap`
+
+This is only meaningful for `algorithm="gbm"`.
+
+- `False`: each stage starts from the full table, then applies gradient-focused row sampling.
+- `True`: each stage first draws a bootstrap sample, then applies gradient-focused row sampling.
+
+#### `top_gradient_fraction` and `other_gradient_fraction`
+
+These are only meaningful for `algorithm="gbm"`.
+
+- The booster uses a LightGBM-style gradient-focused sampler.
+- `top_gradient_fraction` keeps the largest-gradient rows.
+- `other_gradient_fraction` samples additional rows from the remainder.
 
 ## Tables and input handling
 

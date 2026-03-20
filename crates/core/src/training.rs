@@ -1,12 +1,17 @@
 use crate::{
-    Criterion, Model, Parallelism, RandomForest, Task, TrainAlgorithm, TrainConfig, TrainError,
-    TreeType, tree,
+    Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest, Task, TrainAlgorithm,
+    TrainConfig, TrainError, TreeType, tree,
 };
 use forestfire_data::TableAccess;
 use rayon::ThreadPoolBuilder;
 
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
-    let criterion = resolve_criterion(config.task, config.tree_type, config.criterion)?;
+    let criterion = resolve_criterion(
+        config.algorithm,
+        config.task,
+        config.tree_type,
+        config.criterion,
+    )?;
     let parallelism = resolve_parallelism(config.physical_cores)?;
     let max_depth = config.max_depth.unwrap_or(8);
     if max_depth == 0 {
@@ -45,6 +50,14 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             config.max_features,
             config.seed,
             config.compute_oob,
+        ),
+        TrainAlgorithm::Gbm => train_gradient_boosting(
+            train_set,
+            TrainConfig {
+                criterion,
+                ..config
+            },
+            parallelism,
         ),
     })
 }
@@ -228,6 +241,10 @@ fn train_random_forest(
             max_features,
             seed,
             compute_oob,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         },
         criterion,
         parallelism,
@@ -235,41 +252,66 @@ fn train_random_forest(
     .map(Model::RandomForest)
 }
 
+fn train_gradient_boosting(
+    train_set: &dyn TableAccess,
+    config: TrainConfig,
+    parallelism: Parallelism,
+) -> Result<Model, TrainError> {
+    GradientBoostedTrees::train(train_set, config, parallelism)
+        .map(Model::GradientBoostedTrees)
+        .map_err(TrainError::Boosting)
+}
+
 fn resolve_criterion(
+    algorithm: TrainAlgorithm,
     task: Task,
     tree_type: TreeType,
     criterion: Criterion,
 ) -> Result<Criterion, TrainError> {
-    let resolved = match (task, tree_type, criterion) {
+    let resolved = match (algorithm, task, tree_type, criterion) {
         (
+            TrainAlgorithm::Gbm,
+            Task::Regression | Task::Classification,
+            TreeType::Cart | TreeType::Randomized | TreeType::Oblivious,
+            Criterion::Auto,
+        ) => Criterion::SecondOrder,
+        (
+            TrainAlgorithm::Dt | TrainAlgorithm::Rf,
             Task::Regression,
             TreeType::Cart | TreeType::Randomized | TreeType::Oblivious,
             Criterion::Auto,
         ) => Criterion::Mean,
         (
+            TrainAlgorithm::Dt | TrainAlgorithm::Rf,
             Task::Regression,
             TreeType::Cart | TreeType::Randomized | TreeType::Oblivious,
             Criterion::Mean | Criterion::Median,
         ) => criterion,
-        (Task::Classification, TreeType::Id3 | TreeType::C45, Criterion::Auto) => {
-            Criterion::Entropy
-        }
         (
+            TrainAlgorithm::Dt | TrainAlgorithm::Rf,
+            Task::Classification,
+            TreeType::Id3 | TreeType::C45,
+            Criterion::Auto,
+        ) => Criterion::Entropy,
+        (
+            TrainAlgorithm::Dt | TrainAlgorithm::Rf,
             Task::Classification,
             TreeType::Id3 | TreeType::C45,
             Criterion::Gini | Criterion::Entropy,
         ) => criterion,
         (
+            TrainAlgorithm::Dt | TrainAlgorithm::Rf,
             Task::Classification,
             TreeType::Cart | TreeType::Randomized | TreeType::Oblivious,
             Criterion::Auto,
         ) => Criterion::Gini,
         (
+            TrainAlgorithm::Dt | TrainAlgorithm::Rf,
             Task::Classification,
             TreeType::Cart | TreeType::Randomized | TreeType::Oblivious,
             Criterion::Gini | Criterion::Entropy,
         ) => criterion,
-        (task, tree_type, criterion) => {
+        (_, task, tree_type, criterion) => {
             return Err(TrainError::UnsupportedConfiguration {
                 task,
                 tree_type,

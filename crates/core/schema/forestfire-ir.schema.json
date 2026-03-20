@@ -59,6 +59,13 @@
         "tree_weights"
       ],
       "properties": {
+        "base_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "kind": {
           "type": "string"
         },
@@ -1084,6 +1091,12 @@
         "algorithm": {
           "type": "string"
         },
+        "bootstrap": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "canaries": {
           "type": "integer",
           "format": "uint",
@@ -1104,6 +1117,13 @@
         },
         "criterion": {
           "type": "string"
+        },
+        "learning_rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
         },
         "max_depth": {
           "type": [
@@ -1152,6 +1172,13 @@
           ],
           "format": "double"
         },
+        "other_gradient_fraction": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "seed": {
           "type": [
             "integer",
@@ -1162,6 +1189,13 @@
         },
         "task": {
           "type": "string"
+        },
+        "top_gradient_fraction": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
         },
         "tree_type": {
           "type": "string"

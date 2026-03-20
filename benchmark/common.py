@@ -171,23 +171,36 @@ def forestfire_fit(
 ) -> Any:
     from forestfire import train
 
-    tree_type = "cart" if config.family == "random_forest" else "randomized"
+    if config.family == "random_forest":
+        algorithm = "rf"
+        tree_type = "cart"
+    elif config.family == "extra_trees":
+        algorithm = "rf"
+        tree_type = "randomized"
+    elif config.family == "gradient_boosting":
+        algorithm = "gbm"
+        tree_type = "cart"
+    else:
+        raise ValueError(f"Unsupported family: {config.family}")
     task = "classification" if config.problem == "classification" else "regression"
-    return train(
-        X_train,
-        y_train,
-        task=task,
-        algorithm="rf",
-        tree_type=tree_type,
-        n_trees=config.n_estimators,
-        max_depth=config.max_depth,
-        min_samples_split=config.min_samples_split,
-        min_samples_leaf=config.min_samples_leaf,
-        max_features=forestfire_max_features(config.max_features),
-        canaries=0,
-        physical_cores=config.physical_cores,
-        seed=config.seed,
-    )
+    kwargs: dict[str, Any] = {
+        "task": task,
+        "algorithm": algorithm,
+        "tree_type": tree_type,
+        "n_trees": config.n_estimators,
+        "max_depth": config.max_depth,
+        "min_samples_split": config.min_samples_split,
+        "min_samples_leaf": config.min_samples_leaf,
+        "max_features": forestfire_max_features(config.max_features),
+        "canaries": 0,
+        "physical_cores": config.physical_cores,
+        "seed": config.seed,
+    }
+    if config.family == "gradient_boosting":
+        kwargs["learning_rate"] = 0.1
+        kwargs["top_gradient_fraction"] = 0.2
+        kwargs["other_gradient_fraction"] = 0.1
+    return train(X_train, y_train, **kwargs)
 
 
 def sklearn_fit(
@@ -200,6 +213,23 @@ def sklearn_fit(
         raise ModuleNotFoundError("scikit-learn is not installed")
 
     max_features = sklearn_max_features(config.problem, config.max_features)
+    if config.family == "gradient_boosting":
+        estimator_cls = (
+            sklearn_ensemble.GradientBoostingClassifier
+            if config.problem == "classification"
+            else sklearn_ensemble.GradientBoostingRegressor
+        )
+        estimator = estimator_cls(
+            n_estimators=config.n_estimators,
+            learning_rate=0.1,
+            max_depth=config.max_depth,
+            min_samples_split=config.min_samples_split,
+            min_samples_leaf=config.min_samples_leaf,
+            max_features=max_features,
+            random_state=config.seed,
+        )
+        return estimator.fit(X_train, y_train)
+
     if config.problem == "classification":
         estimator_cls = (
             sklearn_ensemble.RandomForestClassifier
@@ -239,21 +269,28 @@ def lightgbm_fit(
         if config.problem == "classification"
         else lightgbm.LGBMRegressor
     )
-    estimator = estimator_cls(
-        boosting_type="rf",
-        extra_trees=config.family == "extra_trees",
-        n_estimators=config.n_estimators,
-        max_depth=config.max_depth,
-        min_child_samples=config.min_samples_leaf,
-        feature_fraction=lightgbm_feature_fraction(
+    kwargs: dict[str, Any] = {
+        "n_estimators": config.n_estimators,
+        "max_depth": config.max_depth,
+        "min_child_samples": config.min_samples_leaf,
+        "feature_fraction": lightgbm_feature_fraction(
             config.n_features, config.max_features
         ),
-        bagging_fraction=0.8,
-        bagging_freq=1,
-        n_jobs=config.physical_cores,
-        random_state=config.seed,
-        verbosity=-1,
-    )
+        "n_jobs": config.physical_cores,
+        "random_state": config.seed,
+        "verbosity": -1,
+    }
+    if config.family == "gradient_boosting":
+        kwargs["boosting_type"] = "gbdt"
+        kwargs["learning_rate"] = 0.1
+        kwargs["bagging_fraction"] = 1.0
+        kwargs["bagging_freq"] = 0
+    else:
+        kwargs["boosting_type"] = "rf"
+        kwargs["extra_trees"] = config.family == "extra_trees"
+        kwargs["bagging_fraction"] = 0.8
+        kwargs["bagging_freq"] = 1
+    estimator = estimator_cls(**kwargs)
     return estimator.fit(X_train, y_train)
 
 
@@ -276,19 +313,25 @@ def xgboost_fit(
         if config.problem == "classification"
         else xgboost.XGBRegressor
     )
-    estimator = estimator_cls(
-        n_estimators=1,
-        num_parallel_tree=config.n_estimators,
-        max_depth=config.max_depth,
-        tree_method="hist",
-        subsample=0.8,
-        colsample_bynode=xgboost_colsample_bynode(
+    kwargs: dict[str, Any] = {
+        "max_depth": config.max_depth,
+        "tree_method": "hist",
+        "colsample_bynode": xgboost_colsample_bynode(
             config.n_features, config.max_features
         ),
-        n_jobs=config.physical_cores,
-        random_state=config.seed,
-        verbosity=0,
-    )
+        "n_jobs": config.physical_cores,
+        "random_state": config.seed,
+        "verbosity": 0,
+    }
+    if config.family == "gradient_boosting":
+        kwargs["n_estimators"] = config.n_estimators
+        kwargs["learning_rate"] = 0.1
+        kwargs["subsample"] = 1.0
+    else:
+        kwargs["n_estimators"] = 1
+        kwargs["num_parallel_tree"] = config.n_estimators
+        kwargs["subsample"] = 0.8
+    estimator = estimator_cls(**kwargs)
     return estimator.fit(X_train, y_train)
 
 

@@ -11,6 +11,10 @@ impl BootstrapSampler {
         Self { sample_size }
     }
 
+    pub(crate) fn sample(&self, seed: u64) -> Vec<usize> {
+        self.sample_with_oob(seed).0
+    }
+
     pub(crate) fn sample_with_oob(&self, seed: u64) -> (Vec<usize>, Vec<usize>) {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut seen = vec![false; self.sample_size];

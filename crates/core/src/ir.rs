@@ -8,8 +8,8 @@ use crate::tree::regressor::{
     RegressionTreeAlgorithm, RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::{
-    Criterion, FeaturePreprocessing, InputFeatureKind, Model, NumericBinBoundary, RandomForest,
-    Task, TrainAlgorithm, TreeType,
+    Criterion, FeaturePreprocessing, GradientBoostedTrees, InputFeatureKind, Model,
+    NumericBinBoundary, RandomForest, Task, TrainAlgorithm, TreeType,
 };
 use schemars::schema::RootSchema;
 use schemars::{JsonSchema, schema_for};
@@ -199,6 +199,8 @@ pub struct Aggregation {
     pub kind: String,
     pub tree_weights: Vec<f64>,
     pub normalize_by_weight_sum: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -325,6 +327,14 @@ pub struct TrainingMetadata {
     pub oob_score: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_labels: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learning_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_gradient_fraction: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_gradient_fraction: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -441,19 +451,50 @@ pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
             .iter()
             .map(model_tree_definition)
             .collect::<Vec<_>>(),
+        Model::GradientBoostedTrees(boosted) => boosted
+            .trees()
+            .iter()
+            .map(model_tree_definition)
+            .collect::<Vec<_>>(),
         _ => vec![model_tree_definition(model)],
     };
-    let representation = match &trees[0] {
-        TreeDefinition::NodeTree { .. } => "node_tree",
-        TreeDefinition::ObliviousLevels { .. } => "oblivious_levels",
+    let representation = if let Some(first_tree) = trees.first() {
+        match first_tree {
+            TreeDefinition::NodeTree { .. } => "node_tree",
+            TreeDefinition::ObliviousLevels { .. } => "oblivious_levels",
+        }
+    } else {
+        match model.tree_type() {
+            TreeType::Oblivious => "oblivious_levels",
+            TreeType::Id3 | TreeType::C45 | TreeType::Cart | TreeType::Randomized => "node_tree",
+        }
     };
     let class_labels = model.class_labels();
-    let is_ensemble = matches!(model, Model::RandomForest(_));
+    let is_ensemble = matches!(
+        model,
+        Model::RandomForest(_) | Model::GradientBoostedTrees(_)
+    );
     let tree_count = trees.len();
-    let aggregation_kind = match model.task() {
-        Task::Regression if is_ensemble => "average",
-        Task::Classification if is_ensemble => "average_class_probabilities",
-        _ => "identity_single_tree",
+    let (aggregation_kind, tree_weights, normalize_by_weight_sum, base_score) = match model {
+        Model::RandomForest(_) => (
+            match model.task() {
+                Task::Regression => "average",
+                Task::Classification => "average_class_probabilities",
+            },
+            vec![1.0; tree_count],
+            true,
+            None,
+        ),
+        Model::GradientBoostedTrees(boosted) => (
+            match boosted.task() {
+                Task::Regression => "sum_tree_outputs",
+                Task::Classification => "sum_tree_outputs_then_sigmoid",
+            },
+            boosted.tree_weights().to_vec(),
+            false,
+            Some(boosted.base_score()),
+        ),
+        _ => ("identity_single_tree", vec![1.0; tree_count], true, None),
     };
 
     ModelPackageIr {
@@ -478,8 +519,9 @@ pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
             trees,
             aggregation: Aggregation {
                 kind: aggregation_kind.to_string(),
-                tree_weights: vec![1.0; tree_count],
-                normalize_by_weight_sum: true,
+                tree_weights,
+                normalize_by_weight_sum,
+                base_score,
             },
         },
         input_schema: input_schema(model),
@@ -530,7 +572,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
     let training_canaries = ir.training_metadata.canaries;
     let deserialized_class_labels = classification_labels(&ir).ok();
 
-    if algorithm != TrainAlgorithm::Rf && ir.model.trees.len() != 1 {
+    if algorithm == TrainAlgorithm::Dt && ir.model.trees.len() != 1 {
         return Err(IrError::InvalidTreeCount(ir.model.trees.len()));
     }
 
@@ -566,6 +608,48 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             ir.training_metadata.seed,
             num_features,
             feature_preprocessing,
+        )));
+    }
+
+    if algorithm == TrainAlgorithm::Gbm {
+        let tree_weights = ir.model.aggregation.tree_weights.clone();
+        let base_score = ir.model.aggregation.base_score.unwrap_or(0.0);
+        let trees = ir
+            .model
+            .trees
+            .into_iter()
+            .map(|tree| {
+                single_model_from_ir_parts(
+                    task,
+                    tree_type,
+                    criterion,
+                    feature_preprocessing.clone(),
+                    num_features,
+                    options,
+                    training_canaries,
+                    deserialized_class_labels.clone(),
+                    tree,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(Model::GradientBoostedTrees(GradientBoostedTrees::new(
+            task,
+            tree_type,
+            trees,
+            tree_weights,
+            base_score,
+            ir.training_metadata.learning_rate.unwrap_or(0.1),
+            ir.training_metadata.bootstrap.unwrap_or(false),
+            ir.training_metadata.top_gradient_fraction.unwrap_or(0.2),
+            ir.training_metadata.other_gradient_fraction.unwrap_or(0.1),
+            ir.training_metadata
+                .max_features
+                .unwrap_or(num_features.max(1)),
+            ir.training_metadata.seed,
+            num_features,
+            feature_preprocessing,
+            deserialized_class_labels,
+            training_canaries,
         )));
     }
 
@@ -771,6 +855,7 @@ fn parse_algorithm(value: &str) -> Result<TrainAlgorithm, IrError> {
     match value {
         "dt" => Ok(TrainAlgorithm::Dt),
         "rf" => Ok(TrainAlgorithm::Rf),
+        "gbm" => Ok(TrainAlgorithm::Gbm),
         _ => Err(IrError::UnsupportedAlgorithm(value.to_string())),
     }
 }
@@ -800,6 +885,7 @@ fn parse_criterion(value: &str) -> Result<crate::Criterion, IrError> {
         "entropy" => Ok(crate::Criterion::Entropy),
         "mean" => Ok(crate::Criterion::Mean),
         "median" => Ok(crate::Criterion::Median),
+        "second_order" => Ok(crate::Criterion::SecondOrder),
         "auto" => Ok(crate::Criterion::Auto),
         _ => Err(IrError::InvalidInferenceOption(format!(
             "unsupported criterion '{}'",
@@ -1359,6 +1445,7 @@ pub(crate) fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
         TrainAlgorithm::Rf => "rf",
+        TrainAlgorithm::Gbm => "gbm",
     }
 }
 
@@ -1366,7 +1453,9 @@ fn model_tree_definition(model: &Model) -> TreeDefinition {
     match model {
         Model::DecisionTreeClassifier(classifier) => classifier.to_ir_tree(),
         Model::DecisionTreeRegressor(regressor) => regressor.to_ir_tree(),
-        Model::RandomForest(_) => unreachable!("forest IR expands into member trees"),
+        Model::RandomForest(_) | Model::GradientBoostedTrees(_) => {
+            unreachable!("ensemble IR expands into member trees")
+        }
     }
 }
 
@@ -1377,6 +1466,7 @@ pub(crate) fn criterion_name(criterion: crate::Criterion) -> &'static str {
         crate::Criterion::Entropy => "entropy",
         crate::Criterion::Mean => "mean",
         crate::Criterion::Median => "median",
+        crate::Criterion::SecondOrder => "second_order",
     }
 }
 

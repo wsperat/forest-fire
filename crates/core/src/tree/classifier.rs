@@ -615,6 +615,10 @@ impl DecisionTreeClassifier {
             seed: None,
             oob_score: None,
             class_labels: Some(self.class_labels.clone()),
+            learning_rate: None,
+            bootstrap: None,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         }
     }
 

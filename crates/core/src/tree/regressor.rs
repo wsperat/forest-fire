@@ -452,6 +452,10 @@ impl DecisionTreeRegressor {
             seed: None,
             oob_score: None,
             class_labels: None,
+            learning_rate: None,
+            bootstrap: None,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
         }
     }
 
