@@ -867,6 +867,23 @@ fn score_split(
             min_samples_leaf,
         );
     }
+    if matches!(criterion, Criterion::Mean) {
+        if matches!(algorithm, RegressionTreeAlgorithm::Randomized) {
+            if let Some(candidate) = score_randomized_split_mean_fast(
+                table,
+                targets,
+                feature_index,
+                rows,
+                min_samples_leaf,
+            ) {
+                return Some(candidate);
+            }
+        } else if let Some(candidate) =
+            score_numeric_split_mean_fast(table, targets, feature_index, rows, min_samples_leaf)
+        {
+            return Some(candidate);
+        }
+    }
     if matches!(algorithm, RegressionTreeAlgorithm::Randomized) {
         return score_randomized_split(
             table,
@@ -965,6 +982,17 @@ fn score_oblivious_split(
             criterion,
             min_samples_leaf,
         );
+    }
+    if matches!(criterion, Criterion::Mean) {
+        if let Some(candidate) = score_numeric_oblivious_split_mean_fast(
+            table,
+            targets,
+            feature_index,
+            leaves,
+            min_samples_leaf,
+        ) {
+            return Some(candidate);
+        }
     }
     let feature_value = |row_idx: usize| table.binned_value(feature_index, row_idx);
     let candidate_thresholds = leaves
@@ -1139,6 +1167,226 @@ fn score_binary_split(
         left_rows,
         right_rows,
     })
+}
+
+fn score_numeric_split_mean_fast(
+    table: &dyn TableAccess,
+    targets: &[f64],
+    feature_index: usize,
+    rows: &[usize],
+    min_samples_leaf: usize,
+) -> Option<RegressionSplitCandidate> {
+    let bin_cap = table.numeric_bin_cap();
+    if bin_cap == 0 {
+        return None;
+    }
+
+    let mut bin_count = vec![0usize; bin_cap];
+    let mut bin_sum = vec![0.0; bin_cap];
+    let mut bin_sum_sq = vec![0.0; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
+    let mut total_sum = 0.0;
+    let mut total_sum_sq = 0.0;
+
+    for row_idx in rows {
+        let bin = table.binned_value(feature_index, *row_idx) as usize;
+        if bin >= bin_cap {
+            return None;
+        }
+        let target = targets[*row_idx];
+        bin_count[bin] += 1;
+        bin_sum[bin] += target;
+        bin_sum_sq[bin] += target * target;
+        observed_bins[bin] = true;
+        total_sum += target;
+        total_sum_sq += target * target;
+    }
+
+    let observed_bins: Vec<usize> = observed_bins
+        .into_iter()
+        .enumerate()
+        .filter_map(|(bin, seen)| seen.then_some(bin))
+        .collect();
+    if observed_bins.len() <= 1 {
+        return None;
+    }
+
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / rows.len() as f64;
+    let mut left_count = 0usize;
+    let mut left_sum = 0.0;
+    let mut left_sum_sq = 0.0;
+    let mut best_threshold = None;
+    let mut best_score = f64::NEG_INFINITY;
+
+    for &bin in &observed_bins {
+        left_count += bin_count[bin];
+        left_sum += bin_sum[bin];
+        left_sum_sq += bin_sum_sq[bin];
+        let right_count = rows.len() - left_count;
+
+        if left_count < min_samples_leaf || right_count < min_samples_leaf {
+            continue;
+        }
+
+        let right_sum = total_sum - left_sum;
+        let right_sum_sq = total_sum_sq - left_sum_sq;
+        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
+        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+        let score = parent_loss - (left_loss + right_loss);
+        if score > best_score {
+            best_score = score;
+            best_threshold = Some(bin as u16);
+        }
+    }
+
+    let threshold_bin = best_threshold?;
+    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = rows
+        .iter()
+        .copied()
+        .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
+
+    Some(RegressionSplitCandidate {
+        feature_index,
+        threshold_bin,
+        score: best_score,
+        left_rows,
+        right_rows,
+    })
+}
+
+fn score_randomized_split_mean_fast(
+    table: &dyn TableAccess,
+    targets: &[f64],
+    feature_index: usize,
+    rows: &[usize],
+    min_samples_leaf: usize,
+) -> Option<RegressionSplitCandidate> {
+    let bin_cap = table.numeric_bin_cap();
+    if bin_cap == 0 {
+        return None;
+    }
+    let mut observed_bins = vec![false; bin_cap];
+    for row_idx in rows {
+        let bin = table.binned_value(feature_index, *row_idx) as usize;
+        if bin >= bin_cap {
+            return None;
+        }
+        observed_bins[bin] = true;
+    }
+    let candidate_thresholds = observed_bins
+        .into_iter()
+        .enumerate()
+        .filter_map(|(bin, seen)| seen.then_some(bin as u16))
+        .collect::<Vec<_>>();
+    let threshold_bin =
+        choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
+
+    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = rows
+        .iter()
+        .copied()
+        .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
+
+    if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
+        return None;
+    }
+
+    let parent_loss = regression_loss(rows, targets, Criterion::Mean);
+    let score = parent_loss
+        - (regression_loss(&left_rows, targets, Criterion::Mean)
+            + regression_loss(&right_rows, targets, Criterion::Mean));
+
+    Some(RegressionSplitCandidate {
+        feature_index,
+        threshold_bin,
+        score,
+        left_rows,
+        right_rows,
+    })
+}
+
+fn score_numeric_oblivious_split_mean_fast(
+    table: &dyn TableAccess,
+    targets: &[f64],
+    feature_index: usize,
+    leaves: &[ObliviousLeafState],
+    min_samples_leaf: usize,
+) -> Option<ObliviousSplitCandidate> {
+    let bin_cap = table.numeric_bin_cap();
+    if bin_cap == 0 {
+        return None;
+    }
+    let mut threshold_scores = vec![0.0; bin_cap];
+    let mut observed_any = false;
+
+    for leaf in leaves {
+        let mut bin_count = vec![0usize; bin_cap];
+        let mut bin_sum = vec![0.0; bin_cap];
+        let mut bin_sum_sq = vec![0.0; bin_cap];
+        let mut observed_bins = vec![false; bin_cap];
+        let mut total_sum = 0.0;
+        let mut total_sum_sq = 0.0;
+
+        for row_idx in &leaf.rows {
+            let bin = table.binned_value(feature_index, *row_idx) as usize;
+            if bin >= bin_cap {
+                return None;
+            }
+            let target = targets[*row_idx];
+            bin_count[bin] += 1;
+            bin_sum[bin] += target;
+            bin_sum_sq[bin] += target * target;
+            observed_bins[bin] = true;
+            total_sum += target;
+            total_sum_sq += target * target;
+        }
+
+        let observed_bins: Vec<usize> = observed_bins
+            .into_iter()
+            .enumerate()
+            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .collect();
+        if observed_bins.len() <= 1 {
+            continue;
+        }
+        observed_any = true;
+
+        let parent_loss = total_sum_sq - (total_sum * total_sum) / leaf.rows.len() as f64;
+        let mut left_count = 0usize;
+        let mut left_sum = 0.0;
+        let mut left_sum_sq = 0.0;
+
+        for &bin in &observed_bins {
+            left_count += bin_count[bin];
+            left_sum += bin_sum[bin];
+            left_sum_sq += bin_sum_sq[bin];
+            let right_count = leaf.rows.len() - left_count;
+
+            if left_count < min_samples_leaf || right_count < min_samples_leaf {
+                continue;
+            }
+
+            let right_sum = total_sum - left_sum;
+            let right_sum_sq = total_sum_sq - left_sum_sq;
+            let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
+            let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+            threshold_scores[bin] += parent_loss - (left_loss + right_loss);
+        }
+    }
+
+    if !observed_any {
+        return None;
+    }
+
+    threshold_scores
+        .into_iter()
+        .enumerate()
+        .filter(|(_, score)| *score > 0.0)
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(threshold_bin, score)| ObliviousSplitCandidate {
+            feature_index,
+            threshold_bin: threshold_bin as u16,
+            score,
+        })
 }
 
 fn choose_random_threshold(
