@@ -10,405 +10,405 @@
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 1000,
-      "baseline_seconds": 0.00045449641402228735,
-      "optimized_single_core_seconds": 0.0004895807344382774,
-      "optimized_parallel_seconds": 0.000656465492170355
+      "baseline_seconds": 0.0004579755859595025,
+      "optimized_single_core_seconds": 0.0004911080702640902,
+      "optimized_parallel_seconds": 0.0006616328124664506
     },
     {
       "tree_type": "cart",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 10000,
-      "baseline_seconds": 0.004444416625119629,
-      "optimized_single_core_seconds": 0.0047941432503648684,
-      "optimized_parallel_seconds": 0.004736679687084688
+      "baseline_seconds": 0.004521856750216102,
+      "optimized_single_core_seconds": 0.0048558932494415785,
+      "optimized_parallel_seconds": 0.004801760437658231
     },
     {
       "tree_type": "cart",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 100000,
-      "baseline_seconds": 0.05800633299804758,
-      "optimized_single_core_seconds": 0.062577250006143,
-      "optimized_parallel_seconds": 0.05984704200818669
+      "baseline_seconds": 0.05809700000099838,
+      "optimized_single_core_seconds": 0.06269333300588187,
+      "optimized_parallel_seconds": 0.05964016600046307
     },
     {
       "tree_type": "cart",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 1000000,
-      "baseline_seconds": 0.46511766395997256,
-      "optimized_single_core_seconds": 0.499990671989508,
-      "optimized_parallel_seconds": 0.4745286719407886
+      "baseline_seconds": 0.4826120000798255,
+      "optimized_single_core_seconds": 0.5098116720328107,
+      "optimized_parallel_seconds": 0.4800203361082822
     },
     {
       "tree_type": "cart",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 10000000,
-      "baseline_seconds": 4.455146488449827,
-      "optimized_single_core_seconds": 4.774224776287156,
-      "optimized_parallel_seconds": 4.561130812915508
+      "baseline_seconds": 4.508970510469226,
+      "optimized_single_core_seconds": 4.8933160729066,
+      "optimized_parallel_seconds": 4.576854775150423
     },
     {
       "tree_type": "cart",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 1000,
-      "baseline_seconds": 0.0005962421874983193,
-      "optimized_single_core_seconds": 0.0006579033203024665,
-      "optimized_parallel_seconds": 0.0008117994686926977
+      "baseline_seconds": 0.0005978346406436685,
+      "optimized_single_core_seconds": 0.0006659693984829573,
+      "optimized_parallel_seconds": 0.0008199654998861661
     },
     {
       "tree_type": "cart",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 10000,
-      "baseline_seconds": 0.005807249999634223,
-      "optimized_single_core_seconds": 0.006464526124545955,
-      "optimized_parallel_seconds": 0.0062988541249069385
+      "baseline_seconds": 0.0058914687506330665,
+      "optimized_single_core_seconds": 0.006555833373568021,
+      "optimized_parallel_seconds": 0.006325499998638406
     },
     {
       "tree_type": "cart",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 100000,
-      "baseline_seconds": 0.0761303329927614,
-      "optimized_single_core_seconds": 0.08476958399114665,
-      "optimized_parallel_seconds": 0.07960783300222829
+      "baseline_seconds": 0.07660249999025837,
+      "optimized_single_core_seconds": 0.08581824999419041,
+      "optimized_parallel_seconds": 0.07982362499751616
     },
     {
       "tree_type": "cart",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 1000000,
-      "baseline_seconds": 0.6080373279983178,
-      "optimized_single_core_seconds": 0.6757716640131548,
-      "optimized_parallel_seconds": 0.636717664077878
+      "baseline_seconds": 0.6165583359543234,
+      "optimized_single_core_seconds": 0.686556336004287,
+      "optimized_parallel_seconds": 0.6442366640549153
     },
     {
       "tree_type": "cart",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 10000000,
-      "baseline_seconds": 5.856852775432344,
-      "optimized_single_core_seconds": 6.47935553741263,
-      "optimized_parallel_seconds": 6.0842777124853455
+      "baseline_seconds": 5.858503875526367,
+      "optimized_single_core_seconds": 6.56398052519944,
+      "optimized_parallel_seconds": 6.165998837459483
     },
     {
       "tree_type": "cart",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 1000,
-      "baseline_seconds": 0.0008726523437871947,
-      "optimized_single_core_seconds": 0.0009751927188972331,
-      "optimized_parallel_seconds": 0.0011084609375302534
+      "baseline_seconds": 0.0008873860626863461,
+      "optimized_single_core_seconds": 0.000987932953194104,
+      "optimized_parallel_seconds": 0.0011573515625968867
     },
     {
       "tree_type": "cart",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 10000,
-      "baseline_seconds": 0.008641953125334112,
-      "optimized_single_core_seconds": 0.009647432249039412,
-      "optimized_parallel_seconds": 0.009235656250893953
+      "baseline_seconds": 0.008685656250236207,
+      "optimized_single_core_seconds": 0.00974822399984987,
+      "optimized_parallel_seconds": 0.009282364624596084
     },
     {
       "tree_type": "cart",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 100000,
-      "baseline_seconds": 0.11288825000519864,
-      "optimized_single_core_seconds": 0.12677558400901034,
-      "optimized_parallel_seconds": 0.11706241601496004
+      "baseline_seconds": 0.11469683202449232,
+      "optimized_single_core_seconds": 0.12871049999375828,
+      "optimized_parallel_seconds": 0.11939658399205655
     },
     {
       "tree_type": "cart",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 1000000,
-      "baseline_seconds": 0.8955240000505,
-      "optimized_single_core_seconds": 1.0146633279509842,
-      "optimized_parallel_seconds": 0.9381326721049845
+      "baseline_seconds": 0.90264134388417,
+      "optimized_single_core_seconds": 1.018511343980208,
+      "optimized_parallel_seconds": 0.9414653279818594
     },
     {
       "tree_type": "cart",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 10000000,
-      "baseline_seconds": 8.600085323458188,
-      "optimized_single_core_seconds": 9.63510477253294,
-      "optimized_parallel_seconds": 8.94956287664536
+      "baseline_seconds": 8.664243425329914,
+      "optimized_single_core_seconds": 9.66184152351343,
+      "optimized_parallel_seconds": 9.044308124488452
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 1000,
-      "baseline_seconds": 0.0014149511719097063,
-      "optimized_single_core_seconds": 0.0016463372189718939,
-      "optimized_parallel_seconds": 0.0016884674691937107
+      "baseline_seconds": 0.001418541671910134,
+      "optimized_single_core_seconds": 0.0016588606872574019,
+      "optimized_parallel_seconds": 0.0017447278437430214
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 10000,
-      "baseline_seconds": 0.014318302000901895,
-      "optimized_single_core_seconds": 0.01663996875140583,
-      "optimized_parallel_seconds": 0.015411427248182008
+      "baseline_seconds": 0.01429614575317828,
+      "optimized_single_core_seconds": 0.016669052001816453,
+      "optimized_parallel_seconds": 0.0158202499987965
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 100000,
-      "baseline_seconds": 0.18440616800216958,
-      "optimized_single_core_seconds": 0.22181108201039024,
-      "optimized_parallel_seconds": 0.20127325001521967
+      "baseline_seconds": 0.19059699997887947,
+      "optimized_single_core_seconds": 0.22010316600790247,
+      "optimized_parallel_seconds": 0.19892233397695236
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 1000000,
-      "baseline_seconds": 1.5141873280517757,
-      "optimized_single_core_seconds": 1.8243239999283105,
-      "optimized_parallel_seconds": 1.6471053278073668
+      "baseline_seconds": 1.5097793280147016,
+      "optimized_single_core_seconds": 1.7434359998442233,
+      "optimized_parallel_seconds": 1.6153766561765224
     },
     {
       "tree_type": "cart",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 10000000,
-      "baseline_seconds": 14.739720274577849,
-      "optimized_single_core_seconds": 17.333701552051934,
-      "optimized_parallel_seconds": 15.242841802508337
+      "baseline_seconds": 14.30743162453291,
+      "optimized_single_core_seconds": 16.69429542752914,
+      "optimized_parallel_seconds": 15.161063147359528
     },
     {
       "tree_type": "cart",
       "requested_depth": 32,
       "measured_depth": 32,
       "row_count": 1000,
-      "baseline_seconds": 0.0025584713121133973,
-      "optimized_single_core_seconds": 0.0029693775936721067,
-      "optimized_parallel_seconds": 0.00290852734406144
+      "baseline_seconds": 0.0025317838749288057,
+      "optimized_single_core_seconds": 0.0029411601562969736,
+      "optimized_parallel_seconds": 0.00285582681226515
     },
     {
       "tree_type": "cart",
       "requested_depth": 32,
       "measured_depth": 32,
       "row_count": 10000,
-      "baseline_seconds": 0.02563460399687756,
-      "optimized_single_core_seconds": 0.030014687501534354,
-      "optimized_parallel_seconds": 0.027738332995795645
+      "baseline_seconds": 0.025491771004453767,
+      "optimized_single_core_seconds": 0.030198478998499922,
+      "optimized_parallel_seconds": 0.027499187497596722
     },
     {
       "tree_type": "cart",
       "requested_depth": 32,
       "measured_depth": 32,
       "row_count": 100000,
-      "baseline_seconds": 0.33906466598273255,
-      "optimized_single_core_seconds": 0.3960729160171468,
-      "optimized_parallel_seconds": 0.35946800000965595
+      "baseline_seconds": 0.3442134160140995,
+      "optimized_single_core_seconds": 0.39769566600443795,
+      "optimized_parallel_seconds": 0.3602969159837812
     },
     {
       "tree_type": "cart",
       "requested_depth": 32,
       "measured_depth": 32,
       "row_count": 1000000,
-      "baseline_seconds": 2.7048526720609516,
-      "optimized_single_core_seconds": 3.1873053279705346,
-      "optimized_parallel_seconds": 2.873337327968329
+      "baseline_seconds": 2.7369506561663,
+      "optimized_single_core_seconds": 3.1742746718227863,
+      "optimized_parallel_seconds": 2.9091353281401098
     },
     {
       "tree_type": "cart",
       "requested_depth": 32,
       "measured_depth": 32,
       "row_count": 10000000,
-      "baseline_seconds": 25.812629999709316,
-      "optimized_single_core_seconds": 30.486276475625345,
-      "optimized_parallel_seconds": 27.723950674655498
+      "baseline_seconds": 25.978156874945853,
+      "optimized_single_core_seconds": 30.581863074025023,
+      "optimized_parallel_seconds": 27.903190174663905
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 1000,
-      "baseline_seconds": 0.0004682216796254579,
-      "optimized_single_core_seconds": 0.0004957392577580322,
-      "optimized_parallel_seconds": 0.0005533505859602883
+      "baseline_seconds": 0.00047152767194802436,
+      "optimized_single_core_seconds": 0.0004972330702912586,
+      "optimized_parallel_seconds": 0.0005624980468610374
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 10000,
-      "baseline_seconds": 0.004561614562589966,
-      "optimized_single_core_seconds": 0.004813578124412743,
-      "optimized_parallel_seconds": 0.004433958375557268
+      "baseline_seconds": 0.004572338499201578,
+      "optimized_single_core_seconds": 0.004830197936826153,
+      "optimized_parallel_seconds": 0.004467385375392041
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 100000,
-      "baseline_seconds": 0.06041624999488704,
-      "optimized_single_core_seconds": 0.06323312500899192,
-      "optimized_parallel_seconds": 0.056486792003852315
+      "baseline_seconds": 0.060111917002359405,
+      "optimized_single_core_seconds": 0.0630479999963427,
+      "optimized_parallel_seconds": 0.05653912499838043
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 1000000,
-      "baseline_seconds": 0.483269999967888,
-      "optimized_single_core_seconds": 0.504793000058271,
-      "optimized_parallel_seconds": 0.4516466719796881
+      "baseline_seconds": 0.4821330000413582,
+      "optimized_single_core_seconds": 0.5060153360245749,
+      "optimized_parallel_seconds": 0.4490679999580607
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 2,
       "measured_depth": 2,
       "row_count": 10000000,
-      "baseline_seconds": 4.569571286272549,
-      "optimized_single_core_seconds": 4.81967533754505,
-      "optimized_parallel_seconds": 4.298034537023341
+      "baseline_seconds": 4.60530642606318,
+      "optimized_single_core_seconds": 4.810116050961369,
+      "optimized_parallel_seconds": 4.316225625232619
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 1000,
-      "baseline_seconds": 0.0006118502578829066,
-      "optimized_single_core_seconds": 0.0006667197266096991,
-      "optimized_parallel_seconds": 0.0006993414688167832
+      "baseline_seconds": 0.0006106988906822153,
+      "optimized_single_core_seconds": 0.0006693167343883033,
+      "optimized_parallel_seconds": 0.0006919527969557748
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 10000,
-      "baseline_seconds": 0.005980718749924563,
-      "optimized_single_core_seconds": 0.006495953124613152,
-      "optimized_parallel_seconds": 0.0058701301877590595
+      "baseline_seconds": 0.006033906250195287,
+      "optimized_single_core_seconds": 0.006506463500045356,
+      "optimized_parallel_seconds": 0.005824539061904943
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 100000,
-      "baseline_seconds": 0.078794042012305,
-      "optimized_single_core_seconds": 0.08562750001146924,
-      "optimized_parallel_seconds": 0.07588200000463985
+      "baseline_seconds": 0.0779569580045063,
+      "optimized_single_core_seconds": 0.08449420900433324,
+      "optimized_parallel_seconds": 0.074093624993111
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 1000000,
-      "baseline_seconds": 0.6426020000362769,
-      "optimized_single_core_seconds": 0.6787340000737458,
-      "optimized_parallel_seconds": 0.5895733359502628
+      "baseline_seconds": 0.6262596639571711,
+      "optimized_single_core_seconds": 0.6818606639280915,
+      "optimized_parallel_seconds": 0.5916063360637054
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 4,
       "measured_depth": 4,
       "row_count": 10000000,
-      "baseline_seconds": 5.974015662912279,
-      "optimized_single_core_seconds": 6.5293769739655545,
-      "optimized_parallel_seconds": 5.866906099705375
+      "baseline_seconds": 5.965485912529402,
+      "optimized_single_core_seconds": 6.499146775793633,
+      "optimized_parallel_seconds": 5.704356375106727
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 1000,
-      "baseline_seconds": 0.0009105735623506916,
-      "optimized_single_core_seconds": 0.0010191503906753496,
-      "optimized_parallel_seconds": 0.0009459140626404405
+      "baseline_seconds": 0.000869554031169173,
+      "optimized_single_core_seconds": 0.00099240168765391,
+      "optimized_parallel_seconds": 0.0009585546874859574
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 10000,
-      "baseline_seconds": 0.008625015623692889,
-      "optimized_single_core_seconds": 0.010233307375528966,
-      "optimized_parallel_seconds": 0.008395088500037673
+      "baseline_seconds": 0.008685854123541503,
+      "optimized_single_core_seconds": 0.009759906250110362,
+      "optimized_parallel_seconds": 0.008441864625638118
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 100000,
-      "baseline_seconds": 0.11266216600779444,
-      "optimized_single_core_seconds": 0.12656858199625276,
-      "optimized_parallel_seconds": 0.10716258399770595
+      "baseline_seconds": 0.11368283399497159,
+      "optimized_single_core_seconds": 0.12750041601248085,
+      "optimized_parallel_seconds": 0.10789474999182858
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 1000000,
-      "baseline_seconds": 0.8965559999924153,
-      "optimized_single_core_seconds": 1.0164973440114409,
-      "optimized_parallel_seconds": 0.8524526560213417
+      "baseline_seconds": 0.9020199999213219,
+      "optimized_single_core_seconds": 1.0181713281199336,
+      "optimized_parallel_seconds": 0.8608819998335093
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 8,
       "measured_depth": 8,
       "row_count": 10000000,
-      "baseline_seconds": 8.591479074719246,
-      "optimized_single_core_seconds": 9.663435476380982,
-      "optimized_parallel_seconds": 8.245399501072825
+      "baseline_seconds": 8.689067675106344,
+      "optimized_single_core_seconds": 9.92258549889084,
+      "optimized_parallel_seconds": 8.362986426873249
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 1000,
-      "baseline_seconds": 0.001435268234445175,
-      "optimized_single_core_seconds": 0.0016601992188043369,
-      "optimized_parallel_seconds": 0.001511593093709962
+      "baseline_seconds": 0.001423259765488183,
+      "optimized_single_core_seconds": 0.0016537291876375093,
+      "optimized_parallel_seconds": 0.0016548007813526056
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 10000,
-      "baseline_seconds": 0.01452672900268226,
-      "optimized_single_core_seconds": 0.016391698001825716,
-      "optimized_parallel_seconds": 0.013699479000933934
+      "baseline_seconds": 0.014581364499463234,
+      "optimized_single_core_seconds": 0.01621282300038729,
+      "optimized_parallel_seconds": 0.013869364502170356
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 100000,
-      "baseline_seconds": 0.18938008401892148,
-      "optimized_single_core_seconds": 0.21436666601221077,
-      "optimized_parallel_seconds": 0.17696691601304337
+      "baseline_seconds": 0.19493641599547118,
+      "optimized_single_core_seconds": 0.21320458402624354,
+      "optimized_parallel_seconds": 0.17699141599587165
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 1000000,
-      "baseline_seconds": 1.5104046559426934,
-      "optimized_single_core_seconds": 1.714007344096899,
-      "optimized_parallel_seconds": 1.4112826560158283
+      "baseline_seconds": 1.5021180000621825,
+      "optimized_single_core_seconds": 1.6998786719050258,
+      "optimized_parallel_seconds": 1.412218000041321
     },
     {
       "tree_type": "oblivious",
       "requested_depth": 16,
       "measured_depth": 16,
       "row_count": 10000000,
-      "baseline_seconds": 14.493039751279866,
-      "optimized_single_core_seconds": 16.396818751221872,
-      "optimized_parallel_seconds": 13.510033876489615
+      "baseline_seconds": 14.316834699420724,
+      "optimized_single_core_seconds": 16.353009799844585,
+      "optimized_parallel_seconds": 13.504003072404885
     }
   ]
 }

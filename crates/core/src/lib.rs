@@ -522,24 +522,6 @@ impl InferenceTable {
         })
     }
 
-    pub(crate) fn to_binned_matrix(&self) -> BinnedInferenceMatrix {
-        let n_features = self.feature_columns.len();
-        let mut bins = vec![0u16; self.n_rows * n_features];
-
-        for row_index in 0..self.n_rows {
-            let row_offset = row_index * n_features;
-            for feature_index in 0..n_features {
-                bins[row_offset + feature_index] = self.binned_value(feature_index, row_index);
-            }
-        }
-
-        BinnedInferenceMatrix {
-            n_rows: self.n_rows,
-            n_features,
-            bins,
-        }
-    }
-
     pub(crate) fn to_column_major_binned_matrix(&self) -> ColumnMajorBinnedMatrix {
         let n_features = self.feature_columns.len();
         let columns = (0..n_features)
@@ -557,21 +539,6 @@ impl InferenceTable {
             n_rows: self.n_rows,
             columns,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct BinnedInferenceMatrix {
-    n_rows: usize,
-    n_features: usize,
-    bins: Vec<u16>,
-}
-
-impl BinnedInferenceMatrix {
-    #[inline(always)]
-    fn row(&self, row_index: usize) -> &[u16] {
-        let start = row_index * self.n_features;
-        &self.bins[start..start + self.n_features]
     }
 }
 
@@ -681,6 +648,9 @@ enum OptimizedRuntime {
     TargetMean {
         value: f64,
     },
+    BinaryClassifier {
+        nodes: Vec<OptimizedBinaryClassifierNode>,
+    },
     StandardClassifier {
         nodes: Vec<OptimizedClassifierNode>,
         root: usize,
@@ -690,9 +660,8 @@ enum OptimizedRuntime {
         threshold_bins: Vec<u16>,
         leaf_values: Vec<f64>,
     },
-    StandardRegressor {
-        nodes: Vec<OptimizedRegressorNode>,
-        root: usize,
+    BinaryRegressor {
+        nodes: Vec<OptimizedBinaryRegressorNode>,
     },
     ObliviousRegressor {
         feature_indices: Vec<usize>,
@@ -717,12 +686,24 @@ enum OptimizedClassifierNode {
 }
 
 #[derive(Debug, Clone)]
-enum OptimizedRegressorNode {
+enum OptimizedBinaryClassifierNode {
     Leaf(f64),
-    Binary {
+    Branch {
         feature_index: usize,
         threshold_bin: u16,
-        children: [usize; 2],
+        jump_index: usize,
+        jump_if_greater: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum OptimizedBinaryRegressorNode {
+    Leaf(f64),
+    Branch {
+        feature_index: usize,
+        threshold_bin: u16,
+        jump_index: usize,
+        jump_if_greater: bool,
     },
 }
 
@@ -822,8 +803,7 @@ impl OptimizedModel {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
-            let matrix = table.to_binned_matrix();
-            Ok(self.predict_binned_matrix(&matrix))
+            Ok(self.predict_table(&table))
         }
     }
 
@@ -837,8 +817,7 @@ impl OptimizedModel {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
-            let matrix = table.to_binned_matrix();
-            Ok(self.predict_binned_matrix(&matrix))
+            Ok(self.predict_table(&table))
         }
     }
 
@@ -858,8 +837,7 @@ impl OptimizedModel {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
-            let matrix = table.to_binned_matrix();
-            Ok(self.predict_binned_matrix(&matrix))
+            Ok(self.predict_table(&table))
         }
     }
 
@@ -915,12 +893,6 @@ impl OptimizedModel {
         self.source_model.serialize_pretty()
     }
 
-    fn predict_binned_matrix(&self, matrix: &BinnedInferenceMatrix) -> Vec<f64> {
-        self.executor.predict_rows(matrix.n_rows, |row_index| {
-            self.runtime.predict_binned_row(matrix.row(row_index))
-        })
-    }
-
     fn predict_column_major_binned_matrix(&self, matrix: &ColumnMajorBinnedMatrix) -> Vec<f64> {
         self.runtime
             .predict_column_major_matrix(matrix, &self.executor)
@@ -949,6 +921,16 @@ impl OptimizedRuntime {
     fn from_classifier(classifier: &DecisionTreeClassifier) -> Self {
         match classifier.structure() {
             tree::classifier::TreeStructure::Standard { nodes, root } => {
+                if classifier_nodes_are_binary_only(nodes) {
+                    return Self::BinaryClassifier {
+                        nodes: build_binary_classifier_layout(
+                            nodes,
+                            *root,
+                            classifier.class_labels(),
+                        ),
+                    };
+                }
+
                 let optimized_nodes = nodes
                     .iter()
                     .map(|node| match node {
@@ -1011,29 +993,8 @@ impl OptimizedRuntime {
     fn from_regressor(regressor: &DecisionTreeRegressor) -> Self {
         match regressor.structure() {
             tree::regressor::RegressionTreeStructure::Standard { nodes, root } => {
-                let optimized_nodes = nodes
-                    .iter()
-                    .map(|node| match node {
-                        tree::regressor::RegressionNode::Leaf { value, .. } => {
-                            OptimizedRegressorNode::Leaf(*value)
-                        }
-                        tree::regressor::RegressionNode::BinarySplit {
-                            feature_index,
-                            threshold_bin,
-                            left_child,
-                            right_child,
-                            ..
-                        } => OptimizedRegressorNode::Binary {
-                            feature_index: *feature_index,
-                            threshold_bin: *threshold_bin,
-                            children: [*left_child, *right_child],
-                        },
-                    })
-                    .collect();
-
-                Self::StandardRegressor {
-                    nodes: optimized_nodes,
-                    root: *root,
+                Self::BinaryRegressor {
+                    nodes: build_binary_regressor_layout(nodes, *root),
                 }
             }
             tree::regressor::RegressionTreeStructure::Oblivious {
@@ -1052,6 +1013,11 @@ impl OptimizedRuntime {
     fn predict_table_row(&self, table: &dyn TableAccess, row_index: usize) -> f64 {
         match self {
             OptimizedRuntime::TargetMean { value } => *value,
+            OptimizedRuntime::BinaryClassifier { nodes } => {
+                predict_binary_classifier_row(nodes, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+            }
             OptimizedRuntime::StandardClassifier { nodes, root } => {
                 predict_standard_classifier_row(nodes, *root, |feature_index| {
                     table.binned_value(feature_index, row_index)
@@ -1067,8 +1033,8 @@ impl OptimizedRuntime {
                 leaf_values,
                 |feature_index| table.binned_value(feature_index, row_index),
             ),
-            OptimizedRuntime::StandardRegressor { nodes, root } => {
-                predict_standard_regressor_row(nodes, *root, |feature_index| {
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_row(nodes, |feature_index| {
                     table.binned_value(feature_index, row_index)
                 })
             }
@@ -1081,43 +1047,6 @@ impl OptimizedRuntime {
                 threshold_bins,
                 leaf_values,
                 |feature_index| table.binned_value(feature_index, row_index),
-            ),
-        }
-    }
-
-    #[inline(always)]
-    fn predict_binned_row(&self, row_bins: &[u16]) -> f64 {
-        match self {
-            OptimizedRuntime::TargetMean { value } => *value,
-            OptimizedRuntime::StandardClassifier { nodes, root } => {
-                predict_standard_classifier_row(nodes, *root, |feature_index| {
-                    row_bins[feature_index]
-                })
-            }
-            OptimizedRuntime::ObliviousClassifier {
-                feature_indices,
-                threshold_bins,
-                leaf_values,
-            } => predict_oblivious_row(
-                feature_indices,
-                threshold_bins,
-                leaf_values,
-                |feature_index| row_bins[feature_index],
-            ),
-            OptimizedRuntime::StandardRegressor { nodes, root } => {
-                predict_standard_regressor_row(nodes, *root, |feature_index| {
-                    row_bins[feature_index]
-                })
-            }
-            OptimizedRuntime::ObliviousRegressor {
-                feature_indices,
-                threshold_bins,
-                leaf_values,
-            } => predict_oblivious_row(
-                feature_indices,
-                threshold_bins,
-                leaf_values,
-                |feature_index| row_bins[feature_index],
             ),
         }
     }
@@ -1158,6 +1087,11 @@ impl OptimizedRuntime {
     ) -> f64 {
         match self {
             OptimizedRuntime::TargetMean { value } => *value,
+            OptimizedRuntime::BinaryClassifier { nodes } => {
+                predict_binary_classifier_row(nodes, |feature_index| {
+                    matrix.column(feature_index)[row_index]
+                })
+            }
             OptimizedRuntime::StandardClassifier { nodes, root } => {
                 predict_standard_classifier_row(nodes, *root, |feature_index| {
                     matrix.column(feature_index)[row_index]
@@ -1173,8 +1107,8 @@ impl OptimizedRuntime {
                 leaf_values,
                 |feature_index| matrix.column(feature_index)[row_index],
             ),
-            OptimizedRuntime::StandardRegressor { nodes, root } => {
-                predict_standard_regressor_row(nodes, *root, |feature_index| {
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_row(nodes, |feature_index| {
                     matrix.column(feature_index)[row_index]
                 })
             }
@@ -1229,25 +1163,52 @@ where
 }
 
 #[inline(always)]
-fn predict_standard_regressor_row<F>(
-    nodes: &[OptimizedRegressorNode],
-    root: usize,
-    bin_at: F,
-) -> f64
+fn predict_binary_classifier_row<F>(nodes: &[OptimizedBinaryClassifierNode], bin_at: F) -> f64
 where
     F: Fn(usize) -> u16,
 {
-    let mut node_index = root;
+    let mut node_index = 0usize;
     loop {
         match &nodes[node_index] {
-            OptimizedRegressorNode::Leaf(value) => return *value,
-            OptimizedRegressorNode::Binary {
+            OptimizedBinaryClassifierNode::Leaf(value) => return *value,
+            OptimizedBinaryClassifierNode::Branch {
                 feature_index,
                 threshold_bin,
-                children,
+                jump_index,
+                jump_if_greater,
             } => {
-                let go_right = usize::from(bin_at(*feature_index) > *threshold_bin);
-                node_index = children[go_right];
+                let go_right = bin_at(*feature_index) > *threshold_bin;
+                node_index = if go_right == *jump_if_greater {
+                    *jump_index
+                } else {
+                    node_index + 1
+                };
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_binary_regressor_row<F>(nodes: &[OptimizedBinaryRegressorNode], bin_at: F) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut node_index = 0usize;
+    loop {
+        match &nodes[node_index] {
+            OptimizedBinaryRegressorNode::Leaf(value) => return *value,
+            OptimizedBinaryRegressorNode::Branch {
+                feature_index,
+                threshold_bin,
+                jump_index,
+                jump_if_greater,
+            } => {
+                let go_right = bin_at(*feature_index) > *threshold_bin;
+                node_index = if go_right == *jump_if_greater {
+                    *jump_index
+                } else {
+                    node_index + 1
+                };
             }
         }
     }
@@ -1269,6 +1230,160 @@ where
         leaf_index = (leaf_index << 1) | go_right;
     }
     leaf_values[leaf_index]
+}
+
+fn classifier_nodes_are_binary_only(nodes: &[tree::classifier::TreeNode]) -> bool {
+    nodes.iter().all(|node| {
+        matches!(
+            node,
+            tree::classifier::TreeNode::Leaf { .. }
+                | tree::classifier::TreeNode::BinarySplit { .. }
+        )
+    })
+}
+
+fn classifier_node_sample_count(nodes: &[tree::classifier::TreeNode], node_index: usize) -> usize {
+    match &nodes[node_index] {
+        tree::classifier::TreeNode::Leaf { sample_count, .. }
+        | tree::classifier::TreeNode::BinarySplit { sample_count, .. }
+        | tree::classifier::TreeNode::MultiwaySplit { sample_count, .. } => *sample_count,
+    }
+}
+
+fn build_binary_classifier_layout(
+    nodes: &[tree::classifier::TreeNode],
+    root: usize,
+    class_labels: &[f64],
+) -> Vec<OptimizedBinaryClassifierNode> {
+    let mut layout = Vec::with_capacity(nodes.len());
+    append_binary_classifier_node(nodes, root, class_labels, &mut layout);
+    layout
+}
+
+fn append_binary_classifier_node(
+    nodes: &[tree::classifier::TreeNode],
+    node_index: usize,
+    class_labels: &[f64],
+    layout: &mut Vec<OptimizedBinaryClassifierNode>,
+) -> usize {
+    let current_index = layout.len();
+    layout.push(OptimizedBinaryClassifierNode::Leaf(0.0));
+
+    match &nodes[node_index] {
+        tree::classifier::TreeNode::Leaf { class_index, .. } => {
+            layout[current_index] = OptimizedBinaryClassifierNode::Leaf(class_labels[*class_index]);
+        }
+        tree::classifier::TreeNode::BinarySplit {
+            feature_index,
+            threshold_bin,
+            left_child,
+            right_child,
+            ..
+        } => {
+            let (fallthrough_child, jump_child, jump_if_greater) = if left_child == right_child {
+                (*left_child, *left_child, true)
+            } else {
+                let left_count = classifier_node_sample_count(nodes, *left_child);
+                let right_count = classifier_node_sample_count(nodes, *right_child);
+                if left_count >= right_count {
+                    (*left_child, *right_child, true)
+                } else {
+                    (*right_child, *left_child, false)
+                }
+            };
+
+            let fallthrough_index =
+                append_binary_classifier_node(nodes, fallthrough_child, class_labels, layout);
+            debug_assert_eq!(fallthrough_index, current_index + 1);
+            let jump_index = if jump_child == fallthrough_child {
+                fallthrough_index
+            } else {
+                append_binary_classifier_node(nodes, jump_child, class_labels, layout)
+            };
+
+            layout[current_index] = OptimizedBinaryClassifierNode::Branch {
+                feature_index: *feature_index,
+                threshold_bin: *threshold_bin,
+                jump_index,
+                jump_if_greater,
+            };
+        }
+        tree::classifier::TreeNode::MultiwaySplit { .. } => {
+            unreachable!("multiway nodes are filtered out before binary layout construction");
+        }
+    }
+
+    current_index
+}
+
+fn regressor_node_sample_count(
+    nodes: &[tree::regressor::RegressionNode],
+    node_index: usize,
+) -> usize {
+    match &nodes[node_index] {
+        tree::regressor::RegressionNode::Leaf { sample_count, .. }
+        | tree::regressor::RegressionNode::BinarySplit { sample_count, .. } => *sample_count,
+    }
+}
+
+fn build_binary_regressor_layout(
+    nodes: &[tree::regressor::RegressionNode],
+    root: usize,
+) -> Vec<OptimizedBinaryRegressorNode> {
+    let mut layout = Vec::with_capacity(nodes.len());
+    append_binary_regressor_node(nodes, root, &mut layout);
+    layout
+}
+
+fn append_binary_regressor_node(
+    nodes: &[tree::regressor::RegressionNode],
+    node_index: usize,
+    layout: &mut Vec<OptimizedBinaryRegressorNode>,
+) -> usize {
+    let current_index = layout.len();
+    layout.push(OptimizedBinaryRegressorNode::Leaf(0.0));
+
+    match &nodes[node_index] {
+        tree::regressor::RegressionNode::Leaf { value, .. } => {
+            layout[current_index] = OptimizedBinaryRegressorNode::Leaf(*value);
+        }
+        tree::regressor::RegressionNode::BinarySplit {
+            feature_index,
+            threshold_bin,
+            left_child,
+            right_child,
+            ..
+        } => {
+            let (fallthrough_child, jump_child, jump_if_greater) = if left_child == right_child {
+                (*left_child, *left_child, true)
+            } else {
+                let left_count = regressor_node_sample_count(nodes, *left_child);
+                let right_count = regressor_node_sample_count(nodes, *right_child);
+                if left_count >= right_count {
+                    (*left_child, *right_child, true)
+                } else {
+                    (*right_child, *left_child, false)
+                }
+            };
+
+            let fallthrough_index = append_binary_regressor_node(nodes, fallthrough_child, layout);
+            debug_assert_eq!(fallthrough_index, current_index + 1);
+            let jump_index = if jump_child == fallthrough_child {
+                fallthrough_index
+            } else {
+                append_binary_regressor_node(nodes, jump_child, layout)
+            };
+
+            layout[current_index] = OptimizedBinaryRegressorNode::Branch {
+                feature_index: *feature_index,
+                threshold_bin: *threshold_bin,
+                jump_index,
+                jump_if_greater,
+            };
+        }
+    }
+
+    current_index
 }
 
 fn predict_oblivious_column_major_matrix(
