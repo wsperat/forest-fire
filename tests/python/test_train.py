@@ -910,7 +910,7 @@ def test_optimize_inference_rejects_zero_physical_cores() -> None:
         model.optimize_inference(physical_cores=0)
 
 
-def test_random_forest_optimize_inference_is_not_supported(
+def test_random_forest_optimized_inference_matches_base_model(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
     X, y = and_data
@@ -923,11 +923,89 @@ def test_random_forest_optimize_inference_is_not_supported(
         canaries=0,
         n_trees=3,
     )
+    optimized = model.optimize_inference(physical_cores=1)
 
-    with pytest.raises(
-        ValueError, match="not supported for model type 'random_forest'"
-    ):
-        model.optimize_inference(physical_cores=1)
+    assert np.array_equal(optimized.predict(X), model.predict(X))
+    assert np.allclose(optimized.predict_proba(X), model.predict_proba(X))
+
+
+def test_random_forest_optimized_regression_matches_base_model() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0]])
+    y = np.array([0.0, 1.0, 1.5, 3.0, 8.0])
+    model = train(
+        X,
+        y,
+        algorithm="rf",
+        task="regression",
+        tree_type="cart",
+        canaries=0,
+        n_trees=5,
+        seed=7,
+    )
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert np.allclose(optimized.predict(X), model.predict(X))
+
+
+@pytest.mark.parametrize("tree_type", ["id3", "c45", "cart", "randomized", "oblivious"])
+def test_optimized_classifier_predict_proba_matches_base_model_for_all_tree_types(
+    tree_type: str,
+) -> None:
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((2_000, 3))
+    y = rng.integers(0, 2, size=2_000)
+    model = train(
+        Table(X, y),
+        algorithm="dt",
+        tree_type=tree_type,
+        canaries=0,
+        min_samples_leaf=50,
+    )
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert np.allclose(
+        optimized.predict_proba([[0.0, 0.0, 0.0]]),
+        model.predict_proba([[0.0, 0.0, 0.0]]),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+
+
+@pytest.mark.parametrize("tree_type", ["id3", "c45", "cart", "randomized", "oblivious"])
+def test_random_forest_optimized_classifier_predict_proba_matches_base_model_for_all_tree_types(
+    tree_type: str,
+) -> None:
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((2_000, 3))
+    y = rng.integers(0, 2, size=2_000)
+    model = train(
+        Table(X, y),
+        algorithm="rf",
+        tree_type=tree_type,
+        n_trees=100,
+        min_samples_leaf=50,
+        max_features=2,
+    )
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert np.allclose(
+        optimized.predict_proba([[0.0, 0.0, 0.0]]),
+        model.predict_proba([[0.0, 0.0, 0.0]]),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+    assert np.allclose(
+        optimized.predict_proba(X),
+        model.predict_proba(X),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+    assert np.allclose(
+        optimized.predict_proba(X),
+        model.predict_proba(X),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
 
 
 def test_compiled_optimized_model_round_trips() -> None:

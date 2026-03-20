@@ -849,15 +849,18 @@ impl TableAccess for InferenceTable {
 enum OptimizedRuntime {
     BinaryClassifier {
         nodes: Vec<OptimizedBinaryClassifierNode>,
+        class_labels: Vec<f64>,
     },
     StandardClassifier {
         nodes: Vec<OptimizedClassifierNode>,
         root: usize,
+        class_labels: Vec<f64>,
     },
     ObliviousClassifier {
         feature_indices: Vec<usize>,
         threshold_bins: Vec<u16>,
-        leaf_values: Vec<f64>,
+        leaf_values: Vec<Vec<f64>>,
+        class_labels: Vec<f64>,
     },
     BinaryRegressor {
         nodes: Vec<OptimizedBinaryRegressorNode>,
@@ -867,11 +870,18 @@ enum OptimizedRuntime {
         threshold_bins: Vec<u16>,
         leaf_values: Vec<f64>,
     },
+    ForestClassifier {
+        trees: Vec<OptimizedRuntime>,
+        class_labels: Vec<f64>,
+    },
+    ForestRegressor {
+        trees: Vec<OptimizedRuntime>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum OptimizedClassifierNode {
-    Leaf(f64),
+    Leaf(Vec<f64>),
     Binary {
         feature_index: usize,
         threshold_bin: u16,
@@ -881,13 +891,13 @@ enum OptimizedClassifierNode {
         feature_index: usize,
         child_lookup: Vec<usize>,
         max_bin_index: usize,
-        fallback_value: f64,
+        fallback_probabilities: Vec<f64>,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum OptimizedBinaryClassifierNode {
-    Leaf(f64),
+    Leaf(Vec<f64>),
     Branch {
         feature_index: usize,
         threshold_bin: u16,
@@ -1031,7 +1041,7 @@ impl OptimizedModel {
         &self,
         table: &dyn TableAccess,
     ) -> Result<Vec<Vec<f64>>, PredictError> {
-        self.source_model.predict_proba_table(table)
+        self.runtime.predict_proba_table(table, &self.executor)
     }
 
     pub fn predict_proba_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, PredictError> {
@@ -1253,6 +1263,8 @@ impl OptimizedRuntime {
                 | OptimizedRuntime::BinaryRegressor { .. }
                 | OptimizedRuntime::ObliviousClassifier { .. }
                 | OptimizedRuntime::ObliviousRegressor { .. }
+                | OptimizedRuntime::ForestClassifier { .. }
+                | OptimizedRuntime::ForestRegressor { .. }
         )
     }
 
@@ -1264,9 +1276,17 @@ impl OptimizedRuntime {
         match model {
             Model::DecisionTreeClassifier(classifier) => Self::from_classifier(classifier),
             Model::DecisionTreeRegressor(regressor) => Self::from_regressor(regressor),
-            Model::RandomForest(_) => {
-                unreachable!("random forests do not have an optimized single-runtime lowering yet")
-            }
+            Model::RandomForest(forest) => match forest.task() {
+                Task::Classification => Self::ForestClassifier {
+                    trees: forest.trees().iter().map(Self::from_model).collect(),
+                    class_labels: forest
+                        .class_labels()
+                        .expect("classification forest stores class labels"),
+                },
+                Task::Regression => Self::ForestRegressor {
+                    trees: forest.trees().iter().map(Self::from_model).collect(),
+                },
+            },
         }
     }
 
@@ -1280,14 +1300,17 @@ impl OptimizedRuntime {
                             *root,
                             classifier.class_labels(),
                         ),
+                        class_labels: classifier.class_labels().to_vec(),
                     };
                 }
 
                 let optimized_nodes = nodes
                     .iter()
                     .map(|node| match node {
-                        tree::classifier::TreeNode::Leaf { class_index, .. } => {
-                            OptimizedClassifierNode::Leaf(classifier.class_labels()[*class_index])
+                        tree::classifier::TreeNode::Leaf { class_counts, .. } => {
+                            OptimizedClassifierNode::Leaf(normalized_probabilities_from_counts(
+                                class_counts,
+                            ))
                         }
                         tree::classifier::TreeNode::BinarySplit {
                             feature_index,
@@ -1302,7 +1325,7 @@ impl OptimizedRuntime {
                         },
                         tree::classifier::TreeNode::MultiwaySplit {
                             feature_index,
-                            fallback_class_index,
+                            class_counts,
                             branches,
                             ..
                         } => {
@@ -1319,7 +1342,9 @@ impl OptimizedRuntime {
                                 feature_index: *feature_index,
                                 child_lookup,
                                 max_bin_index,
-                                fallback_value: classifier.class_labels()[*fallback_class_index],
+                                fallback_probabilities: normalized_probabilities_from_counts(
+                                    class_counts,
+                                ),
                             }
                         }
                     })
@@ -1328,19 +1353,21 @@ impl OptimizedRuntime {
                 Self::StandardClassifier {
                     nodes: optimized_nodes,
                     root: *root,
+                    class_labels: classifier.class_labels().to_vec(),
                 }
             }
             tree::classifier::TreeStructure::Oblivious {
                 splits,
-                leaf_class_indices,
+                leaf_class_counts,
                 ..
             } => Self::ObliviousClassifier {
                 feature_indices: splits.iter().map(|split| split.feature_index).collect(),
                 threshold_bins: splits.iter().map(|split| split.threshold_bin).collect(),
-                leaf_values: leaf_class_indices
+                leaf_values: leaf_class_counts
                     .iter()
-                    .map(|class_index| classifier.class_labels()[*class_index])
+                    .map(|class_counts| normalized_probabilities_from_counts(class_counts))
                     .collect(),
+                class_labels: classifier.class_labels().to_vec(),
             },
         }
     }
@@ -1367,26 +1394,15 @@ impl OptimizedRuntime {
     #[inline(always)]
     fn predict_table_row(&self, table: &dyn TableAccess, row_index: usize) -> f64 {
         match self {
-            OptimizedRuntime::BinaryClassifier { nodes } => {
-                predict_binary_classifier_row(nodes, |feature_index| {
-                    table.binned_value(feature_index, row_index)
-                })
+            OptimizedRuntime::BinaryClassifier { .. }
+            | OptimizedRuntime::StandardClassifier { .. }
+            | OptimizedRuntime::ObliviousClassifier { .. }
+            | OptimizedRuntime::ForestClassifier { .. } => {
+                let probabilities = self
+                    .predict_proba_table_row(table, row_index)
+                    .expect("classifier runtime supports probability prediction");
+                class_label_from_probabilities(&probabilities, self.class_labels())
             }
-            OptimizedRuntime::StandardClassifier { nodes, root } => {
-                predict_standard_classifier_row(nodes, *root, |feature_index| {
-                    table.binned_value(feature_index, row_index)
-                })
-            }
-            OptimizedRuntime::ObliviousClassifier {
-                feature_indices,
-                threshold_bins,
-                leaf_values,
-            } => predict_oblivious_row(
-                feature_indices,
-                threshold_bins,
-                leaf_values,
-                |feature_index| table.binned_value(feature_index, row_index),
-            ),
             OptimizedRuntime::BinaryRegressor { nodes } => {
                 predict_binary_regressor_row(nodes, |feature_index| {
                     table.binned_value(feature_index, row_index)
@@ -1402,6 +1418,93 @@ impl OptimizedRuntime {
                 leaf_values,
                 |feature_index| table.binned_value(feature_index, row_index),
             ),
+            OptimizedRuntime::ForestRegressor { trees } => {
+                trees
+                    .iter()
+                    .map(|tree| tree.predict_table_row(table, row_index))
+                    .sum::<f64>()
+                    / trees.len() as f64
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn predict_proba_table_row(
+        &self,
+        table: &dyn TableAccess,
+        row_index: usize,
+    ) -> Result<Vec<f64>, PredictError> {
+        match self {
+            OptimizedRuntime::BinaryClassifier { nodes, .. } => Ok(
+                predict_binary_classifier_probabilities_row(nodes, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+                .to_vec(),
+            ),
+            OptimizedRuntime::StandardClassifier { nodes, root, .. } => Ok(
+                predict_standard_classifier_probabilities_row(nodes, *root, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+                .to_vec(),
+            ),
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                ..
+            } => Ok(predict_oblivious_probabilities_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| table.binned_value(feature_index, row_index),
+            )
+            .to_vec()),
+            OptimizedRuntime::ForestClassifier { trees, .. } => {
+                let mut totals = trees[0].predict_proba_table_row(table, row_index)?;
+                for tree in &trees[1..] {
+                    let row = tree.predict_proba_table_row(table, row_index)?;
+                    for (total, value) in totals.iter_mut().zip(row) {
+                        *total += value;
+                    }
+                }
+                let tree_count = trees.len() as f64;
+                for value in &mut totals {
+                    *value /= tree_count;
+                }
+                Ok(totals)
+            }
+            OptimizedRuntime::BinaryRegressor { .. }
+            | OptimizedRuntime::ObliviousRegressor { .. }
+            | OptimizedRuntime::ForestRegressor { .. } => {
+                Err(PredictError::ProbabilityPredictionRequiresClassification)
+            }
+        }
+    }
+
+    fn predict_proba_table(
+        &self,
+        table: &dyn TableAccess,
+        executor: &InferenceExecutor,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
+        match self {
+            OptimizedRuntime::BinaryClassifier { .. }
+            | OptimizedRuntime::StandardClassifier { .. }
+            | OptimizedRuntime::ObliviousClassifier { .. }
+            | OptimizedRuntime::ForestClassifier { .. } => {
+                if self.should_use_batch_matrix(table.n_rows()) {
+                    let matrix = ColumnMajorBinnedMatrix::from_table_access(table);
+                    self.predict_proba_column_major_matrix(&matrix, executor)
+                } else {
+                    (0..table.n_rows())
+                        .map(|row_index| self.predict_proba_table_row(table, row_index))
+                        .collect()
+                }
+            }
+            OptimizedRuntime::BinaryRegressor { .. }
+            | OptimizedRuntime::ObliviousRegressor { .. }
+            | OptimizedRuntime::ForestRegressor { .. } => {
+                Err(PredictError::ProbabilityPredictionRequiresClassification)
+            }
         }
     }
 
@@ -1411,15 +1514,19 @@ impl OptimizedRuntime {
         executor: &InferenceExecutor,
     ) -> Vec<f64> {
         match self {
-            OptimizedRuntime::BinaryClassifier { nodes } => {
-                predict_binary_classifier_column_major_matrix(nodes, matrix, executor)
+            OptimizedRuntime::BinaryClassifier { .. }
+            | OptimizedRuntime::StandardClassifier { .. }
+            | OptimizedRuntime::ObliviousClassifier { .. }
+            | OptimizedRuntime::ForestClassifier { .. } => self
+                .predict_proba_column_major_matrix(matrix, executor)
+                .expect("classifier runtime supports probability prediction")
+                .into_iter()
+                .map(|row| class_label_from_probabilities(&row, self.class_labels()))
+                .collect(),
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_column_major_matrix(nodes, matrix, executor)
             }
-            OptimizedRuntime::ObliviousClassifier {
-                feature_indices,
-                threshold_bins,
-                leaf_values,
-            }
-            | OptimizedRuntime::ObliviousRegressor {
+            OptimizedRuntime::ObliviousRegressor {
                 feature_indices,
                 threshold_bins,
                 leaf_values,
@@ -1430,74 +1537,156 @@ impl OptimizedRuntime {
                 matrix,
                 executor,
             ),
-            OptimizedRuntime::BinaryRegressor { nodes } => {
-                predict_binary_regressor_column_major_matrix(nodes, matrix, executor)
+            OptimizedRuntime::ForestRegressor { trees } => {
+                let mut totals = trees[0].predict_column_major_matrix(matrix, executor);
+                for tree in &trees[1..] {
+                    let values = tree.predict_column_major_matrix(matrix, executor);
+                    for (total, value) in totals.iter_mut().zip(values) {
+                        *total += value;
+                    }
+                }
+                let tree_count = trees.len() as f64;
+                for total in &mut totals {
+                    *total /= tree_count;
+                }
+                totals
             }
-            _ => executor.predict_rows(matrix.n_rows, |row_index| {
-                self.predict_binned_row_from_columns(matrix, row_index)
-            }),
         }
     }
 
-    #[inline(always)]
-    fn predict_binned_row_from_columns(
+    fn predict_proba_column_major_matrix(
         &self,
         matrix: &ColumnMajorBinnedMatrix,
-        row_index: usize,
-    ) -> f64 {
+        executor: &InferenceExecutor,
+    ) -> Result<Vec<Vec<f64>>, PredictError> {
         match self {
-            OptimizedRuntime::BinaryClassifier { nodes } => {
-                predict_binary_classifier_row(nodes, |feature_index| {
-                    matrix.column(feature_index).value_at(row_index)
-                })
+            OptimizedRuntime::BinaryClassifier { nodes, .. } => {
+                Ok(predict_binary_classifier_probabilities_column_major_matrix(
+                    nodes, matrix, executor,
+                ))
             }
-            OptimizedRuntime::StandardClassifier { nodes, root } => {
-                predict_standard_classifier_row(nodes, *root, |feature_index| {
-                    matrix.column(feature_index).value_at(row_index)
+            OptimizedRuntime::StandardClassifier { .. } => Ok((0..matrix.n_rows)
+                .map(|row_index| {
+                    self.predict_proba_binned_row_from_columns(matrix, row_index)
+                        .expect("classifier runtime supports probability prediction")
                 })
-            }
+                .collect()),
             OptimizedRuntime::ObliviousClassifier {
                 feature_indices,
                 threshold_bins,
                 leaf_values,
-            } => predict_oblivious_row(
+                ..
+            } => Ok(predict_oblivious_probabilities_column_major_matrix(
                 feature_indices,
                 threshold_bins,
                 leaf_values,
-                |feature_index| matrix.column(feature_index).value_at(row_index),
-            ),
-            OptimizedRuntime::BinaryRegressor { nodes } => {
-                predict_binary_regressor_row(nodes, |feature_index| {
+                matrix,
+                executor,
+            )),
+            OptimizedRuntime::ForestClassifier { trees, .. } => {
+                let mut totals = trees[0].predict_proba_column_major_matrix(matrix, executor)?;
+                for tree in &trees[1..] {
+                    let rows = tree.predict_proba_column_major_matrix(matrix, executor)?;
+                    for (row_totals, row_values) in totals.iter_mut().zip(rows) {
+                        for (total, value) in row_totals.iter_mut().zip(row_values) {
+                            *total += value;
+                        }
+                    }
+                }
+                let tree_count = trees.len() as f64;
+                for row in &mut totals {
+                    for value in row {
+                        *value /= tree_count;
+                    }
+                }
+                Ok(totals)
+            }
+            OptimizedRuntime::BinaryRegressor { .. }
+            | OptimizedRuntime::ObliviousRegressor { .. }
+            | OptimizedRuntime::ForestRegressor { .. } => {
+                Err(PredictError::ProbabilityPredictionRequiresClassification)
+            }
+        }
+    }
+
+    fn class_labels(&self) -> &[f64] {
+        match self {
+            OptimizedRuntime::BinaryClassifier { class_labels, .. }
+            | OptimizedRuntime::StandardClassifier { class_labels, .. }
+            | OptimizedRuntime::ObliviousClassifier { class_labels, .. }
+            | OptimizedRuntime::ForestClassifier { class_labels, .. } => class_labels,
+            _ => &[],
+        }
+    }
+
+    #[inline(always)]
+    fn predict_proba_binned_row_from_columns(
+        &self,
+        matrix: &ColumnMajorBinnedMatrix,
+        row_index: usize,
+    ) -> Result<Vec<f64>, PredictError> {
+        match self {
+            OptimizedRuntime::BinaryClassifier { nodes, .. } => Ok(
+                predict_binary_classifier_probabilities_row(nodes, |feature_index| {
                     matrix.column(feature_index).value_at(row_index)
                 })
-            }
-            OptimizedRuntime::ObliviousRegressor {
+                .to_vec(),
+            ),
+            OptimizedRuntime::StandardClassifier { nodes, root, .. } => Ok(
+                predict_standard_classifier_probabilities_row(nodes, *root, |feature_index| {
+                    matrix.column(feature_index).value_at(row_index)
+                })
+                .to_vec(),
+            ),
+            OptimizedRuntime::ObliviousClassifier {
                 feature_indices,
                 threshold_bins,
                 leaf_values,
-            } => predict_oblivious_row(
+                ..
+            } => Ok(predict_oblivious_probabilities_row(
                 feature_indices,
                 threshold_bins,
                 leaf_values,
                 |feature_index| matrix.column(feature_index).value_at(row_index),
-            ),
+            )
+            .to_vec()),
+            OptimizedRuntime::ForestClassifier { trees, .. } => {
+                let mut totals =
+                    trees[0].predict_proba_binned_row_from_columns(matrix, row_index)?;
+                for tree in &trees[1..] {
+                    let row = tree.predict_proba_binned_row_from_columns(matrix, row_index)?;
+                    for (total, value) in totals.iter_mut().zip(row) {
+                        *total += value;
+                    }
+                }
+                let tree_count = trees.len() as f64;
+                for value in &mut totals {
+                    *value /= tree_count;
+                }
+                Ok(totals)
+            }
+            OptimizedRuntime::BinaryRegressor { .. }
+            | OptimizedRuntime::ObliviousRegressor { .. }
+            | OptimizedRuntime::ForestRegressor { .. } => {
+                Err(PredictError::ProbabilityPredictionRequiresClassification)
+            }
         }
     }
 }
 
 #[inline(always)]
-fn predict_standard_classifier_row<F>(
+fn predict_standard_classifier_probabilities_row<F>(
     nodes: &[OptimizedClassifierNode],
     root: usize,
     bin_at: F,
-) -> f64
+) -> &[f64]
 where
     F: Fn(usize) -> u16,
 {
     let mut node_index = root;
     loop {
         match &nodes[node_index] {
-            OptimizedClassifierNode::Leaf(value) => return *value,
+            OptimizedClassifierNode::Leaf(value) => return value,
             OptimizedClassifierNode::Binary {
                 feature_index,
                 threshold_bin,
@@ -1510,15 +1699,15 @@ where
                 feature_index,
                 child_lookup,
                 max_bin_index,
-                fallback_value,
+                fallback_probabilities,
             } => {
                 let bin = usize::from(bin_at(*feature_index));
                 if bin > *max_bin_index {
-                    return *fallback_value;
+                    return fallback_probabilities;
                 }
                 let child_index = child_lookup[bin];
                 if child_index == usize::MAX {
-                    return *fallback_value;
+                    return fallback_probabilities;
                 }
                 node_index = child_index;
             }
@@ -1527,14 +1716,17 @@ where
 }
 
 #[inline(always)]
-fn predict_binary_classifier_row<F>(nodes: &[OptimizedBinaryClassifierNode], bin_at: F) -> f64
+fn predict_binary_classifier_probabilities_row<F>(
+    nodes: &[OptimizedBinaryClassifierNode],
+    bin_at: F,
+) -> &[f64]
 where
     F: Fn(usize) -> u16,
 {
     let mut node_index = 0usize;
     loop {
         match &nodes[node_index] {
-            OptimizedBinaryClassifierNode::Leaf(value) => return *value,
+            OptimizedBinaryClassifierNode::Leaf(value) => return value,
             OptimizedBinaryClassifierNode::Branch {
                 feature_index,
                 threshold_bin,
@@ -1578,90 +1770,19 @@ where
     }
 }
 
-fn predict_binary_classifier_column_major_matrix(
+fn predict_binary_classifier_probabilities_column_major_matrix(
     nodes: &[OptimizedBinaryClassifierNode],
     matrix: &ColumnMajorBinnedMatrix,
-    executor: &InferenceExecutor,
-) -> Vec<f64> {
-    let mut outputs = vec![0.0; matrix.n_rows];
-    executor.fill_chunks(
-        &mut outputs,
-        STANDARD_BATCH_INFERENCE_CHUNK_ROWS,
-        |start_row, chunk| predict_binary_classifier_chunk(nodes, matrix, start_row, chunk),
-    );
-    outputs
-}
-
-fn predict_binary_classifier_chunk(
-    nodes: &[OptimizedBinaryClassifierNode],
-    matrix: &ColumnMajorBinnedMatrix,
-    start_row: usize,
-    output: &mut [f64],
-) {
-    let mut row_indices: Vec<usize> = (0..output.len()).collect();
-    let mut stack = vec![(0usize, 0usize, output.len())];
-
-    while let Some((node_index, start, end)) = stack.pop() {
-        match &nodes[node_index] {
-            OptimizedBinaryClassifierNode::Leaf(value) => {
-                for position in start..end {
-                    output[row_indices[position]] = *value;
-                }
-            }
-            OptimizedBinaryClassifierNode::Branch {
-                feature_index,
-                threshold_bin,
-                jump_index,
-                jump_if_greater,
-            } => {
-                let fallthrough_index = node_index + 1;
-                if *jump_index == fallthrough_index {
-                    stack.push((fallthrough_index, start, end));
-                    continue;
-                }
-
-                let column = matrix.column(*feature_index);
-                let mut partition = start;
-                let mut jump_start = end;
-                match column {
-                    CompactBinnedColumn::U8(values) if *threshold_bin <= u16::from(u8::MAX) => {
-                        let threshold = *threshold_bin as u8;
-                        while partition < jump_start {
-                            let row_offset = row_indices[partition];
-                            let go_right = values[start_row + row_offset] > threshold;
-                            let goes_jump = go_right == *jump_if_greater;
-                            if goes_jump {
-                                jump_start -= 1;
-                                row_indices.swap(partition, jump_start);
-                            } else {
-                                partition += 1;
-                            }
-                        }
-                    }
-                    _ => {
-                        while partition < jump_start {
-                            let row_offset = row_indices[partition];
-                            let go_right = column.value_at(start_row + row_offset) > *threshold_bin;
-                            let goes_jump = go_right == *jump_if_greater;
-                            if goes_jump {
-                                jump_start -= 1;
-                                row_indices.swap(partition, jump_start);
-                            } else {
-                                partition += 1;
-                            }
-                        }
-                    }
-                }
-
-                if jump_start < end {
-                    stack.push((*jump_index, jump_start, end));
-                }
-                if start < jump_start {
-                    stack.push((fallthrough_index, start, jump_start));
-                }
-            }
-        }
-    }
+    _executor: &InferenceExecutor,
+) -> Vec<Vec<f64>> {
+    (0..matrix.n_rows)
+        .map(|row_index| {
+            predict_binary_classifier_probabilities_row(nodes, |feature_index| {
+                matrix.column(feature_index).value_at(row_index)
+            })
+            .to_vec()
+        })
+        .collect()
 }
 
 fn predict_binary_regressor_column_major_matrix(
@@ -1768,6 +1889,50 @@ where
     leaf_values[leaf_index]
 }
 
+#[inline(always)]
+fn predict_oblivious_probabilities_row<'a, F>(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &'a [Vec<f64>],
+    bin_at: F,
+) -> &'a [f64]
+where
+    F: Fn(usize) -> u16,
+{
+    let mut leaf_index = 0usize;
+    for (&feature_index, &threshold_bin) in feature_indices.iter().zip(threshold_bins) {
+        let go_right = usize::from(bin_at(feature_index) > threshold_bin);
+        leaf_index = (leaf_index << 1) | go_right;
+    }
+    leaf_values[leaf_index].as_slice()
+}
+
+fn normalized_probabilities_from_counts(class_counts: &[usize]) -> Vec<f64> {
+    let total = class_counts.iter().sum::<usize>();
+    if total == 0 {
+        return vec![0.0; class_counts.len()];
+    }
+
+    class_counts
+        .iter()
+        .map(|count| *count as f64 / total as f64)
+        .collect()
+}
+
+fn class_label_from_probabilities(probabilities: &[f64], class_labels: &[f64]) -> f64 {
+    let best_index = probabilities
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by(|(left_index, left), (right_index, right)| {
+            left.total_cmp(right)
+                .then_with(|| right_index.cmp(left_index))
+        })
+        .map(|(index, _)| index)
+        .expect("classification probability row is non-empty");
+    class_labels[best_index]
+}
+
 fn classifier_nodes_are_binary_only(nodes: &[tree::classifier::TreeNode]) -> bool {
     nodes.iter().all(|node| {
         matches!(
@@ -1789,25 +1954,26 @@ fn classifier_node_sample_count(nodes: &[tree::classifier::TreeNode], node_index
 fn build_binary_classifier_layout(
     nodes: &[tree::classifier::TreeNode],
     root: usize,
-    class_labels: &[f64],
+    _class_labels: &[f64],
 ) -> Vec<OptimizedBinaryClassifierNode> {
     let mut layout = Vec::with_capacity(nodes.len());
-    append_binary_classifier_node(nodes, root, class_labels, &mut layout);
+    append_binary_classifier_node(nodes, root, &mut layout);
     layout
 }
 
 fn append_binary_classifier_node(
     nodes: &[tree::classifier::TreeNode],
     node_index: usize,
-    class_labels: &[f64],
     layout: &mut Vec<OptimizedBinaryClassifierNode>,
 ) -> usize {
     let current_index = layout.len();
-    layout.push(OptimizedBinaryClassifierNode::Leaf(0.0));
+    layout.push(OptimizedBinaryClassifierNode::Leaf(Vec::new()));
 
     match &nodes[node_index] {
-        tree::classifier::TreeNode::Leaf { class_index, .. } => {
-            layout[current_index] = OptimizedBinaryClassifierNode::Leaf(class_labels[*class_index]);
+        tree::classifier::TreeNode::Leaf { class_counts, .. } => {
+            layout[current_index] = OptimizedBinaryClassifierNode::Leaf(
+                normalized_probabilities_from_counts(class_counts),
+            );
         }
         tree::classifier::TreeNode::BinarySplit {
             feature_index,
@@ -1828,13 +1994,12 @@ fn append_binary_classifier_node(
                 }
             };
 
-            let fallthrough_index =
-                append_binary_classifier_node(nodes, fallthrough_child, class_labels, layout);
+            let fallthrough_index = append_binary_classifier_node(nodes, fallthrough_child, layout);
             debug_assert_eq!(fallthrough_index, current_index + 1);
             let jump_index = if jump_child == fallthrough_child {
                 fallthrough_index
             } else {
-                append_binary_classifier_node(nodes, jump_child, class_labels, layout)
+                append_binary_classifier_node(nodes, jump_child, layout)
             };
 
             layout[current_index] = OptimizedBinaryClassifierNode::Branch {
@@ -1945,6 +2110,26 @@ fn predict_oblivious_column_major_matrix(
         },
     );
     outputs
+}
+
+fn predict_oblivious_probabilities_column_major_matrix(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[Vec<f64>],
+    matrix: &ColumnMajorBinnedMatrix,
+    _executor: &InferenceExecutor,
+) -> Vec<Vec<f64>> {
+    (0..matrix.n_rows)
+        .map(|row_index| {
+            predict_oblivious_probabilities_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| matrix.column(feature_index).value_at(row_index),
+            )
+            .to_vec()
+        })
+        .collect()
 }
 
 fn predict_oblivious_chunk(
@@ -2257,9 +2442,6 @@ impl Model {
         &self,
         physical_cores: Option<usize>,
     ) -> Result<OptimizedModel, OptimizeError> {
-        if matches!(self, Model::RandomForest(_)) {
-            return Err(OptimizeError::UnsupportedModelType("random_forest"));
-        }
         OptimizedModel::new(self.clone(), physical_cores)
     }
 
