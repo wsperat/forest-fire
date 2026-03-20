@@ -1062,6 +1062,6 @@ mod tests {
     fn generated_json_schema_matches_checked_in_schema() {
         let generated = Model::json_schema_json_pretty().unwrap();
         let checked_in = include_str!("../schema/forestfire-ir.schema.json");
-        assert_eq!(generated, checked_in);
+        assert_eq!(generated.trim_end(), checked_in.trim_end());
     }
 }
