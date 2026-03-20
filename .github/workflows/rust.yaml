@@ -27,6 +27,4 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-targets
       - name: Run Rust examples
-        run: |-
-          cargo run -p forestfire-rust-examples --bin mean_tree
-          cargo run -p forestfire-rust-examples --bin showcase
+        run: cargo run -p forestfire-rust-examples --bin showcase
