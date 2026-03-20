@@ -35,6 +35,8 @@ model = train(
 preds = model.predict(X)
 fast_model = model.optimize_inference(physical_cores=4)
 fast_preds = fast_model.predict(X)
+compiled = fast_model.serialize_compiled()
+restored_fast = fast_model.deserialize_compiled(compiled, physical_cores=4)
 serialized = model.serialize(pretty=True)
 restored = model.deserialize(serialized)
 ir_json = model.to_ir_json(pretty=True)
@@ -183,9 +185,10 @@ The returned `OptimizedModel` predicts the same values and serializes to the sam
 - multiway classifier splits use a dense bin lookup table instead of scanning the branch list
 - oblivious trees are evaluated from compact level arrays into a leaf index
 - multi-row inputs are preprocessed together before scoring
-- compiled binary and oblivious runtimes use column-major binned matrices so one split can scan many rows at once
+- compiled binary and oblivious runtimes use compact column-major binned matrices so one split can scan many rows at once
 - `polars.LazyFrame` inputs are collected and scored in batches of about `10_000` rows
 - row batches are scored in parallel across the requested physical cores
+- batch columns are stored as `u8` whenever a feature’s effective bins fit in `<= 255`, and as `u16` only when larger bin ids are actually needed
 
 ### What that means at the CPU level
 
@@ -205,9 +208,15 @@ For multiway classifier nodes, the optimized runtime replaces “scan branches u
 
 Oblivious trees become a sequence of feature-index and threshold arrays plus a final leaf array. Scoring becomes a fixed loop that accumulates a leaf index, which is much more regular than standard pointer-chasing tree traversal.
 
-#### Whole-batch preprocessing and column-major batches
+#### Whole-batch preprocessing and compact column-major batches
 
 Inference inputs are converted into compact bin ids before the optimized traversal runs. For compiled binary and oblivious runtimes, those bins are arranged column-major so the predictor can read one feature across many rows before moving on.
+
+With adaptive binning, the batch layout is tighter than before:
+
+- features with small effective bin domains are packed as `u8`
+- only features that actually exceed `255` need `u16`
+- compact columns reduce memory bandwidth and improve cache density in the hot loops
 
 #### Batch partitioning for compiled binary trees
 
@@ -241,6 +250,27 @@ Rows are independent at prediction time, so the optimized runtime parallelizes a
 ### Why the IR stays the same
 
 `OptimizedModel` delegates serialization and IR export to the original semantic model. That keeps portability stable: optimization changes execution strategy, not model meaning.
+
+## Benchmarks
+
+Run:
+
+- `task benchmark-inference`
+
+Artifacts are written to:
+
+- [docs/benchmarks/inference_benchmark_results.json](docs/benchmarks/inference_benchmark_results.json)
+- [docs/benchmarks/cart_runtime.png](docs/benchmarks/cart_runtime.png)
+- [docs/benchmarks/cart_speedup.png](docs/benchmarks/cart_speedup.png)
+- [docs/benchmarks/oblivious_runtime.png](docs/benchmarks/oblivious_runtime.png)
+- [docs/benchmarks/oblivious_speedup.png](docs/benchmarks/oblivious_speedup.png)
+
+Current checked-in run:
+
+- compiled CART optimized single-core averages about `1.056x` baseline
+- compiled CART optimized parallel averages about `1.053x` baseline
+- oblivious optimized single-core averages about `0.902x` baseline
+- oblivious optimized parallel averages about `1.009x` baseline
 
 ## Serialization and IR
 

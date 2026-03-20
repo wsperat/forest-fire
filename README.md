@@ -49,6 +49,10 @@ model = train(
 preds = model.predict(X)
 fast_model = model.optimize_inference(physical_cores=4)
 fast_preds = fast_model.predict(X)
+compiled = fast_model.serialize_compiled()
+restored_fast = forestfire.OptimizedModel.deserialize_compiled(
+    compiled, physical_cores=4
+)
 serialized = model.serialize(pretty=True)
 restored = model.deserialize(serialized)
 ir_json = model.to_ir_json(pretty=True)
@@ -372,9 +376,10 @@ The optimized runtime does a few different things:
 - multiway classifier splits precompute a dense bin-to-child lookup table, replacing per-row linear search over branches
 - oblivious trees are stored as compact per-level feature and threshold arrays, then evaluated by accumulating the leaf index directly
 - multi-row inputs are preprocessed together before scoring
-- compiled binary and oblivious runtimes convert those rows into column-major binned matrices so one split can scan many rows in one pass
+- compiled binary and oblivious runtimes convert those rows into compact column-major binned matrices so one split can scan many rows in one pass
 - `LazyFrame` inputs are streamed in batches of about `10_000` rows instead of being collected into one giant materialized dataframe first
 - batch prediction is parallelized across rows with a dedicated Rayon thread pool created by `optimize_inference(...)`
+- those batch columns are stored as `u8` whenever a feature’s effective bins fit in `<= 255`, and as `u16` only when larger bin ids are actually needed
 
 ### How each optimization affects low-level compute
 
@@ -465,16 +470,22 @@ At the hardware level this is much more regular than standard-tree traversal:
 
 That is why oblivious trees are usually the easiest tree family to push toward very high inference throughput.
 
-#### 5. Whole-batch preprocessing and column-major binned matrices
+#### 5. Whole-batch preprocessing and compact column-major binned matrices
 
-The optimized runtime preprocesses multi-row inputs as a batch before traversal. For the compiled binary and oblivious kernels, those batches are then rearranged into column-major `u16` bin matrices.
+The optimized runtime preprocesses multi-row inputs as a batch before traversal. For the compiled binary and oblivious kernels, those batches are then rearranged into compact column-major bin matrices.
 
 Why that helps:
 
 - one split can scan the same feature column across many rows
-- repeated threshold checks hit a compact `u16` buffer instead of raw `f64` values
+- repeated threshold checks hit compact integer buffers instead of raw `f64` values
 - bin ids are much smaller than raw `f64` values, so more working set fits in cache
 - rows can be partitioned in-place by branch outcome without re-reading the full input object model
+
+With adaptive binning, this is now tighter than before:
+
+- features with small effective bin domains are packed as `u8`
+- only features that actually exceed `255` need `u16`
+- compact columns reduce memory bandwidth and improve cache density in the hot loops
 
 This especially helps when:
 
@@ -659,7 +670,7 @@ It does not replace the JSON IR. It is an execution artifact for optimized runti
 
 The formal JSON Schema for the IR lives at:
 
-- [crates/core/schema/forestfire-ir.schema.json](/Users/waltersperat/Desktop/Personal/forest-fire/crates/core/schema/forestfire-ir.schema.json)
+- [crates/core/schema/forestfire-ir.schema.json](crates/core/schema/forestfire-ir.schema.json)
 
 It is generated from the Rust IR types and checked in as a contract artifact. The test suite verifies that the generated schema matches the checked-in file exactly.
 
@@ -679,6 +690,34 @@ It is generated from the Rust IR types and checked in as a contract artifact. Th
 - pyarrow
 - SciPy dense matrices
 - SciPy sparse matrices
+
+## Benchmarks
+
+Run:
+
+```bash
+task benchmark-inference
+```
+
+Artifacts are written to:
+
+- [docs/benchmarks/inference_benchmark_results.json](docs/benchmarks/inference_benchmark_results.json)
+- [docs/benchmarks/cart_runtime.png](docs/benchmarks/cart_runtime.png)
+- [docs/benchmarks/cart_speedup.png](docs/benchmarks/cart_speedup.png)
+- [docs/benchmarks/oblivious_runtime.png](docs/benchmarks/oblivious_runtime.png)
+- [docs/benchmarks/oblivious_speedup.png](docs/benchmarks/oblivious_speedup.png)
+
+Current checked-in run:
+
+- compiled CART optimized single-core averages about `1.056x` baseline
+- compiled CART optimized parallel averages about `1.053x` baseline
+- oblivious optimized single-core averages about `0.902x` baseline
+- oblivious optimized parallel averages about `1.009x` baseline
+
+That matches the current runtime:
+
+- compiled CART benefits strongly from fallthrough layout, batch partitioning, and compact `u8`/`u16` bins
+- oblivious trees improve mainly when batching and parallelism amortize the batch-conversion cost
 
 ## Design notes
 
