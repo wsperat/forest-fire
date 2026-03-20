@@ -1540,6 +1540,143 @@ mod tests {
         assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
     }
 
+    #[test]
+    fn model_rejects_missing_named_feature() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model
+            .predict_named_columns(BTreeMap::from([("f0".to_string(), vec![0.0, 1.0])]))
+            .unwrap_err();
+
+        assert!(matches!(err, PredictError::MissingFeature(feature) if feature == "f1"));
+    }
+
+    #[test]
+    fn model_rejects_unexpected_named_feature() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 1.0]),
+                ("f1".to_string(), vec![0.0, 1.0]),
+                ("f2".to_string(), vec![0.0, 1.0]),
+            ]))
+            .unwrap_err();
+
+        assert!(matches!(err, PredictError::UnexpectedFeature(feature) if feature == "f2"));
+    }
+
+    #[test]
+    fn model_rejects_invalid_binary_value_during_inference() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model.predict_rows(vec![vec![0.5, 1.0]]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            PredictError::InvalidBinaryValue {
+                feature_index: 0,
+                row_index: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn model_predicts_from_sparse_binary_columns() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let preds = model
+            .predict_sparse_binary_columns(4, 2, vec![vec![2, 3], vec![1, 3]])
+            .unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
     #[cfg(feature = "polars")]
     #[test]
     fn model_predicts_from_polars_dataframe() {
@@ -1610,6 +1747,44 @@ mod tests {
         let preds = model.predict_polars_lazyframe(&df.lazy()).unwrap();
 
         assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_rejects_polars_nulls() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), &[Some(0.0), None]).into(),
+            Series::new("f1".into(), &[Some(0.0), Some(1.0)]).into(),
+        ])
+        .unwrap();
+
+        let err = model.predict_polars_dataframe(&df).unwrap_err();
+
+        assert!(
+            matches!(err, PredictError::NullValue { feature, row_index } if feature == "f0" && row_index == 1)
+        );
     }
 
     #[test]

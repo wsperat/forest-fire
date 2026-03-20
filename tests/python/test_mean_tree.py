@@ -165,6 +165,37 @@ def test_predict_accepts_single_named_feature_row(
     assert pred[0] == 1.0
 
 
+def test_predict_rejects_missing_named_feature(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    with pytest.raises(ValueError, match="Missing required feature 'f1'"):
+        model.predict({"f0": [0.0, 1.0]})
+
+
+def test_predict_rejects_unexpected_named_feature(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    with pytest.raises(ValueError, match="Unexpected feature 'f2'"):
+        model.predict({"f0": [0.0, 1.0], "f1": [0.0, 1.0], "f2": [0.0, 1.0]})
+
+
+def test_predict_accepts_plain_python_rows(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    preds = model.predict([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+
+    assert np.array_equal(preds, np.array([0.0, 0.0, 1.0]))
+
+
 def test_train_id3_classifier(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -489,6 +520,18 @@ def test_table_accepts_polars_dataframes_if_installed() -> None:
     assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
 
 
+def test_predict_accepts_polars_lazyframes_if_installed() -> None:
+    pl = pytest.importorskip("polars")
+
+    X = pl.DataFrame({"a": [0.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0]})
+    y = np.array([0.0, 1.0, 1.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    preds = model.predict(X.lazy())
+
+    assert np.array_equal(preds, y)
+
+
 def test_table_accepts_pyarrow_tables_if_installed() -> None:
     pa = pytest.importorskip("pyarrow")
 
@@ -512,6 +555,17 @@ def test_table_accepts_scipy_sparse_matrices_if_installed() -> None:
 
     assert table.kind == "sparse"
     model = train(table, task="classification", tree_type="cart")
+    assert np.array_equal(model.predict(X), y)
+
+
+def test_predict_accepts_scipy_sparse_matrices_if_installed() -> None:
+    scipy_sparse = pytest.importorskip("scipy.sparse")
+
+    X = scipy_sparse.csr_matrix([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0, 1.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
     assert np.array_equal(model.predict(X), y)
 
 
