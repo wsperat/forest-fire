@@ -345,6 +345,125 @@ The optimized runtime does a few different things:
 - raw inference inputs are converted into a row-major binned matrix, which improves cache locality during repeated row traversal
 - batch prediction is parallelized across rows with a dedicated Rayon thread pool created by `optimize_inference(...)`
 
+### How each optimization affects low-level compute
+
+#### 1. Prediction-only node layouts
+
+Training trees carry more structure than inference needs:
+
+- training statistics
+- richer enum variants
+- fields used for export or debugging
+
+The optimized runtime strips that down to the minimum prediction state:
+
+- leaf value
+- feature index
+- threshold bin
+- child locations
+
+At the CPU level this reduces:
+
+- pointer chasing through larger objects
+- cache pressure from unused fields
+- branch work spent unpacking more general training-time representations
+
+In practice, that matters most for standard trees, where every scored row walks a chain of nodes and repeatedly touches that node memory.
+
+#### 2. Branch-reduced binary traversal
+
+Standard binary splits are still logically a branch, but the optimized path makes the hot step simpler:
+
+- compute `go_right` as `0` or `1`
+- select the next child from a two-slot array
+
+That does two things:
+
+- it gives the compiler a tighter inner loop with fewer shape-specific decisions
+- it reduces the amount of unpredictable control flow compared with a more general match-heavy traversal
+
+This matters because tree inference is full of hard-to-predict branches. On mixed data, consecutive rows often diverge quickly, so branch predictors are less effective than they are in regular numeric kernels.
+
+#### 3. Dense lookup for multiway splits
+
+Multiway classifier nodes are especially unfriendly to low-level prediction speed if implemented literally:
+
+- read the row’s bin
+- scan the branch list
+- compare against each branch bin until a match is found
+
+The optimized runtime replaces that with:
+
+- read the row’s bin
+- index a precomputed `bin -> child` table
+
+That changes the cost from “a small search with repeated comparisons” to “one bounds-known array access”. Low-level effects:
+
+- fewer dependent comparisons
+- fewer unpredictable loop exits
+- more regular memory access
+- easier vectorizer and prefetcher behavior, even if the full traversal is still branchy overall
+
+This optimization matters most for `id3` and `c45` style trees, where multiway nodes are common.
+
+#### 4. Compact oblivious-tree execution
+
+Oblivious trees are already structurally friendly to fast inference because every depth uses the same split shape. The optimized runtime makes that explicit:
+
+- one array of feature indices
+- one array of threshold bins
+- one leaf array
+
+Prediction then becomes:
+
+- iterate levels in order
+- compute one bit per level
+- build the final leaf index
+- load the leaf value once
+
+At the hardware level this is much more regular than standard-tree traversal:
+
+- the loop body is fixed
+- memory accesses are predictable
+- no child-pointer chasing is needed
+- leaf selection becomes a final indexed load
+
+That is why oblivious trees are usually the easiest tree family to push toward very high inference throughput.
+
+#### 5. Row-major binned inference matrix
+
+The optimized runtime first turns inference inputs into a compact binned matrix. Conceptually, each row becomes a short contiguous array of `u16` bin ids.
+
+Why that helps:
+
+- row traversal reads contiguous memory instead of recomputing or fetching feature state through a more abstract interface
+- bin ids are much smaller than raw `f64` values, so more working set fits in cache
+- repeated prediction over the same batch touches a dense, regular layout that CPUs handle well
+
+This especially helps when:
+
+- there are many rows
+- trees touch multiple features per prediction
+- raw input coercion is already done and traversal becomes the main cost
+
+#### 6. Row-parallel batch scoring
+
+Batch prediction is embarrassingly parallel across rows. `optimize_inference(...)` therefore builds a dedicated inference thread pool and parallelizes over rows once the batch is large enough.
+
+Low-level effect:
+
+- each worker thread traverses the same model on different rows
+- model memory is shared read-only
+- per-row state stays thread-local
+
+That is a good CPU pattern because:
+
+- synchronization is minimal
+- there is no write contention in the hot path
+- scaling is usually limited by memory hierarchy and branch behavior rather than lock overhead
+
+This optimization helps most on larger batches. On tiny batches, thread scheduling and setup costs can dominate.
+
 ### Why this is faster
 
 These optimizations target the main sources of inference cost:

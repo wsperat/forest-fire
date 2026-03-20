@@ -155,7 +155,34 @@ The returned `OptimizedModel` predicts the same values and serializes to the sam
 - binary splits pick the next child by array index instead of repeated branching
 - multiway classifier splits use a dense bin lookup table instead of scanning the branch list
 - oblivious trees are evaluated from compact level arrays into a leaf index
+- inference batches are converted into a row-major binned matrix
 - row batches are scored in parallel across the requested physical cores
+
+### What that means at the CPU level
+
+#### Prediction-only node layouts
+
+The optimized runtime removes training-only fields from the hot prediction path. That reduces object size, cache pressure, and the amount of general-case logic the predictor loop has to carry around.
+
+#### Binary split child selection
+
+Instead of a more general branch-heavy step, the optimized runtime computes a `0` or `1` decision and indexes directly into a two-child array. The goal is not to remove all branching, but to make the inner loop simpler and more compiler-friendly.
+
+#### Dense lookup for multiway nodes
+
+For multiway classifier nodes, the optimized runtime replaces “scan branches until one matches” with “index the precomputed child table by bin id”. That reduces dependent comparisons and makes access more regular.
+
+#### Compact oblivious-tree loops
+
+Oblivious trees become a sequence of feature-index and threshold arrays plus a final leaf array. Scoring becomes a fixed loop that accumulates a leaf index, which is much more regular than standard pointer-chasing tree traversal.
+
+#### Row-major binned batches
+
+Inference inputs are converted into compact bin ids before the optimized traversal runs. That makes row access denser and smaller than working directly from raw `float64` values, which usually improves cache behavior on larger batches.
+
+#### Row-parallel scoring
+
+Rows are independent at prediction time, so the optimized runtime parallelizes across them with a dedicated thread pool. That keeps the model read-only and shared while each worker operates on separate rows.
 
 ### Where it helps most
 
