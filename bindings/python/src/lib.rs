@@ -3,7 +3,7 @@ use forestfire_core::{
 };
 use forestfire_data::{Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyType};
 use pyo3::{Bound, prelude::*};
 
 #[pyclass(name = "Model")]
@@ -464,6 +464,13 @@ fn train(
 
 #[pymethods]
 impl PyModel {
+    #[classmethod]
+    fn deserialize(_cls: &Bound<PyType>, serialized: &str) -> PyResult<Self> {
+        let inner = Model::deserialize(serialized)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(Self { inner })
+    }
+
     fn predict<'py>(
         &self,
         py: Python<'py>,
@@ -497,6 +504,26 @@ impl PyModel {
     #[getter]
     fn mean_(&self) -> Option<f64> {
         self.inner.mean_value()
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.to_ir_json_pretty()
+        } else {
+            self.inner.to_ir_json()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.serialize_pretty()
+        } else {
+            self.inner.serialize()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
     }
 }
 

@@ -1,92 +1,181 @@
-# forestfire 🌲🔥 (python)
+# forestfire (Python)
 
-Python bindings for the unified `forestfire.train(...)` interface.
+Python bindings for the unified ForestFire training interface.
 
-## Current supported surface
+The Python package is built around four objects:
 
-- `algorithm="dt"`
-- `task="regression" | "classification"`
-- `tree_type="target_mean" | "id3" | "c45" | "cart" | "oblivious"`
-- `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
-- `canaries=2` by default for automatic growth stopping
-- `physical_cores=None | int` to control training parallelism
+- `Table` for validated training data
+- `train(...)` for fitting
+- `Model.predict(...)` for inference
+- `Model.serialize(...)` / `Model.deserialize(...)` for portability
 
-Example:
+## Quickstart
+
 ```python
 import numpy as np
-from forestfire import train
+
+from forestfire import Table, train
 
 X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
 y = np.array([0.0, 0.0, 0.0, 1.0])
 
+table = Table(X, y, canaries=2)
+
 model = train(
-    X,
-    y,
+    table,
     algorithm="dt",
     task="classification",
     tree_type="cart",
     criterion="gini",
     physical_cores=4,
 )
-preds = model.predict(X)
+
+preds = model.predict(table)
+serialized = model.serialize(pretty=True)
+restored = model.deserialize(serialized)
+ir_json = model.to_ir_json(pretty=True)
 ```
 
-## Why the API looks like this
+## Training API
 
-### `algorithm`
+```python
+train(
+    x,
+    y=None,
+    algorithm="dt",
+    task="regression",
+    tree_type="target_mean",
+    criterion="auto",
+    canaries=2,
+    physical_cores=None,
+)
+```
 
-Only `dt` exists today, but the parameter is already present so the public API does not need to break when additional learner families are added later.
+### Current supported values
 
-### `task`
+- `algorithm="dt"`
+- `task="regression" | "classification"`
+- `tree_type="target_mean" | "id3" | "c45" | "cart" | "oblivious"`
+- `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 
-`task` is explicit because classification and regression should not be inferred from the target array heuristically. That keeps the train path predictable and makes unsupported combinations fail early.
+### Why these parameters exist
 
-### `tree_type`
+#### `algorithm`
 
-`tree_type` selects the structural family of tree you want, not just a minor variation:
-- `target_mean` is the simplest regression baseline
-- `id3` and `c45` are explicit information-based classifiers
-- `cart` is the standard binary-tree family
-- `oblivious` uses the same split across a depth, which gives a more regular tree shape
+Only `dt` exists today, but the parameter is already part of the public surface so new learner families can be added without breaking the top-level API.
 
-### `criterion`
+#### `task`
 
-`criterion` is exposed because it changes the model’s bias:
-- `gini` and `entropy` are the classification choices
-- `mean` and `median` are the regression choices
-- `auto` resolves to the family-appropriate default
+ForestFire does not guess whether `y` means regression or classification. The task is explicit because it changes split scoring, leaf semantics, defaults, and the set of valid tree types.
+
+#### `tree_type`
+
+`tree_type` selects the structural family directly:
+
+- `target_mean`: regression baseline
+- `id3`: entropy-first classifier
+- `c45`: practical extension of ID3
+- `cart`: standard binary tree
+- `oblivious`: symmetric tree with one split per depth
+
+#### `criterion`
+
+Criterion changes the model itself, not just training speed:
+
+- `gini` and `entropy` for classification
+- `mean` and `median` for regression
+- `auto` to pick the default implied by task and tree type
 
 Current `auto` behavior:
+
 - `id3`, `c45` -> `entropy`
 - classification `cart`, `oblivious` -> `gini`
 - regression models -> `mean`
 
-### `canaries`
+#### `canaries`
 
-The library uses automatic growth stopping rather than pruning. To do that, `DenseTable` builds shuffled canary copies of the binned features. If a learner prefers a canary feature, it has found a noise-like split and stops growing there. For oblivious trees, selecting a canary stops the whole remaining growth process.
+ForestFire uses automatic growth stopping instead of pruning. Canary variables are shuffled copies of the already-preprocessed features. If a learner chooses a canary, it has reached a noise-like split and stops growing there.
 
-### `physical_cores`
+Current stopping behavior:
 
-This controls CPU usage using physical cores rather than logical threads, because the training work is mostly memory-sensitive split scoring. Using physical cores tends to be a more honest and predictable knob for tree training.
+- standard trees stop at the current node
+- oblivious trees stop the remaining depth growth
 
-## Data and training rationale
+#### `physical_cores`
 
-Training converts the NumPy input into an internal Arrow-backed `DenseTable`.
+This controls CPU usage during fitting. The library uses physical cores as the public knob because split scoring is memory-sensitive and that tends to be a more honest resource limit than logical threads.
 
-That design exists for three reasons:
-- columnar scans are a better fit than row-oriented storage for repeated feature scoring
-- binary `0/1` columns can be stored compactly as booleans and split faster
-- pre-binning numeric columns into 512 bins makes repeated split evaluation substantially cheaper
+## Tables and input handling
 
-The bin count is fixed today because the project is optimizing for a stable, simple training core first. `512` is meant as a practical compromise between split resolution and memory/runtime cost.
+### `Table`
 
-Training parallelism is feature-parallel by tree type:
-- `id3`, `c45`, and `cart` score features in parallel at each node
-- `oblivious` scores features in parallel at each tree level
-- `target_mean` is effectively sequential because there is too little work to parallelize meaningfully
+`Table` is the public container for validated training data. You can pass raw data directly to `train(...)`, but building a `Table` explicitly is useful when you want preprocessing and validation separated from fitting.
 
-## Build & install (dev)
+`Table` chooses between:
+
+- `DenseTable` for mixed numeric/binary data
+- `SparseTable` for binary sparse inputs
+
+### Supported input types
+
+- NumPy arrays
+- Python sequences
+- pandas
+- polars
+- pyarrow
+- SciPy dense matrices
+- SciPy sparse matrices
+
+### `DenseTable`
+
+`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into `512` bins, and binary `0/1` columns are stored as booleans so they are both smaller and cheaper to split on.
+
+### `SparseTable`
+
+`SparseTable` is binary-only. Internally it stores, per feature, the row positions where the value is `1`. That keeps memory proportional to the number of positive entries rather than the full dense shape.
+
+SciPy sparse matrices are converted into this representation by reading their shape and nonzero coordinates. They are not densified first.
+
+## Serialization and IR
+
+### Model serialization
+
+Use:
+
+- `model.serialize(pretty=False)`
+- `Model.deserialize(serialized)`
+
+This round-trips the current model through the JSON IR.
+
+### IR export
+
+Use:
+
+- `model.to_ir_json(pretty=False)`
+
+The IR is designed to be inference-complete for the features implemented today. It records:
+
+- algorithm, task, tree type, and criterion
+- explicit tree structure as `node_tree` or `oblivious_levels`
+- training-time numeric bin boundaries
+- node and leaf stats such as sample counts, impurity, gain, class counts, and variance where applicable
+
+Current IR v1 intentionally marks these as unsupported rather than pretending they exist:
+
+- missing-value handling
+- categorical preprocessing semantics
+
+## Current support matrix
+
+- regression: `target_mean`, `cart`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `oblivious`
+
+## Development
+
+From the repo root:
+
 ```bash
-# from repo root, ensure maturin is installed: pip install maturin
-cd bindings/python
-maturin develop  # builds and installs into your current venv
+task setup-local-env
+task python-ext-develop
+task test
+```

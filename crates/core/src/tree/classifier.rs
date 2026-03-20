@@ -1,4 +1,10 @@
-use crate::{Criterion, Parallelism};
+use crate::ir::{
+    BinaryChildren, BinarySplit, IndexedLeaf, LeafIndexing, LeafPayload, MultiwayBranch,
+    MultiwaySplit, NodeStats, NodeTreeNode, ObliviousLevel, ObliviousSplit as IrObliviousSplit,
+    TrainingMetadata, TreeDefinition, criterion_name, feature_name, threshold_upper_bound,
+    tree_type_name,
+};
+use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,10 +63,14 @@ pub struct DecisionTreeClassifier {
     criterion: Criterion,
     class_labels: Vec<f64>,
     structure: TreeStructure,
+    options: DecisionTreeOptions,
+    num_features: usize,
+    feature_preprocessing: Vec<FeaturePreprocessing>,
+    training_canaries: usize,
 }
 
 #[derive(Debug, Clone)]
-enum TreeStructure {
+pub(crate) enum TreeStructure {
     Standard {
         nodes: Vec<TreeNode>,
         root: usize,
@@ -68,30 +78,45 @@ enum TreeStructure {
     Oblivious {
         splits: Vec<ObliviousSplit>,
         leaf_class_indices: Vec<usize>,
+        leaf_sample_counts: Vec<usize>,
+        leaf_class_counts: Vec<Vec<usize>>,
     },
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ObliviousSplit {
-    feature_index: usize,
-    threshold_bin: u16,
+pub(crate) struct ObliviousSplit {
+    pub(crate) feature_index: usize,
+    pub(crate) threshold_bin: u16,
+    pub(crate) sample_count: usize,
+    pub(crate) impurity: f64,
+    pub(crate) gain: f64,
 }
 
 #[derive(Debug, Clone)]
-enum TreeNode {
+pub(crate) enum TreeNode {
     Leaf {
         class_index: usize,
+        sample_count: usize,
+        class_counts: Vec<usize>,
     },
     MultiwaySplit {
         feature_index: usize,
         fallback_class_index: usize,
         branches: Vec<(u16, usize)>,
+        sample_count: usize,
+        impurity: f64,
+        gain: f64,
+        class_counts: Vec<usize>,
     },
     BinarySplit {
         feature_index: usize,
         threshold_bin: u16,
         left_child: usize,
         right_child: usize,
+        sample_count: usize,
+        impurity: f64,
+        gain: f64,
+        class_counts: Vec<usize>,
     },
 }
 
@@ -258,6 +283,10 @@ fn train_classifier(
         criterion,
         class_labels,
         structure,
+        options,
+        num_features: train_set.n_features(),
+        feature_preprocessing: capture_feature_preprocessing(train_set),
+        training_canaries: train_set.canaries(),
     })
 }
 
@@ -283,11 +312,14 @@ impl DecisionTreeClassifier {
 
                 loop {
                     match &nodes[node_index] {
-                        TreeNode::Leaf { class_index } => return self.class_labels[*class_index],
+                        TreeNode::Leaf { class_index, .. } => {
+                            return self.class_labels[*class_index];
+                        }
                         TreeNode::MultiwaySplit {
                             feature_index,
                             fallback_class_index,
                             branches,
+                            ..
                         } => {
                             let bin = table.binned_value(*feature_index, row_idx);
                             if let Some((_, child_index)) =
@@ -303,6 +335,7 @@ impl DecisionTreeClassifier {
                             threshold_bin,
                             left_child,
                             right_child,
+                            ..
                         } => {
                             let bin = table.binned_value(*feature_index, row_idx);
                             node_index = if bin <= *threshold_bin {
@@ -317,6 +350,7 @@ impl DecisionTreeClassifier {
             TreeStructure::Oblivious {
                 splits,
                 leaf_class_indices,
+                ..
             } => {
                 let leaf_index = splits.iter().fold(0usize, |leaf_index, split| {
                     let go_right =
@@ -325,6 +359,297 @@ impl DecisionTreeClassifier {
                 });
 
                 self.class_labels[leaf_class_indices[leaf_index]]
+            }
+        }
+    }
+
+    pub(crate) fn class_labels(&self) -> &[f64] {
+        &self.class_labels
+    }
+
+    pub(crate) fn num_features(&self) -> usize {
+        self.num_features
+    }
+
+    pub(crate) fn feature_preprocessing(&self) -> &[FeaturePreprocessing] {
+        &self.feature_preprocessing
+    }
+
+    pub(crate) fn training_metadata(&self) -> TrainingMetadata {
+        TrainingMetadata {
+            algorithm: "dt".to_string(),
+            task: "classification".to_string(),
+            tree_type: tree_type_name(match self.algorithm {
+                DecisionTreeAlgorithm::Id3 => crate::TreeType::Id3,
+                DecisionTreeAlgorithm::C45 => crate::TreeType::C45,
+                DecisionTreeAlgorithm::Cart => crate::TreeType::Cart,
+                DecisionTreeAlgorithm::Oblivious => crate::TreeType::Oblivious,
+            })
+            .to_string(),
+            criterion: criterion_name(self.criterion).to_string(),
+            canaries: self.training_canaries,
+            max_depth: Some(self.options.max_depth),
+            min_samples_split: Some(self.options.min_samples_split),
+            min_samples_leaf: Some(self.options.min_samples_leaf),
+            class_labels: Some(self.class_labels.clone()),
+        }
+    }
+
+    pub(crate) fn to_ir_tree(&self) -> TreeDefinition {
+        match &self.structure {
+            TreeStructure::Standard { nodes, root } => {
+                let depths = standard_node_depths(nodes, *root);
+                TreeDefinition::NodeTree {
+                    tree_id: 0,
+                    weight: 1.0,
+                    root_node_id: *root,
+                    nodes: nodes
+                        .iter()
+                        .enumerate()
+                        .map(|(node_id, node)| match node {
+                            TreeNode::Leaf {
+                                class_index,
+                                sample_count,
+                                class_counts,
+                            } => NodeTreeNode::Leaf {
+                                node_id,
+                                depth: depths[node_id],
+                                leaf: self.class_leaf(*class_index),
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: None,
+                                    gain: None,
+                                    class_counts: Some(class_counts.clone()),
+                                    variance: None,
+                                },
+                            },
+                            TreeNode::BinarySplit {
+                                feature_index,
+                                threshold_bin,
+                                left_child,
+                                right_child,
+                                sample_count,
+                                impurity,
+                                gain,
+                                class_counts,
+                            } => NodeTreeNode::BinaryBranch {
+                                node_id,
+                                depth: depths[node_id],
+                                split: binary_split_ir(
+                                    *feature_index,
+                                    *threshold_bin,
+                                    &self.feature_preprocessing,
+                                ),
+                                children: BinaryChildren {
+                                    left: *left_child,
+                                    right: *right_child,
+                                },
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: Some(*impurity),
+                                    gain: Some(*gain),
+                                    class_counts: Some(class_counts.clone()),
+                                    variance: None,
+                                },
+                            },
+                            TreeNode::MultiwaySplit {
+                                feature_index,
+                                fallback_class_index,
+                                branches,
+                                sample_count,
+                                impurity,
+                                gain,
+                                class_counts,
+                            } => NodeTreeNode::MultiwayBranch {
+                                node_id,
+                                depth: depths[node_id],
+                                split: MultiwaySplit {
+                                    split_type: "binned_value_multiway".to_string(),
+                                    feature_index: *feature_index,
+                                    feature_name: feature_name(*feature_index),
+                                    comparison_dtype: "uint16".to_string(),
+                                },
+                                branches: branches
+                                    .iter()
+                                    .map(|(bin, child)| MultiwayBranch {
+                                        bin: *bin,
+                                        child: *child,
+                                    })
+                                    .collect(),
+                                unmatched_leaf: self.class_leaf(*fallback_class_index),
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: Some(*impurity),
+                                    gain: Some(*gain),
+                                    class_counts: Some(class_counts.clone()),
+                                    variance: None,
+                                },
+                            },
+                        })
+                        .collect(),
+                }
+            }
+            TreeStructure::Oblivious {
+                splits,
+                leaf_class_indices,
+                leaf_sample_counts,
+                leaf_class_counts,
+            } => TreeDefinition::ObliviousLevels {
+                tree_id: 0,
+                weight: 1.0,
+                depth: splits.len(),
+                levels: splits
+                    .iter()
+                    .enumerate()
+                    .map(|(level, split)| ObliviousLevel {
+                        level,
+                        split: oblivious_split_ir(
+                            split.feature_index,
+                            split.threshold_bin,
+                            &self.feature_preprocessing,
+                        ),
+                        stats: NodeStats {
+                            sample_count: split.sample_count,
+                            impurity: Some(split.impurity),
+                            gain: Some(split.gain),
+                            class_counts: None,
+                            variance: None,
+                        },
+                    })
+                    .collect(),
+                leaf_indexing: LeafIndexing {
+                    bit_order: "msb_first".to_string(),
+                    index_formula: "sum(bit[level] << (depth - 1 - level))".to_string(),
+                },
+                leaves: leaf_class_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(leaf_index, class_index)| IndexedLeaf {
+                        leaf_index,
+                        leaf: self.class_leaf(*class_index),
+                        stats: NodeStats {
+                            sample_count: leaf_sample_counts[leaf_index],
+                            impurity: None,
+                            gain: None,
+                            class_counts: Some(leaf_class_counts[leaf_index].clone()),
+                            variance: None,
+                        },
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn class_leaf(&self, class_index: usize) -> LeafPayload {
+        LeafPayload::ClassIndex {
+            class_index,
+            class_value: self.class_labels[class_index],
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_ir_parts(
+        algorithm: DecisionTreeAlgorithm,
+        criterion: Criterion,
+        class_labels: Vec<f64>,
+        structure: TreeStructure,
+        options: DecisionTreeOptions,
+        num_features: usize,
+        feature_preprocessing: Vec<FeaturePreprocessing>,
+        training_canaries: usize,
+    ) -> Self {
+        Self {
+            algorithm,
+            criterion,
+            class_labels,
+            structure,
+            options,
+            num_features,
+            feature_preprocessing,
+            training_canaries,
+        }
+    }
+}
+
+fn standard_node_depths(nodes: &[TreeNode], root: usize) -> Vec<usize> {
+    let mut depths = vec![0; nodes.len()];
+    populate_depths(nodes, root, 0, &mut depths);
+    depths
+}
+
+fn populate_depths(nodes: &[TreeNode], node_id: usize, depth: usize, depths: &mut [usize]) {
+    depths[node_id] = depth;
+    match &nodes[node_id] {
+        TreeNode::Leaf { .. } => {}
+        TreeNode::BinarySplit {
+            left_child,
+            right_child,
+            ..
+        } => {
+            populate_depths(nodes, *left_child, depth + 1, depths);
+            populate_depths(nodes, *right_child, depth + 1, depths);
+        }
+        TreeNode::MultiwaySplit { branches, .. } => {
+            for (_, child) in branches {
+                populate_depths(nodes, *child, depth + 1, depths);
+            }
+        }
+    }
+}
+
+fn binary_split_ir(
+    feature_index: usize,
+    threshold_bin: u16,
+    preprocessing: &[FeaturePreprocessing],
+) -> BinarySplit {
+    match preprocessing.get(feature_index) {
+        Some(FeaturePreprocessing::Binary) => BinarySplit::BooleanTest {
+            feature_index,
+            feature_name: feature_name(feature_index),
+            false_child_semantics: "left".to_string(),
+            true_child_semantics: "right".to_string(),
+        },
+        Some(FeaturePreprocessing::Numeric { .. }) | None => BinarySplit::NumericBinThreshold {
+            feature_index,
+            feature_name: feature_name(feature_index),
+            operator: "<=".to_string(),
+            threshold_bin,
+            threshold_upper_bound: threshold_upper_bound(
+                preprocessing,
+                feature_index,
+                threshold_bin,
+            ),
+            comparison_dtype: "uint16".to_string(),
+        },
+    }
+}
+
+fn oblivious_split_ir(
+    feature_index: usize,
+    threshold_bin: u16,
+    preprocessing: &[FeaturePreprocessing],
+) -> IrObliviousSplit {
+    match preprocessing.get(feature_index) {
+        Some(FeaturePreprocessing::Binary) => IrObliviousSplit::BooleanTest {
+            feature_index,
+            feature_name: feature_name(feature_index),
+            bit_when_false: 0,
+            bit_when_true: 1,
+        },
+        Some(FeaturePreprocessing::Numeric { .. }) | None => {
+            IrObliviousSplit::NumericBinThreshold {
+                feature_index,
+                feature_name: feature_name(feature_index),
+                operator: "<=".to_string(),
+                threshold_bin,
+                threshold_upper_bound: threshold_upper_bound(
+                    preprocessing,
+                    feature_index,
+                    threshold_bin,
+                ),
+                comparison_dtype: "uint16".to_string(),
+                bit_when_true: 0,
+                bit_when_false: 1,
             }
         }
     }
@@ -381,13 +706,20 @@ fn build_node(
 ) -> usize {
     let majority_class_index =
         majority_class(rows, context.class_indices, context.class_labels.len());
+    let current_class_counts =
+        class_counts(rows, context.class_indices, context.class_labels.len());
 
     if rows.is_empty()
         || depth >= context.options.max_depth
         || rows.len() < context.options.min_samples_split
         || is_pure(rows, context.class_indices)
     {
-        return push_leaf(nodes, majority_class_index);
+        return push_leaf(
+            nodes,
+            majority_class_index,
+            rows.len(),
+            current_class_counts,
+        );
     }
 
     let scoring = SplitScoringContext {
@@ -418,13 +750,20 @@ fn build_node(
                 .table
                 .is_canary_binned_feature(split_feature_index(&best_split)) =>
         {
-            push_leaf(nodes, majority_class_index)
+            push_leaf(
+                nodes,
+                majority_class_index,
+                rows.len(),
+                current_class_counts,
+            )
         }
         Some(SplitCandidate::Multiway {
             feature_index,
             score,
             branches,
         }) if score > 0.0 => {
+            let impurity =
+                classification_impurity(&current_class_counts, rows.len(), context.criterion);
             let branch_nodes = branches
                 .into_iter()
                 .map(|(bin, branch_rows)| {
@@ -438,6 +777,10 @@ fn build_node(
                     feature_index,
                     fallback_class_index: majority_class_index,
                     branches: branch_nodes,
+                    sample_count: rows.len(),
+                    impurity,
+                    gain: score,
+                    class_counts: current_class_counts,
                 },
             )
         }
@@ -448,6 +791,8 @@ fn build_node(
             left_rows,
             right_rows,
         }) if score > 0.0 => {
+            let impurity =
+                classification_impurity(&current_class_counts, rows.len(), context.criterion);
             let left_child = build_node(context, nodes, &left_rows, depth + 1);
             let right_child = build_node(context, nodes, &right_rows, depth + 1);
 
@@ -458,10 +803,19 @@ fn build_node(
                     threshold_bin,
                     left_child,
                     right_child,
+                    sample_count: rows.len(),
+                    impurity,
+                    gain: score,
+                    class_counts: current_class_counts,
                 },
             )
         }
-        _ => push_leaf(nodes, majority_class_index),
+        _ => push_leaf(
+            nodes,
+            majority_class_index,
+            rows.len(),
+            current_class_counts,
+        ),
     }
 }
 
@@ -498,6 +852,8 @@ fn train_oblivious_structure(
     options: DecisionTreeOptions,
 ) -> TreeStructure {
     let all_rows: Vec<usize> = (0..table.n_rows()).collect();
+    let total_class_counts = class_counts(&all_rows, class_indices, class_labels.len());
+    let total_impurity = classification_impurity(&total_class_counts, all_rows.len(), criterion);
     let mut leaves = vec![ObliviousLeafState {
         class_index: majority_class(&all_rows, class_indices, class_labels.len()),
         rows: all_rows,
@@ -561,12 +917,20 @@ fn train_oblivious_structure(
         splits.push(ObliviousSplit {
             feature_index: best_split.feature_index,
             threshold_bin: best_split.threshold_bin,
+            sample_count: table.n_rows(),
+            impurity: total_impurity,
+            gain: best_split.score,
         });
     }
 
     TreeStructure::Oblivious {
         splits,
-        leaf_class_indices: leaves.into_iter().map(|leaf| leaf.class_index).collect(),
+        leaf_class_indices: leaves.iter().map(|leaf| leaf.class_index).collect(),
+        leaf_sample_counts: leaves.iter().map(|leaf| leaf.rows.len()).collect(),
+        leaf_class_counts: leaves
+            .iter()
+            .map(|leaf| class_counts(&leaf.rows, class_indices, class_labels.len()))
+            .collect(),
     }
 }
 
@@ -962,8 +1326,20 @@ fn split_feature_index(candidate: &SplitCandidate) -> usize {
     }
 }
 
-fn push_leaf(nodes: &mut Vec<TreeNode>, class_index: usize) -> usize {
-    push_node(nodes, TreeNode::Leaf { class_index })
+fn push_leaf(
+    nodes: &mut Vec<TreeNode>,
+    class_index: usize,
+    sample_count: usize,
+    class_counts: Vec<usize>,
+) -> usize {
+    push_node(
+        nodes,
+        TreeNode::Leaf {
+            class_index,
+            sample_count,
+            class_counts,
+        },
+    )
 }
 
 fn push_node(nodes: &mut Vec<TreeNode>, node: TreeNode) -> usize {
@@ -980,6 +1356,7 @@ enum MultiwayMetric {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FeaturePreprocessing, Model, NumericBinBoundary};
     use forestfire_data::DenseTable;
 
     fn and_table() -> DenseTable {
@@ -1142,6 +1519,160 @@ mod tests {
 
         assert!(preds.iter().all(|pred| *pred == preds[0]));
         assert_ne!(preds, table_targets(&table));
+    }
+
+    #[test]
+    fn manually_built_classifier_models_serialize_for_each_tree_type() {
+        let preprocessing = vec![
+            FeaturePreprocessing::Binary,
+            FeaturePreprocessing::Numeric {
+                bin_boundaries: vec![
+                    NumericBinBoundary {
+                        bin: 0,
+                        upper_bound: 1.0,
+                    },
+                    NumericBinBoundary {
+                        bin: 511,
+                        upper_bound: 10.0,
+                    },
+                ],
+            },
+        ];
+        let options = DecisionTreeOptions::default();
+        let class_labels = vec![10.0, 20.0];
+
+        let id3 = Model::DecisionTreeClassifier(DecisionTreeClassifier {
+            algorithm: DecisionTreeAlgorithm::Id3,
+            criterion: Criterion::Entropy,
+            class_labels: class_labels.clone(),
+            structure: TreeStructure::Standard {
+                nodes: vec![
+                    TreeNode::Leaf {
+                        class_index: 0,
+                        sample_count: 3,
+                        class_counts: vec![3, 0],
+                    },
+                    TreeNode::Leaf {
+                        class_index: 1,
+                        sample_count: 2,
+                        class_counts: vec![0, 2],
+                    },
+                    TreeNode::MultiwaySplit {
+                        feature_index: 1,
+                        fallback_class_index: 0,
+                        branches: vec![(0, 0), (511, 1)],
+                        sample_count: 5,
+                        impurity: 0.48,
+                        gain: 0.24,
+                        class_counts: vec![3, 2],
+                    },
+                ],
+                root: 2,
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing.clone(),
+            training_canaries: 0,
+        });
+        let c45 = Model::DecisionTreeClassifier(DecisionTreeClassifier {
+            algorithm: DecisionTreeAlgorithm::C45,
+            criterion: Criterion::Entropy,
+            class_labels: class_labels.clone(),
+            structure: TreeStructure::Standard {
+                nodes: vec![
+                    TreeNode::Leaf {
+                        class_index: 0,
+                        sample_count: 3,
+                        class_counts: vec![3, 0],
+                    },
+                    TreeNode::Leaf {
+                        class_index: 1,
+                        sample_count: 2,
+                        class_counts: vec![0, 2],
+                    },
+                    TreeNode::MultiwaySplit {
+                        feature_index: 1,
+                        fallback_class_index: 0,
+                        branches: vec![(0, 0), (511, 1)],
+                        sample_count: 5,
+                        impurity: 0.48,
+                        gain: 0.24,
+                        class_counts: vec![3, 2],
+                    },
+                ],
+                root: 2,
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing.clone(),
+            training_canaries: 0,
+        });
+        let cart = Model::DecisionTreeClassifier(DecisionTreeClassifier {
+            algorithm: DecisionTreeAlgorithm::Cart,
+            criterion: Criterion::Gini,
+            class_labels: class_labels.clone(),
+            structure: TreeStructure::Standard {
+                nodes: vec![
+                    TreeNode::Leaf {
+                        class_index: 0,
+                        sample_count: 3,
+                        class_counts: vec![3, 0],
+                    },
+                    TreeNode::Leaf {
+                        class_index: 1,
+                        sample_count: 2,
+                        class_counts: vec![0, 2],
+                    },
+                    TreeNode::BinarySplit {
+                        feature_index: 0,
+                        threshold_bin: 0,
+                        left_child: 0,
+                        right_child: 1,
+                        sample_count: 5,
+                        impurity: 0.48,
+                        gain: 0.24,
+                        class_counts: vec![3, 2],
+                    },
+                ],
+                root: 2,
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing.clone(),
+            training_canaries: 0,
+        });
+        let oblivious = Model::DecisionTreeClassifier(DecisionTreeClassifier {
+            algorithm: DecisionTreeAlgorithm::Oblivious,
+            criterion: Criterion::Gini,
+            class_labels,
+            structure: TreeStructure::Oblivious {
+                splits: vec![ObliviousSplit {
+                    feature_index: 0,
+                    threshold_bin: 0,
+                    sample_count: 4,
+                    impurity: 0.5,
+                    gain: 0.25,
+                }],
+                leaf_class_indices: vec![0, 1],
+                leaf_sample_counts: vec![2, 2],
+                leaf_class_counts: vec![vec![2, 0], vec![0, 2]],
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing,
+            training_canaries: 0,
+        });
+
+        for (tree_type, model) in [
+            ("id3", id3),
+            ("c45", c45),
+            ("cart", cart),
+            ("oblivious", oblivious),
+        ] {
+            let json = model.serialize().unwrap();
+            assert!(json.contains(&format!("\"tree_type\":\"{tree_type}\"")));
+            assert!(json.contains("\"task\":\"classification\""));
+        }
     }
 
     fn table_targets(table: &dyn TableAccess) -> Vec<f64> {

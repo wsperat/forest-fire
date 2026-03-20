@@ -1,0 +1,1228 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ModelPackageIr",
+  "type": "object",
+  "required": [
+    "format_name",
+    "inference_options",
+    "input_schema",
+    "integrity",
+    "ir_version",
+    "model",
+    "output_schema",
+    "postprocessing",
+    "preprocessing",
+    "producer",
+    "training_metadata"
+  ],
+  "properties": {
+    "format_name": {
+      "type": "string"
+    },
+    "inference_options": {
+      "$ref": "#/definitions/InferenceOptions"
+    },
+    "input_schema": {
+      "$ref": "#/definitions/InputSchema"
+    },
+    "integrity": {
+      "$ref": "#/definitions/IntegritySection"
+    },
+    "ir_version": {
+      "type": "string"
+    },
+    "model": {
+      "$ref": "#/definitions/ModelSection"
+    },
+    "output_schema": {
+      "$ref": "#/definitions/OutputSchema"
+    },
+    "postprocessing": {
+      "$ref": "#/definitions/PostprocessingSection"
+    },
+    "preprocessing": {
+      "$ref": "#/definitions/PreprocessingSection"
+    },
+    "producer": {
+      "$ref": "#/definitions/ProducerMetadata"
+    },
+    "training_metadata": {
+      "$ref": "#/definitions/TrainingMetadata"
+    }
+  },
+  "definitions": {
+    "Aggregation": {
+      "type": "object",
+      "required": [
+        "kind",
+        "normalize_by_weight_sum",
+        "tree_weights"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "normalize_by_weight_sum": {
+          "type": "boolean"
+        },
+        "tree_weights": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      }
+    },
+    "BinaryChildren": {
+      "type": "object",
+      "required": [
+        "left",
+        "right"
+      ],
+      "properties": {
+        "left": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "right": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      }
+    },
+    "BinarySplit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "comparison_dtype",
+            "feature_index",
+            "feature_name",
+            "operator",
+            "split_type",
+            "threshold_bin"
+          ],
+          "properties": {
+            "comparison_dtype": {
+              "type": "string"
+            },
+            "feature_index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "feature_name": {
+              "type": "string"
+            },
+            "operator": {
+              "type": "string"
+            },
+            "split_type": {
+              "type": "string",
+              "enum": [
+                "numeric_bin_threshold"
+              ]
+            },
+            "threshold_bin": {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0.0
+            },
+            "threshold_upper_bound": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "false_child_semantics",
+            "feature_index",
+            "feature_name",
+            "split_type",
+            "true_child_semantics"
+          ],
+          "properties": {
+            "false_child_semantics": {
+              "type": "string"
+            },
+            "feature_index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "feature_name": {
+              "type": "string"
+            },
+            "split_type": {
+              "type": "string",
+              "enum": [
+                "boolean_test"
+              ]
+            },
+            "true_child_semantics": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "BoolEncoding": {
+      "type": "object",
+      "required": [
+        "false_values",
+        "true_values"
+      ],
+      "properties": {
+        "false_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "true_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Compatibility": {
+      "type": "object",
+      "required": [
+        "minimum_runtime_version",
+        "required_capabilities"
+      ],
+      "properties": {
+        "minimum_runtime_version": {
+          "type": "string"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Determinism": {
+      "type": "object",
+      "required": [
+        "guaranteed",
+        "notes"
+      ],
+      "properties": {
+        "guaranteed": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "FeatureBinning": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "boundaries",
+            "feature_index",
+            "kind"
+          ],
+          "properties": {
+            "boundaries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/NumericBinBoundary"
+              }
+            },
+            "feature_index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "numeric"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "feature_index",
+            "kind"
+          ],
+          "properties": {
+            "feature_index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "binary"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "IndexedLeaf": {
+      "type": "object",
+      "required": [
+        "leaf",
+        "leaf_index",
+        "stats"
+      ],
+      "properties": {
+        "leaf": {
+          "$ref": "#/definitions/LeafPayload"
+        },
+        "leaf_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "stats": {
+          "$ref": "#/definitions/NodeStats"
+        }
+      }
+    },
+    "InferenceOptions": {
+      "type": "object",
+      "required": [
+        "bool_encoding",
+        "determinism",
+        "nan_policy",
+        "numeric_precision",
+        "threshold_comparison",
+        "tie_breaking"
+      ],
+      "properties": {
+        "bool_encoding": {
+          "$ref": "#/definitions/BoolEncoding"
+        },
+        "determinism": {
+          "$ref": "#/definitions/Determinism"
+        },
+        "nan_policy": {
+          "type": "string"
+        },
+        "numeric_precision": {
+          "type": "string"
+        },
+        "threshold_comparison": {
+          "type": "string"
+        },
+        "tie_breaking": {
+          "$ref": "#/definitions/TieBreaking"
+        }
+      }
+    },
+    "InputFeature": {
+      "type": "object",
+      "required": [
+        "dtype",
+        "index",
+        "logical_type",
+        "name",
+        "nullable"
+      ],
+      "properties": {
+        "dtype": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "logical_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "nullable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "InputSchema": {
+      "type": "object",
+      "required": [
+        "accepts_feature_names",
+        "feature_count",
+        "features",
+        "input_tensor_layout",
+        "ordering"
+      ],
+      "properties": {
+        "accepts_feature_names": {
+          "type": "boolean"
+        },
+        "feature_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InputFeature"
+          }
+        },
+        "input_tensor_layout": {
+          "type": "string"
+        },
+        "ordering": {
+          "type": "string"
+        }
+      }
+    },
+    "IntegritySection": {
+      "type": "object",
+      "required": [
+        "canonical_json",
+        "compatibility",
+        "serialization"
+      ],
+      "properties": {
+        "canonical_json": {
+          "type": "boolean"
+        },
+        "compatibility": {
+          "$ref": "#/definitions/Compatibility"
+        },
+        "serialization": {
+          "type": "string"
+        }
+      }
+    },
+    "LeafIndexing": {
+      "type": "object",
+      "required": [
+        "bit_order",
+        "index_formula"
+      ],
+      "properties": {
+        "bit_order": {
+          "type": "string"
+        },
+        "index_formula": {
+          "type": "string"
+        }
+      }
+    },
+    "LeafPayload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "prediction_kind",
+            "value"
+          ],
+          "properties": {
+            "prediction_kind": {
+              "type": "string",
+              "enum": [
+                "regression_value"
+              ]
+            },
+            "value": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "class_index",
+            "class_value",
+            "prediction_kind"
+          ],
+          "properties": {
+            "class_index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "class_value": {
+              "type": "number",
+              "format": "double"
+            },
+            "prediction_kind": {
+              "type": "string",
+              "enum": [
+                "class_index"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ModelSection": {
+      "type": "object",
+      "required": [
+        "aggregation",
+        "algorithm",
+        "is_ensemble",
+        "num_features",
+        "num_outputs",
+        "representation",
+        "supports_categorical",
+        "supports_missing",
+        "task",
+        "tree_type",
+        "trees"
+      ],
+      "properties": {
+        "aggregation": {
+          "$ref": "#/definitions/Aggregation"
+        },
+        "algorithm": {
+          "type": "string"
+        },
+        "is_ensemble": {
+          "type": "boolean"
+        },
+        "num_features": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "num_outputs": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "representation": {
+          "type": "string"
+        },
+        "supports_categorical": {
+          "type": "boolean"
+        },
+        "supports_missing": {
+          "type": "boolean"
+        },
+        "task": {
+          "type": "string"
+        },
+        "tree_type": {
+          "type": "string"
+        },
+        "trees": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TreeDefinition"
+          }
+        }
+      }
+    },
+    "MultiwayBranch": {
+      "type": "object",
+      "required": [
+        "bin",
+        "child"
+      ],
+      "properties": {
+        "bin": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "child": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      }
+    },
+    "MultiwaySplit": {
+      "type": "object",
+      "required": [
+        "comparison_dtype",
+        "feature_index",
+        "feature_name",
+        "split_type"
+      ],
+      "properties": {
+        "comparison_dtype": {
+          "type": "string"
+        },
+        "feature_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "feature_name": {
+          "type": "string"
+        },
+        "split_type": {
+          "type": "string"
+        }
+      }
+    },
+    "NodeStats": {
+      "type": "object",
+      "required": [
+        "sample_count"
+      ],
+      "properties": {
+        "class_counts": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0.0
+          }
+        },
+        "gain": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "impurity": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "sample_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "variance": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      }
+    },
+    "NodeTreeNode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "depth",
+            "kind",
+            "leaf",
+            "node_id",
+            "stats"
+          ],
+          "properties": {
+            "depth": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "leaf"
+              ]
+            },
+            "leaf": {
+              "$ref": "#/definitions/LeafPayload"
+            },
+            "node_id": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "stats": {
+              "$ref": "#/definitions/NodeStats"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "children",
+            "depth",
+            "kind",
+            "node_id",
+            "split",
+            "stats"
+          ],
+          "properties": {
+            "children": {
+              "$ref": "#/definitions/BinaryChildren"
+            },
+            "depth": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "binary_branch"
+              ]
+            },
+            "node_id": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "split": {
+              "$ref": "#/definitions/BinarySplit"
+            },
+            "stats": {
+              "$ref": "#/definitions/NodeStats"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "branches",
+            "depth",
+            "kind",
+            "node_id",
+            "split",
+            "stats",
+            "unmatched_leaf"
+          ],
+          "properties": {
+            "branches": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/MultiwayBranch"
+              }
+            },
+            "depth": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "multiway_branch"
+              ]
+            },
+            "node_id": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "split": {
+              "$ref": "#/definitions/MultiwaySplit"
+            },
+            "stats": {
+              "$ref": "#/definitions/NodeStats"
+            },
+            "unmatched_leaf": {
+              "$ref": "#/definitions/LeafPayload"
+            }
+          }
+        }
+      ]
+    },
+    "NumericBinBoundary": {
+      "type": "object",
+      "required": [
+        "bin",
+        "upper_bound"
+      ],
+      "properties": {
+        "bin": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "upper_bound": {
+          "type": "number",
+          "format": "double"
+        }
+      }
+    },
+    "NumericBinning": {
+      "type": "object",
+      "required": [
+        "features",
+        "kind"
+      ],
+      "properties": {
+        "features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FeatureBinning"
+          }
+        },
+        "kind": {
+          "type": "string"
+        }
+      }
+    },
+    "ObliviousLevel": {
+      "type": "object",
+      "required": [
+        "level",
+        "split",
+        "stats"
+      ],
+      "properties": {
+        "level": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "split": {
+          "$ref": "#/definitions/ObliviousSplit"
+        },
+        "stats": {
+          "$ref": "#/definitions/NodeStats"
+        }
+      }
+    },
+    "ObliviousSplit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "bit_when_false",
+            "bit_when_true",
+            "comparison_dtype",
+            "feature_index",
+            "feature_name",
+            "operator",
+            "split_type",
+            "threshold_bin"
+          ],
+          "properties": {
+            "bit_when_false": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0.0
+            },
+            "bit_when_true": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0.0
+            },
+            "comparison_dtype": {
+              "type": "string"
+            },
+            "feature_index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "feature_name": {
+              "type": "string"
+            },
+            "operator": {
+              "type": "string"
+            },
+            "split_type": {
+              "type": "string",
+              "enum": [
+                "numeric_bin_threshold"
+              ]
+            },
+            "threshold_bin": {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0.0
+            },
+            "threshold_upper_bound": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "bit_when_false",
+            "bit_when_true",
+            "feature_index",
+            "feature_name",
+            "split_type"
+          ],
+          "properties": {
+            "bit_when_false": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0.0
+            },
+            "bit_when_true": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0.0
+            },
+            "feature_index": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "feature_name": {
+              "type": "string"
+            },
+            "split_type": {
+              "type": "string",
+              "enum": [
+                "boolean_test"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "OutputField": {
+      "type": "object",
+      "required": [
+        "dtype",
+        "kind",
+        "name",
+        "shape"
+      ],
+      "properties": {
+        "dtype": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0.0
+          }
+        }
+      }
+    },
+    "OutputSchema": {
+      "type": "object",
+      "required": [
+        "final_outputs",
+        "raw_outputs"
+      ],
+      "properties": {
+        "class_order": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "final_outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/OutputField"
+          }
+        },
+        "raw_outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/OutputField"
+          }
+        }
+      }
+    },
+    "PostprocessingSection": {
+      "type": "object",
+      "required": [
+        "raw_output_kind",
+        "steps"
+      ],
+      "properties": {
+        "raw_output_kind": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PostprocessingStep"
+          }
+        }
+      }
+    },
+    "PostprocessingStep": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "identity"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "labels",
+            "op"
+          ],
+          "properties": {
+            "labels": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "map_class_index_to_label"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "PreprocessingSection": {
+      "type": "object",
+      "required": [
+        "included_in_model",
+        "notes",
+        "numeric_binning"
+      ],
+      "properties": {
+        "included_in_model": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "numeric_binning": {
+          "$ref": "#/definitions/NumericBinning"
+        }
+      }
+    },
+    "ProducerMetadata": {
+      "type": "object",
+      "required": [
+        "language",
+        "library",
+        "library_version",
+        "platform"
+      ],
+      "properties": {
+        "language": {
+          "type": "string"
+        },
+        "library": {
+          "type": "string"
+        },
+        "library_version": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        }
+      }
+    },
+    "TieBreaking": {
+      "type": "object",
+      "required": [
+        "argmax",
+        "classification"
+      ],
+      "properties": {
+        "argmax": {
+          "type": "string"
+        },
+        "classification": {
+          "type": "string"
+        }
+      }
+    },
+    "TrainingMetadata": {
+      "type": "object",
+      "required": [
+        "algorithm",
+        "canaries",
+        "criterion",
+        "task",
+        "tree_type"
+      ],
+      "properties": {
+        "algorithm": {
+          "type": "string"
+        },
+        "canaries": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "class_labels": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "criterion": {
+          "type": "string"
+        },
+        "max_depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "min_samples_leaf": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "min_samples_split": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "task": {
+          "type": "string"
+        },
+        "tree_type": {
+          "type": "string"
+        }
+      }
+    },
+    "TreeDefinition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "nodes",
+            "representation",
+            "root_node_id",
+            "tree_id",
+            "weight"
+          ],
+          "properties": {
+            "nodes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/NodeTreeNode"
+              }
+            },
+            "representation": {
+              "type": "string",
+              "enum": [
+                "node_tree"
+              ]
+            },
+            "root_node_id": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "tree_id": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "weight": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "depth",
+            "leaf_indexing",
+            "leaves",
+            "levels",
+            "representation",
+            "tree_id",
+            "weight"
+          ],
+          "properties": {
+            "depth": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "leaf_indexing": {
+              "$ref": "#/definitions/LeafIndexing"
+            },
+            "leaves": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IndexedLeaf"
+              }
+            },
+            "levels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ObliviousLevel"
+              }
+            },
+            "representation": {
+              "type": "string",
+              "enum": [
+                "oblivious_levels"
+              ]
+            },
+            "tree_id": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0.0
+            },
+            "weight": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

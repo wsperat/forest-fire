@@ -1,4 +1,9 @@
-use crate::{Criterion, Parallelism};
+use crate::ir::{
+    BinaryChildren, BinarySplit, IndexedLeaf, LeafIndexing, LeafPayload, NodeStats, NodeTreeNode,
+    ObliviousLevel, ObliviousSplit as IrObliviousSplit, TrainingMetadata, TreeDefinition,
+    criterion_name, feature_name, threshold_upper_bound,
+};
+use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -56,10 +61,14 @@ pub struct DecisionTreeRegressor {
     algorithm: RegressionTreeAlgorithm,
     criterion: Criterion,
     structure: RegressionTreeStructure,
+    options: RegressionTreeOptions,
+    num_features: usize,
+    feature_preprocessing: Vec<FeaturePreprocessing>,
+    training_canaries: usize,
 }
 
 #[derive(Debug, Clone)]
-enum RegressionTreeStructure {
+pub(crate) enum RegressionTreeStructure {
     Standard {
         nodes: Vec<RegressionNode>,
         root: usize,
@@ -67,26 +76,37 @@ enum RegressionTreeStructure {
     Oblivious {
         splits: Vec<ObliviousSplit>,
         leaf_values: Vec<f64>,
+        leaf_sample_counts: Vec<usize>,
+        leaf_variances: Vec<Option<f64>>,
     },
 }
 
 #[derive(Debug, Clone)]
-enum RegressionNode {
+pub(crate) enum RegressionNode {
     Leaf {
         value: f64,
+        sample_count: usize,
+        variance: Option<f64>,
     },
     BinarySplit {
         feature_index: usize,
         threshold_bin: u16,
         left_child: usize,
         right_child: usize,
+        sample_count: usize,
+        impurity: f64,
+        gain: f64,
+        variance: Option<f64>,
     },
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ObliviousSplit {
-    feature_index: usize,
-    threshold_bin: u16,
+pub(crate) struct ObliviousSplit {
+    pub(crate) feature_index: usize,
+    pub(crate) threshold_bin: u16,
+    pub(crate) sample_count: usize,
+    pub(crate) impurity: f64,
+    pub(crate) gain: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +122,7 @@ struct RegressionSplitCandidate {
 struct ObliviousLeafState {
     rows: Vec<usize>,
     value: f64,
+    variance: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -208,6 +229,10 @@ fn train_regressor(
         algorithm,
         criterion,
         structure,
+        options,
+        num_features: train_set.n_features(),
+        feature_preprocessing: capture_feature_preprocessing(train_set),
+        training_canaries: train_set.canaries(),
     })
 }
 
@@ -233,12 +258,13 @@ impl DecisionTreeRegressor {
 
                 loop {
                     match &nodes[node_index] {
-                        RegressionNode::Leaf { value } => return *value,
+                        RegressionNode::Leaf { value, .. } => return *value,
                         RegressionNode::BinarySplit {
                             feature_index,
                             threshold_bin,
                             left_child,
                             right_child,
+                            ..
                         } => {
                             let bin = table.binned_value(*feature_index, row_idx);
                             node_index = if bin <= *threshold_bin {
@@ -253,6 +279,7 @@ impl DecisionTreeRegressor {
             RegressionTreeStructure::Oblivious {
                 splits,
                 leaf_values,
+                ..
             } => {
                 let leaf_index = splits.iter().fold(0usize, |leaf_index, split| {
                     let go_right =
@@ -261,6 +288,242 @@ impl DecisionTreeRegressor {
                 });
 
                 leaf_values[leaf_index]
+            }
+        }
+    }
+
+    pub(crate) fn num_features(&self) -> usize {
+        self.num_features
+    }
+
+    pub(crate) fn feature_preprocessing(&self) -> &[FeaturePreprocessing] {
+        &self.feature_preprocessing
+    }
+
+    pub(crate) fn training_metadata(&self) -> TrainingMetadata {
+        TrainingMetadata {
+            algorithm: "dt".to_string(),
+            task: "regression".to_string(),
+            tree_type: match self.algorithm {
+                RegressionTreeAlgorithm::Cart => "cart".to_string(),
+                RegressionTreeAlgorithm::Oblivious => "oblivious".to_string(),
+            },
+            criterion: criterion_name(self.criterion).to_string(),
+            canaries: self.training_canaries,
+            max_depth: Some(self.options.max_depth),
+            min_samples_split: Some(self.options.min_samples_split),
+            min_samples_leaf: Some(self.options.min_samples_leaf),
+            class_labels: None,
+        }
+    }
+
+    pub(crate) fn to_ir_tree(&self) -> TreeDefinition {
+        match &self.structure {
+            RegressionTreeStructure::Standard { nodes, root } => {
+                let depths = standard_node_depths(nodes, *root);
+                TreeDefinition::NodeTree {
+                    tree_id: 0,
+                    weight: 1.0,
+                    root_node_id: *root,
+                    nodes: nodes
+                        .iter()
+                        .enumerate()
+                        .map(|(node_id, node)| match node {
+                            RegressionNode::Leaf {
+                                value,
+                                sample_count,
+                                variance,
+                            } => NodeTreeNode::Leaf {
+                                node_id,
+                                depth: depths[node_id],
+                                leaf: LeafPayload::RegressionValue { value: *value },
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: None,
+                                    gain: None,
+                                    class_counts: None,
+                                    variance: *variance,
+                                },
+                            },
+                            RegressionNode::BinarySplit {
+                                feature_index,
+                                threshold_bin,
+                                left_child,
+                                right_child,
+                                sample_count,
+                                impurity,
+                                gain,
+                                variance,
+                            } => NodeTreeNode::BinaryBranch {
+                                node_id,
+                                depth: depths[node_id],
+                                split: binary_split_ir(
+                                    *feature_index,
+                                    *threshold_bin,
+                                    &self.feature_preprocessing,
+                                ),
+                                children: BinaryChildren {
+                                    left: *left_child,
+                                    right: *right_child,
+                                },
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: Some(*impurity),
+                                    gain: Some(*gain),
+                                    class_counts: None,
+                                    variance: *variance,
+                                },
+                            },
+                        })
+                        .collect(),
+                }
+            }
+            RegressionTreeStructure::Oblivious {
+                splits,
+                leaf_values,
+                leaf_sample_counts,
+                leaf_variances,
+            } => TreeDefinition::ObliviousLevels {
+                tree_id: 0,
+                weight: 1.0,
+                depth: splits.len(),
+                levels: splits
+                    .iter()
+                    .enumerate()
+                    .map(|(level, split)| ObliviousLevel {
+                        level,
+                        split: oblivious_split_ir(
+                            split.feature_index,
+                            split.threshold_bin,
+                            &self.feature_preprocessing,
+                        ),
+                        stats: NodeStats {
+                            sample_count: split.sample_count,
+                            impurity: Some(split.impurity),
+                            gain: Some(split.gain),
+                            class_counts: None,
+                            variance: None,
+                        },
+                    })
+                    .collect(),
+                leaf_indexing: LeafIndexing {
+                    bit_order: "msb_first".to_string(),
+                    index_formula: "sum(bit[level] << (depth - 1 - level))".to_string(),
+                },
+                leaves: leaf_values
+                    .iter()
+                    .enumerate()
+                    .map(|(leaf_index, value)| IndexedLeaf {
+                        leaf_index,
+                        leaf: LeafPayload::RegressionValue { value: *value },
+                        stats: NodeStats {
+                            sample_count: leaf_sample_counts[leaf_index],
+                            impurity: None,
+                            gain: None,
+                            class_counts: None,
+                            variance: leaf_variances[leaf_index],
+                        },
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    pub(crate) fn from_ir_parts(
+        algorithm: RegressionTreeAlgorithm,
+        criterion: Criterion,
+        structure: RegressionTreeStructure,
+        options: RegressionTreeOptions,
+        num_features: usize,
+        feature_preprocessing: Vec<FeaturePreprocessing>,
+        training_canaries: usize,
+    ) -> Self {
+        Self {
+            algorithm,
+            criterion,
+            structure,
+            options,
+            num_features,
+            feature_preprocessing,
+            training_canaries,
+        }
+    }
+}
+
+fn standard_node_depths(nodes: &[RegressionNode], root: usize) -> Vec<usize> {
+    let mut depths = vec![0; nodes.len()];
+    populate_depths(nodes, root, 0, &mut depths);
+    depths
+}
+
+fn populate_depths(nodes: &[RegressionNode], node_id: usize, depth: usize, depths: &mut [usize]) {
+    depths[node_id] = depth;
+    match &nodes[node_id] {
+        RegressionNode::Leaf { .. } => {}
+        RegressionNode::BinarySplit {
+            left_child,
+            right_child,
+            ..
+        } => {
+            populate_depths(nodes, *left_child, depth + 1, depths);
+            populate_depths(nodes, *right_child, depth + 1, depths);
+        }
+    }
+}
+
+fn binary_split_ir(
+    feature_index: usize,
+    threshold_bin: u16,
+    preprocessing: &[FeaturePreprocessing],
+) -> BinarySplit {
+    match preprocessing.get(feature_index) {
+        Some(FeaturePreprocessing::Binary) => BinarySplit::BooleanTest {
+            feature_index,
+            feature_name: feature_name(feature_index),
+            false_child_semantics: "left".to_string(),
+            true_child_semantics: "right".to_string(),
+        },
+        Some(FeaturePreprocessing::Numeric { .. }) | None => BinarySplit::NumericBinThreshold {
+            feature_index,
+            feature_name: feature_name(feature_index),
+            operator: "<=".to_string(),
+            threshold_bin,
+            threshold_upper_bound: threshold_upper_bound(
+                preprocessing,
+                feature_index,
+                threshold_bin,
+            ),
+            comparison_dtype: "uint16".to_string(),
+        },
+    }
+}
+
+fn oblivious_split_ir(
+    feature_index: usize,
+    threshold_bin: u16,
+    preprocessing: &[FeaturePreprocessing],
+) -> IrObliviousSplit {
+    match preprocessing.get(feature_index) {
+        Some(FeaturePreprocessing::Binary) => IrObliviousSplit::BooleanTest {
+            feature_index,
+            feature_name: feature_name(feature_index),
+            bit_when_false: 0,
+            bit_when_true: 1,
+        },
+        Some(FeaturePreprocessing::Numeric { .. }) | None => {
+            IrObliviousSplit::NumericBinThreshold {
+                feature_index,
+                feature_name: feature_name(feature_index),
+                operator: "<=".to_string(),
+                threshold_bin,
+                threshold_upper_bound: threshold_upper_bound(
+                    preprocessing,
+                    feature_index,
+                    threshold_bin,
+                ),
+                comparison_dtype: "uint16".to_string(),
+                bit_when_true: 0,
+                bit_when_false: 1,
             }
         }
     }
@@ -297,13 +560,14 @@ fn build_node(
     depth: usize,
 ) -> usize {
     let leaf_value = regression_value(rows, context.targets, context.criterion);
+    let leaf_variance = variance(rows, context.targets);
 
     if rows.is_empty()
         || depth >= context.options.max_depth
         || rows.len() < context.options.min_samples_split
         || has_constant_target(rows, context.targets)
     {
-        return push_leaf(nodes, leaf_value);
+        return push_leaf(nodes, leaf_value, rows.len(), leaf_variance);
     }
 
     let best_split = if context.parallelism.enabled() {
@@ -341,7 +605,7 @@ fn build_node(
                 .table
                 .is_canary_binned_feature(best_split.feature_index) =>
         {
-            push_leaf(nodes, leaf_value)
+            push_leaf(nodes, leaf_value, rows.len(), leaf_variance)
         }
         Some(RegressionSplitCandidate {
             feature_index,
@@ -350,6 +614,7 @@ fn build_node(
             left_rows,
             right_rows,
         }) if score > 0.0 => {
+            let impurity = regression_loss(rows, context.targets, context.criterion);
             let left_child = build_node(context, nodes, &left_rows, depth + 1);
             let right_child = build_node(context, nodes, &right_rows, depth + 1);
 
@@ -360,10 +625,14 @@ fn build_node(
                     threshold_bin,
                     left_child,
                     right_child,
+                    sample_count: rows.len(),
+                    impurity,
+                    gain: score,
+                    variance: leaf_variance,
                 },
             )
         }
-        _ => push_leaf(nodes, leaf_value),
+        _ => push_leaf(nodes, leaf_value, rows.len(), leaf_variance),
     }
 }
 
@@ -377,6 +646,7 @@ fn train_oblivious_structure(
     let all_rows: Vec<usize> = (0..table.n_rows()).collect();
     let mut leaves = vec![ObliviousLeafState {
         value: regression_value(&all_rows, targets, criterion),
+        variance: variance(&all_rows, targets),
         rows: all_rows,
     }];
     let mut splits = Vec::new();
@@ -434,12 +704,20 @@ fn train_oblivious_structure(
         splits.push(ObliviousSplit {
             feature_index: best_split.feature_index,
             threshold_bin: best_split.threshold_bin,
+            sample_count: table.n_rows(),
+            impurity: leaves
+                .iter()
+                .map(|leaf| regression_loss(&leaf.rows, targets, criterion))
+                .sum(),
+            gain: best_split.score,
         });
     }
 
     RegressionTreeStructure::Oblivious {
         splits,
-        leaf_values: leaves.into_iter().map(|leaf| leaf.value).collect(),
+        leaf_values: leaves.iter().map(|leaf| leaf.value).collect(),
+        leaf_sample_counts: leaves.iter().map(|leaf| leaf.rows.len()).collect(),
+        leaf_variances: leaves.iter().map(|leaf| leaf.variance).collect(),
     }
 }
 
@@ -565,6 +843,7 @@ fn split_oblivious_leaf(
             } else {
                 regression_value(&left_rows, targets, criterion)
             },
+            variance: variance(&left_rows, targets),
             rows: left_rows,
         },
         ObliviousLeafState {
@@ -573,9 +852,26 @@ fn split_oblivious_leaf(
             } else {
                 regression_value(&right_rows, targets, criterion)
             },
+            variance: variance(&right_rows, targets),
             rows: right_rows,
         },
     ]
+}
+
+fn variance(rows: &[usize], targets: &[f64]) -> Option<f64> {
+    if rows.is_empty() {
+        return None;
+    }
+    let mean = mean(rows, targets);
+    Some(
+        rows.iter()
+            .map(|row_idx| {
+                let diff = targets[*row_idx] - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+            / rows.len() as f64,
+    )
 }
 
 fn mean(rows: &[usize], targets: &[f64]) -> f64 {
@@ -703,8 +999,20 @@ fn has_constant_target(rows: &[usize], targets: &[f64]) -> bool {
     })
 }
 
-fn push_leaf(nodes: &mut Vec<RegressionNode>, value: f64) -> usize {
-    push_node(nodes, RegressionNode::Leaf { value })
+fn push_leaf(
+    nodes: &mut Vec<RegressionNode>,
+    value: f64,
+    sample_count: usize,
+    variance: Option<f64>,
+) -> usize {
+    push_node(
+        nodes,
+        RegressionNode::Leaf {
+            value,
+            sample_count,
+            variance,
+        },
+    )
 }
 
 fn push_node(nodes: &mut Vec<RegressionNode>, node: RegressionNode) -> usize {
@@ -715,6 +1023,7 @@ fn push_node(nodes: &mut Vec<RegressionNode>, node: RegressionNode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FeaturePreprocessing, Model, NumericBinBoundary};
     use forestfire_data::DenseTable;
 
     fn quadratic_table() -> DenseTable {
@@ -822,6 +1131,86 @@ mod tests {
 
         assert!(preds.iter().all(|pred| *pred == preds[0]));
         assert_ne!(preds, table_targets(&table));
+    }
+
+    #[test]
+    fn manually_built_regressor_models_serialize_for_each_tree_type() {
+        let preprocessing = vec![
+            FeaturePreprocessing::Binary,
+            FeaturePreprocessing::Numeric {
+                bin_boundaries: vec![
+                    NumericBinBoundary {
+                        bin: 0,
+                        upper_bound: 1.0,
+                    },
+                    NumericBinBoundary {
+                        bin: 511,
+                        upper_bound: 10.0,
+                    },
+                ],
+            },
+        ];
+        let options = RegressionTreeOptions::default();
+
+        let cart = Model::DecisionTreeRegressor(DecisionTreeRegressor {
+            algorithm: RegressionTreeAlgorithm::Cart,
+            criterion: Criterion::Mean,
+            structure: RegressionTreeStructure::Standard {
+                nodes: vec![
+                    RegressionNode::Leaf {
+                        value: -1.0,
+                        sample_count: 2,
+                        variance: Some(0.25),
+                    },
+                    RegressionNode::Leaf {
+                        value: 2.5,
+                        sample_count: 3,
+                        variance: Some(1.0),
+                    },
+                    RegressionNode::BinarySplit {
+                        feature_index: 0,
+                        threshold_bin: 0,
+                        left_child: 0,
+                        right_child: 1,
+                        sample_count: 5,
+                        impurity: 3.5,
+                        gain: 1.25,
+                        variance: Some(0.7),
+                    },
+                ],
+                root: 2,
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing.clone(),
+            training_canaries: 0,
+        });
+        let oblivious = Model::DecisionTreeRegressor(DecisionTreeRegressor {
+            algorithm: RegressionTreeAlgorithm::Oblivious,
+            criterion: Criterion::Median,
+            structure: RegressionTreeStructure::Oblivious {
+                splits: vec![ObliviousSplit {
+                    feature_index: 1,
+                    threshold_bin: 511,
+                    sample_count: 4,
+                    impurity: 2.0,
+                    gain: 0.5,
+                }],
+                leaf_values: vec![0.0, 10.0],
+                leaf_sample_counts: vec![2, 2],
+                leaf_variances: vec![Some(0.0), Some(1.0)],
+            },
+            options,
+            num_features: 2,
+            feature_preprocessing: preprocessing,
+            training_canaries: 0,
+        });
+
+        for (tree_type, model) in [("cart", cart), ("oblivious", oblivious)] {
+            let json = model.serialize().unwrap();
+            assert!(json.contains(&format!("\"tree_type\":\"{tree_type}\"")));
+            assert!(json.contains("\"task\":\"regression\""));
+        }
     }
 
     fn table_targets(table: &dyn TableAccess) -> Vec<f64> {

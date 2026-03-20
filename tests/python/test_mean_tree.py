@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 from forestfire import Table, train
@@ -510,3 +512,53 @@ def test_train_accepts_scipy_dense_matrix_like_inputs_if_installed() -> None:
 
     assert model.task == "classification"
     assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
+
+
+def test_model_to_ir_json_exports_target_mean_metadata() -> None:
+    X = np.array([[0.0, 0.0], [1.0, 10.0], [0.0, 20.0], [1.0, 30.0]])
+    y = np.array([1.0, 3.0, 5.0, 7.0])
+
+    model = train(X, y, canaries=2)
+    ir = json.loads(model.to_ir_json())
+
+    assert ir["ir_version"] == "1.0.0"
+    assert ir["model"]["algorithm"] == "dt"
+    assert ir["model"]["tree_type"] == "target_mean"
+    assert ir["training_metadata"]["canaries"] == 2
+    assert ir["input_schema"]["feature_count"] == 2
+
+
+def test_model_to_ir_json_exports_oblivious_tree_structure() -> None:
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 1.0, 1.0, 2.0])
+
+    model = train(X, y, task="regression", tree_type="oblivious", canaries=0)
+    ir = json.loads(model.to_ir_json(pretty=True))
+
+    assert ir["model"]["representation"] == "oblivious_levels"
+    assert ir["model"]["trees"][0]["representation"] == "oblivious_levels"
+    assert ir["model"]["trees"][0]["leaf_indexing"]["bit_order"] == "msb_first"
+    assert len(ir["model"]["trees"][0]["leaves"]) == 4
+
+
+def test_model_serialize_alias_matches_ir_json() -> None:
+    X = np.array([[0.0], [1.0], [2.0]])
+    y = np.array([1.0, 2.0, 3.0])
+
+    model = train(X, y)
+
+    assert json.loads(model.serialize()) == json.loads(model.to_ir_json())
+
+
+def test_model_deserialize_round_trip() -> None:
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+    y = np.array([0.0, 0.0, 0.0, 1.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=1)
+    restored = type(model).deserialize(model.serialize())
+
+    assert restored.algorithm == model.algorithm
+    assert restored.task == model.task
+    assert restored.tree_type == model.tree_type
+    assert restored.criterion == model.criterion
+    assert np.array_equal(restored.predict(X), model.predict(X))
