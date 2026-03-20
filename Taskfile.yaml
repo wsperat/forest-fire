@@ -19,16 +19,19 @@ tasks:
         uv run isort --check-only
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - >-
         uv run ruff check
         bindings/python
         examples/python
+        scripts
         tests/python
       - >-
         uv run ruff format --check
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   lint:
@@ -38,16 +41,19 @@ tasks:
         uv run isort
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - >-
         uv run ruff check --fix
         bindings/python
         examples/python
+        scripts
         tests/python
       - >-
         uv run ruff format
         bindings/python/forestfire.pyi
         examples/python/mean_tree.py
+        scripts/benchmark_inference.py
         tests/python/test_mean_tree.py
       - uv run yamlfix Taskfile.yaml .pre-commit-config.yaml .github/workflows
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
@@ -130,6 +136,13 @@ tasks:
   python-test-ext:
     desc: Run Python tests with the Rust extension built
     cmds: [task test]
+  benchmark-inference:
+    desc: Benchmark baseline vs optimized inference and write plots
+    deps: [python-ext-develop]
+    cmds:
+      - >-
+        uv run python scripts/benchmark_inference.py
+        --output-dir docs/benchmarks
   verify:
     desc: Run Python and Rust checks and tests
     cmds: [task check, task rust-verify]
