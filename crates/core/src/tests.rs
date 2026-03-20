@@ -159,18 +159,6 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
             TrainConfig {
                 algorithm: TrainAlgorithm::Dt,
                 task: Task::Regression,
-                tree_type: TreeType::TargetMean,
-                criterion: Criterion::Auto,
-                physical_cores: Some(1),
-                n_trees: None,
-            },
-            Criterion::Mean,
-        ),
-        (
-            &regression_table,
-            TrainConfig {
-                algorithm: TrainAlgorithm::Dt,
-                task: Task::Regression,
                 tree_type: TreeType::Cart,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
@@ -300,14 +288,6 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
     .unwrap();
 
     for config in [
-        TrainConfig {
-            algorithm: TrainAlgorithm::Dt,
-            task: Task::Regression,
-            tree_type: TreeType::TargetMean,
-            criterion: Criterion::Mean,
-            physical_cores: Some(1),
-            n_trees: None,
-        },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Regression,
@@ -473,7 +453,7 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
 }
 
 #[test]
-fn ir_exports_target_mean_with_training_binning() {
+fn ir_exports_regression_tree_with_training_binning() {
     let table = DenseTable::with_canaries(
         vec![
             vec![0.0, 0.0],
@@ -491,7 +471,7 @@ fn ir_exports_target_mean_with_training_binning() {
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Regression,
-            tree_type: TreeType::TargetMean,
+            tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
             n_trees: None,
@@ -503,7 +483,7 @@ fn ir_exports_target_mean_with_training_binning() {
 
     assert_eq!(ir.ir_version, "1.0.0");
     assert_eq!(ir.model.algorithm, "dt");
-    assert_eq!(ir.model.tree_type, "target_mean");
+    assert_eq!(ir.model.tree_type, "cart");
     assert_eq!(ir.input_schema.feature_count, 2);
     assert_eq!(ir.training_metadata.canaries, 2);
     assert!(matches!(
@@ -946,7 +926,7 @@ fn optimized_model_rejects_zero_physical_cores() {
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Regression,
-            tree_type: TreeType::TargetMean,
+            tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
             n_trees: None,

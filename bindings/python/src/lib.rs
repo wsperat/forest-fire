@@ -769,17 +769,24 @@ fn parse_algorithm(algorithm: &str) -> PyResult<TrainAlgorithm> {
 
 fn parse_tree_type(tree_type: &str) -> PyResult<TreeType> {
     match tree_type {
-        "target_mean" => Ok(TreeType::TargetMean),
         "id3" => Ok(TreeType::Id3),
         "c45" => Ok(TreeType::C45),
         "cart" => Ok(TreeType::Cart),
         "randomized" => Ok(TreeType::Randomized),
         "oblivious" => Ok(TreeType::Oblivious),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported tree_type '{}'. Expected one of: target_mean, id3, c45, cart, randomized, oblivious",
+            "Unsupported tree_type '{}'. Expected one of: id3, c45, cart, randomized, oblivious",
             tree_type
         ))),
     }
+}
+
+fn resolve_tree_type(requested_tree_type: &str, task_was_auto: bool) -> PyResult<TreeType> {
+    if task_was_auto && requested_tree_type == "cart" {
+        return Ok(TreeType::Cart);
+    }
+
+    parse_tree_type(requested_tree_type)
 }
 
 fn parse_task(task: &str) -> PyResult<Task> {
@@ -938,7 +945,6 @@ fn criterion_name(criterion: Criterion) -> &'static str {
 
 fn tree_type_name(tree_type: TreeType) -> &'static str {
     match tree_type {
-        TreeType::TargetMean => "target_mean",
         TreeType::Id3 => "id3",
         TreeType::C45 => "c45",
         TreeType::Cart => "cart",
@@ -948,7 +954,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None, n_trees=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, n_trees=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -962,12 +968,13 @@ fn train(
     physical_cores: Option<usize>,
     n_trees: Option<usize>,
 ) -> PyResult<PyModel> {
+    let task_was_auto = task == "auto";
     let resolved_task = resolve_task(x, y, task)?;
     let (table, string_class_labels) = build_training_table(x, y, canaries, parse_bins(bins)?)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
         task: resolved_task,
-        tree_type: parse_tree_type(tree_type)?,
+        tree_type: resolve_tree_type(tree_type, task_was_auto)?,
         criterion: parse_criterion(criterion)?,
         physical_cores,
         n_trees,
@@ -1048,11 +1055,6 @@ impl PyModel {
     #[getter]
     fn tree_type(&self) -> &'static str {
         tree_type_name(self.inner.tree_type())
-    }
-
-    #[getter]
-    fn mean_(&self) -> Option<f64> {
-        self.inner.mean_value()
     }
 
     #[pyo3(signature = (pretty=false))]
@@ -1148,11 +1150,6 @@ impl PyOptimizedModel {
     #[getter]
     fn tree_type(&self) -> &'static str {
         tree_type_name(self.inner.tree_type())
-    }
-
-    #[getter]
-    fn mean_(&self) -> Option<f64> {
-        self.inner.mean_value()
     }
 
     #[pyo3(signature = (pretty=false))]

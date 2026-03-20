@@ -35,8 +35,6 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
     let (x, y) = regression_rows();
     let table = Table::with_options(x.clone(), y, 0, NumericBins::Auto)?;
     let configs = [
-        (TreeType::TargetMean, Criterion::Mean),
-        (TreeType::TargetMean, Criterion::Median),
         (TreeType::Cart, Criterion::Mean),
         (TreeType::Cart, Criterion::Median),
         (TreeType::Randomized, Criterion::Mean),

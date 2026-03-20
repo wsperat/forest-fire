@@ -36,8 +36,6 @@ def classification_rows() -> tuple[np.ndarray, np.ndarray]:
 def show_regression_models() -> None:
     x, y = regression_rows()
     configs = [
-        ("target_mean", "mean"),
-        ("target_mean", "median"),
         ("cart", "mean"),
         ("cart", "median"),
         ("randomized", "mean"),

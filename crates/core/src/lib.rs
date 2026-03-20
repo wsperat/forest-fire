@@ -31,9 +31,6 @@ pub use tree::classifier::train_cart;
 pub use tree::classifier::train_id3;
 pub use tree::classifier::train_oblivious;
 pub use tree::classifier::train_randomized;
-pub use tree::mean_tree::ModelError;
-pub use tree::mean_tree::TargetMeanTree;
-pub use tree::mean_tree::train_target_mean;
 pub use tree::regressor::DecisionTreeRegressor;
 pub use tree::regressor::RegressionTreeAlgorithm;
 pub use tree::regressor::RegressionTreeError;
@@ -76,7 +73,6 @@ pub enum Task {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeType {
-    TargetMean,
     Id3,
     C45,
     Cart,
@@ -121,7 +117,7 @@ impl Default for TrainConfig {
         Self {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Regression,
-            tree_type: TreeType::TargetMean,
+            tree_type: TreeType::Cart,
             criterion: Criterion::Auto,
             physical_cores: None,
             n_trees: None,
@@ -131,7 +127,6 @@ impl Default for TrainConfig {
 
 #[derive(Debug, Clone)]
 pub enum Model {
-    TargetMean(TargetMeanTree),
     DecisionTreeClassifier(DecisionTreeClassifier),
     DecisionTreeRegressor(DecisionTreeRegressor),
     RandomForest(RandomForest),
@@ -139,7 +134,6 @@ pub enum Model {
 
 #[derive(Debug)]
 pub enum TrainError {
-    Mean(ModelError),
     DecisionTree(DecisionTreeError),
     RegressionTree(RegressionTreeError),
     InvalidPhysicalCoreCount {
@@ -158,7 +152,6 @@ pub enum TrainError {
 impl Display for TrainError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            TrainError::Mean(err) => err.fmt(f),
             TrainError::DecisionTree(err) => err.fmt(f),
             TrainError::RegressionTree(err) => err.fmt(f),
             TrainError::InvalidPhysicalCoreCount {
@@ -791,9 +784,6 @@ impl TableAccess for InferenceTable {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum OptimizedRuntime {
-    TargetMean {
-        value: f64,
-    },
     BinaryClassifier {
         nodes: Vec<OptimizedBinaryClassifierNode>,
     },
@@ -1181,9 +1171,6 @@ impl OptimizedRuntime {
 
     fn from_model(model: &Model) -> Self {
         match model {
-            Model::TargetMean(target_mean) => Self::TargetMean {
-                value: target_mean.mean,
-            },
             Model::DecisionTreeClassifier(classifier) => Self::from_classifier(classifier),
             Model::DecisionTreeRegressor(regressor) => Self::from_regressor(regressor),
             Model::RandomForest(_) => {
@@ -1289,7 +1276,6 @@ impl OptimizedRuntime {
     #[inline(always)]
     fn predict_table_row(&self, table: &dyn TableAccess, row_index: usize) -> f64 {
         match self {
-            OptimizedRuntime::TargetMean { value } => *value,
             OptimizedRuntime::BinaryClassifier { nodes } => {
                 predict_binary_classifier_row(nodes, |feature_index| {
                     table.binned_value(feature_index, row_index)
@@ -1369,7 +1355,6 @@ impl OptimizedRuntime {
         row_index: usize,
     ) -> f64 {
         match self {
-            OptimizedRuntime::TargetMean { value } => *value,
             OptimizedRuntime::BinaryClassifier { nodes } => {
                 predict_binary_classifier_row(nodes, |feature_index| {
                     matrix.column(feature_index).value_at(row_index)
@@ -1975,7 +1960,6 @@ fn resolve_inference_thread_count(physical_cores: Option<usize>) -> Result<usize
 impl Model {
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         match self {
-            Model::TargetMean(model) => model.predict_table(table),
             Model::DecisionTreeClassifier(model) => model.predict_table(table),
             Model::DecisionTreeRegressor(model) => model.predict_table(table),
             Model::RandomForest(model) => model.predict_table(table),
@@ -1994,7 +1978,7 @@ impl Model {
         match self {
             Model::DecisionTreeClassifier(model) => Ok(model.predict_proba_table(table)),
             Model::RandomForest(model) => model.predict_proba_table(table),
-            Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => {
+            Model::DecisionTreeRegressor(_) => {
                 Err(PredictError::ProbabilityPredictionRequiresClassification)
             }
         }
@@ -2081,16 +2065,16 @@ impl Model {
 
     pub fn algorithm(&self) -> TrainAlgorithm {
         match self {
-            Model::TargetMean(_)
-            | Model::DecisionTreeClassifier(_)
-            | Model::DecisionTreeRegressor(_) => TrainAlgorithm::Dt,
+            Model::DecisionTreeClassifier(_) | Model::DecisionTreeRegressor(_) => {
+                TrainAlgorithm::Dt
+            }
             Model::RandomForest(_) => TrainAlgorithm::Rf,
         }
     }
 
     pub fn task(&self) -> Task {
         match self {
-            Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => Task::Regression,
+            Model::DecisionTreeRegressor(_) => Task::Regression,
             Model::DecisionTreeClassifier(_) => Task::Classification,
             Model::RandomForest(model) => model.task(),
         }
@@ -2098,7 +2082,6 @@ impl Model {
 
     pub fn criterion(&self) -> Criterion {
         match self {
-            Model::TargetMean(model) => model.criterion(),
             Model::DecisionTreeClassifier(model) => model.criterion(),
             Model::DecisionTreeRegressor(model) => model.criterion(),
             Model::RandomForest(model) => model.criterion(),
@@ -2107,7 +2090,6 @@ impl Model {
 
     pub fn tree_type(&self) -> TreeType {
         match self {
-            Model::TargetMean(_) => TreeType::TargetMean,
             Model::DecisionTreeClassifier(model) => match model.algorithm() {
                 DecisionTreeAlgorithm::Id3 => TreeType::Id3,
                 DecisionTreeAlgorithm::C45 => TreeType::C45,
@@ -2126,7 +2108,6 @@ impl Model {
 
     pub fn mean_value(&self) -> Option<f64> {
         match self {
-            Model::TargetMean(model) => Some(model.mean),
             Model::DecisionTreeClassifier(_)
             | Model::DecisionTreeRegressor(_)
             | Model::RandomForest(_) => None,
@@ -2183,7 +2164,6 @@ impl Model {
 
     pub(crate) fn num_features(&self) -> usize {
         match self {
-            Model::TargetMean(model) => model.num_features(),
             Model::DecisionTreeClassifier(model) => model.num_features(),
             Model::DecisionTreeRegressor(model) => model.num_features(),
             Model::RandomForest(model) => model.num_features(),
@@ -2192,7 +2172,6 @@ impl Model {
 
     pub(crate) fn feature_preprocessing(&self) -> &[FeaturePreprocessing] {
         match self {
-            Model::TargetMean(model) => model.feature_preprocessing(),
             Model::DecisionTreeClassifier(model) => model.feature_preprocessing(),
             Model::DecisionTreeRegressor(model) => model.feature_preprocessing(),
             Model::RandomForest(model) => model.feature_preprocessing(),
@@ -2203,13 +2182,12 @@ impl Model {
         match self {
             Model::DecisionTreeClassifier(model) => Some(model.class_labels().to_vec()),
             Model::RandomForest(model) => model.class_labels(),
-            Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => None,
+            Model::DecisionTreeRegressor(_) => None,
         }
     }
 
     pub(crate) fn training_metadata(&self) -> ir::TrainingMetadata {
         match self {
-            Model::TargetMean(model) => model.training_metadata(),
             Model::DecisionTreeClassifier(model) => model.training_metadata(),
             Model::DecisionTreeRegressor(model) => model.training_metadata(),
             Model::RandomForest(model) => model.training_metadata(),

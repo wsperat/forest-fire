@@ -3,7 +3,6 @@ use crate::tree::classifier::{
     ObliviousSplit as ClassifierObliviousSplit, TreeNode as ClassifierTreeNode,
     TreeStructure as ClassifierTreeStructure,
 };
-use crate::tree::mean_tree::TargetMeanTree;
 use crate::tree::regressor::{
     DecisionTreeRegressor, ObliviousSplit as RegressorObliviousSplit, RegressionNode,
     RegressionTreeAlgorithm, RegressionTreeOptions, RegressionTreeStructure,
@@ -587,16 +586,6 @@ fn single_model_from_ir_parts(
     tree: TreeDefinition,
 ) -> Result<Model, IrError> {
     match (task, tree_type, tree) {
-        (Task::Regression, TreeType::TargetMean, TreeDefinition::NodeTree { nodes, .. }) => {
-            let mean = extract_target_mean_leaf(&nodes)?;
-            Ok(Model::TargetMean(TargetMeanTree::from_ir_parts(
-                mean,
-                criterion,
-                num_features,
-                feature_preprocessing,
-                training_canaries,
-            )))
-        }
         (
             Task::Classification,
             TreeType::Id3 | TreeType::C45 | TreeType::Cart | TreeType::Randomized,
@@ -618,7 +607,7 @@ fn single_model_from_ir_parts(
                         TreeType::C45 => DecisionTreeAlgorithm::C45,
                         TreeType::Cart => DecisionTreeAlgorithm::Cart,
                         TreeType::Randomized => DecisionTreeAlgorithm::Randomized,
-                        TreeType::TargetMean | TreeType::Oblivious => unreachable!(),
+                        TreeType::Oblivious => unreachable!(),
                     },
                     criterion,
                     class_labels,
@@ -777,7 +766,6 @@ fn parse_task(value: &str) -> Result<Task, IrError> {
 
 fn parse_tree_type(value: &str) -> Result<TreeType, IrError> {
     match value {
-        "target_mean" => Ok(TreeType::TargetMean),
         "id3" => Ok(TreeType::Id3),
         "c45" => Ok(TreeType::C45),
         "cart" => Ok(TreeType::Cart),
@@ -867,23 +855,6 @@ fn classification_labels(ir: &ModelPackageIr) -> Result<Vec<f64>, IrError> {
         .clone()
         .or_else(|| ir.training_metadata.class_labels.clone())
         .ok_or(IrError::MissingClassLabels)
-}
-
-fn extract_target_mean_leaf(nodes: &[NodeTreeNode]) -> Result<f64, IrError> {
-    if nodes.len() != 1 {
-        return Err(IrError::InvalidNode(
-            "target_mean expects a single leaf node".to_string(),
-        ));
-    }
-    match &nodes[0] {
-        NodeTreeNode::Leaf {
-            leaf: LeafPayload::RegressionValue { value },
-            ..
-        } => Ok(*value),
-        _ => Err(IrError::InvalidLeaf(
-            "target_mean leaf must be regression_value".to_string(),
-        )),
-    }
 }
 
 fn classifier_class_index(leaf: &LeafPayload, class_labels: &[f64]) -> Result<usize, IrError> {
@@ -1345,9 +1316,6 @@ fn required_capabilities(model: &Model, representation: &str) -> Vec<String> {
         TreeType::Id3 | TreeType::C45 => {
             capabilities.push("binned_multiway_splits".to_string());
         }
-        TreeType::TargetMean => {
-            capabilities.push("constant_leaf_prediction".to_string());
-        }
         TreeType::Cart | TreeType::Randomized | TreeType::Oblivious => {
             capabilities.push("numeric_bin_threshold_splits".to_string());
         }
@@ -1375,7 +1343,6 @@ pub(crate) fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
 
 fn model_tree_definition(model: &Model) -> TreeDefinition {
     match model {
-        Model::TargetMean(target_mean) => target_mean.to_ir_tree(),
         Model::DecisionTreeClassifier(classifier) => classifier.to_ir_tree(),
         Model::DecisionTreeRegressor(regressor) => regressor.to_ir_tree(),
         Model::RandomForest(_) => unreachable!("forest IR expands into member trees"),
@@ -1401,7 +1368,6 @@ pub(crate) fn task_name(task: Task) -> &'static str {
 
 pub(crate) fn tree_type_name(tree_type: TreeType) -> &'static str {
     match tree_type {
-        TreeType::TargetMean => "target_mean",
         TreeType::Id3 => "id3",
         TreeType::C45 => "c45",
         TreeType::Cart => "cart",

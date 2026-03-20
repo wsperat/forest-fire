@@ -9,9 +9,5 @@ forestfire-core = { path = "../../crates/core" }
 forestfire-data = { path = "../../crates/data" }
 
 [[bin]]
-name = "mean_tree"
-path = "mean_tree.rs"
-
-[[bin]]
 name = "showcase"
 path = "showcase.rs"

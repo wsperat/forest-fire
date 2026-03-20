@@ -1206,11 +1206,11 @@ mod tests {
         let model = train_randomized_regressor(&table).unwrap();
         let preds = model.predict_table(&table);
         let targets = table_targets(&table);
-        let target_mean = targets.iter().sum::<f64>() / targets.len() as f64;
+        let baseline_mean = targets.iter().sum::<f64>() / targets.len() as f64;
         let baseline_sse = targets
             .iter()
             .map(|target| {
-                let diff = target - target_mean;
+                let diff = target - baseline_mean;
                 diff * diff
             })
             .sum::<f64>();

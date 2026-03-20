@@ -52,8 +52,8 @@ train(
     x,
     y=None,
     algorithm="dt",
-    task="regression",
-    tree_type="target_mean",
+    task="auto",
+    tree_type="cart",
     criterion="auto",
     canaries=2,
     bins="auto",
@@ -64,8 +64,8 @@ train(
 ### Current supported values
 
 - `algorithm="dt"`
-- `task="regression" | "classification"`
-- `tree_type="target_mean" | "id3" | "c45" | "cart" | "randomized" | "oblivious"`
+- `task="auto" | "regression" | "classification"`
+- `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 
 ### Why these parameters exist
@@ -76,16 +76,16 @@ Only `dt` exists today, but the parameter is already part of the public surface 
 
 #### `task`
 
-ForestFire does not guess whether `y` means regression or classification. The task is explicit because it changes split scoring, leaf semantics, defaults, and the set of valid tree types.
+`task="auto"` infers classification for integer, boolean, and string targets, and regression for float targets. An explicit task still controls split scoring, leaf semantics, defaults, and the set of valid tree types.
 
 #### `tree_type`
 
 `tree_type` selects the structural family directly:
 
-- `target_mean`: regression baseline
 - `id3`: entropy-first classifier
 - `c45`: practical extension of ID3
 - `cart`: standard binary tree
+- `randomized`: stochastic split-search variant
 - `oblivious`: symmetric tree with one split per depth
 
 #### `criterion`
@@ -99,7 +99,7 @@ Criterion changes the model itself, not just training speed:
 Current `auto` behavior:
 
 - `id3`, `c45` -> `entropy`
-- classification `cart`, `oblivious` -> `gini`
+- classification `cart`, `randomized`, `oblivious` -> `gini`
 - regression models -> `mean`
 
 #### `canaries`
@@ -245,7 +245,6 @@ Rows are independent at prediction time, so the optimized runtime parallelizes a
 ### Where it helps less
 
 - tiny batches
-- `target_mean`
 - very shallow trees
 - workloads dominated by input conversion instead of traversal
 - some single-core oblivious workloads, where layout conversion can still dominate
@@ -325,7 +324,7 @@ Current IR v1 intentionally marks these as unsupported rather than pretending th
 
 ## Current support matrix
 
-- regression: `target_mean`, `cart`, `randomized`, `oblivious`
+- regression: `cart`, `randomized`, `oblivious`
 - classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
 
 ## Development

@@ -25,7 +25,7 @@ def train(
     y: Any | None = None,
     algorithm: str = "dt",
     task: str = "auto",
-    tree_type: str = "target_mean",
+    tree_type: str = "cart",
     criterion: str = "auto",
     canaries: int = 2,
     bins: str | int = "auto",
@@ -38,7 +38,6 @@ class OptimizedModel:
     task: str
     criterion: str
     tree_type: str
-    mean_: float | None
 
     @classmethod
     def deserialize_compiled(
@@ -57,7 +56,6 @@ class Model:
     task: str
     criterion: str
     tree_type: str
-    mean_: float | None
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model": ...

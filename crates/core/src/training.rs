@@ -36,12 +36,6 @@ pub(crate) fn train_single_model(
     parallelism: Parallelism,
 ) -> Result<Model, TrainError> {
     match (task, tree_type, criterion) {
-        (Task::Regression, TreeType::TargetMean, Criterion::Mean)
-        | (Task::Regression, TreeType::TargetMean, Criterion::Median) => {
-            tree::mean_tree::train_target_mean_with_criterion(train_set, criterion)
-                .map(Model::TargetMean)
-                .map_err(TrainError::Mean)
-        }
         (Task::Classification, TreeType::Id3, Criterion::Gini)
         | (Task::Classification, TreeType::Id3, Criterion::Entropy) => {
             tree::classifier::train_id3_with_criterion_and_parallelism(
@@ -160,8 +154,6 @@ fn resolve_criterion(
     criterion: Criterion,
 ) -> Result<Criterion, TrainError> {
     let resolved = match (task, tree_type, criterion) {
-        (Task::Regression, TreeType::TargetMean, Criterion::Auto) => Criterion::Mean,
-        (Task::Regression, TreeType::TargetMean, Criterion::Mean | Criterion::Median) => criterion,
         (
             Task::Regression,
             TreeType::Cart | TreeType::Randomized | TreeType::Oblivious,

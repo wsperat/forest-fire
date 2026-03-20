@@ -14,7 +14,7 @@ ForestFire is a tree-learning library with a Rust core and a Python API. The cur
 - Unified `train` API in Rust and Python
 - Automatic table selection between `DenseTable` and `SparseTable`
 - Classification trees: `id3`, `c45`, `cart`, `oblivious`
-- Regression trees: `target_mean`, `cart`, `oblivious`
+- Regression trees: `cart`, `randomized`, `oblivious`
 - Criterion selection via `gini`, `entropy`, `mean`, `median`, or `auto`
 - Canary-based automatic growth stopping
 - Physical-core-aware parallel training
@@ -147,8 +147,8 @@ train(
     X_or_table,
     y=None,
     algorithm="dt",
-    task="regression",
-    tree_type="target_mean",
+    task="auto",
+    tree_type="cart",
     criterion="auto",
     canaries=2,
     bins="auto",
@@ -184,20 +184,21 @@ Why it is a string in Python but an enum in Rust:
 
 Current values:
 
+- `auto`
 - `regression`
 - `classification`
 
 Why it exists:
 
-- ForestFire does not guess the task from `y`.
+- `auto` infers classification for integer, boolean, and string targets, and regression for float targets.
 - Task choice changes leaf semantics, scoring, defaults, and supported tree types.
 
 #### `tree_type`
 
 Current support:
 
-- regression: `target_mean`, `cart`, `oblivious`
-- classification: `id3`, `c45`, `cart`, `oblivious`
+- regression: `cart`, `randomized`, `oblivious`
+- classification: `id3`, `c45`, `cart`, `randomized`, `oblivious`
 
 Why it exists:
 
@@ -206,10 +207,10 @@ Why it exists:
 
 What each one means:
 
-- `target_mean`: simplest regression baseline
 - `id3`: entropy-driven multiway-style classifier
 - `c45`: practical extension of ID3
 - `cart`: conventional binary tree
+- `randomized`: stochastic split-search variant
 - `oblivious`: symmetric tree with one shared split per depth
 
 #### `criterion`
@@ -227,7 +228,7 @@ Why it exists:
 Current `auto` resolution:
 
 - `id3`, `c45` classification -> `entropy`
-- `cart`, `oblivious` classification -> `gini`
+- `cart`, `randomized`, `oblivious` classification -> `gini`
 - regression models -> `mean`
 
 #### `canaries`
@@ -568,7 +569,6 @@ The biggest gains usually come from:
 The gains are usually smaller for:
 
 - tiny prediction batches, where thread-pool and preprocessing overhead dominate
-- `target_mean`, because its inference path is already trivial
 - very shallow trees, where there is little branch structure to optimize away
 - cases where input coercion dominates total latency more than model traversal does
 - oblivious single-core scoring, where the extra batch-layout conversion can still outweigh the traversal savings on some workloads
@@ -678,7 +678,7 @@ It is generated from the Rust IR types and checked in as a contract artifact. Th
 
 ### Tasks and tree types
 
-- `task="regression"` with `tree_type="target_mean" | "cart" | "randomized" | "oblivious"`
+- `task="regression"` with `tree_type="cart" | "randomized" | "oblivious"`
 - `task="classification"` with `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 
 ### Python input types

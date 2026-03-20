@@ -29,23 +29,6 @@ def and_data() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     return X, y
 
 
-def test_train_and_predict_shape_and_value(
-    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
-) -> None:
-    X, y = toy_data
-    m = train(X, y, algorithm="dt", tree_type="target_mean")
-    assert m.algorithm == "dt"
-    assert m.task == "regression"
-    assert m.criterion == "mean"
-    assert m.tree_type == "target_mean"
-    assert m.mean_ == pytest.approx(14.0, abs=1e-12)
-    assert m.mean_ is not None
-
-    preds = m.predict(X)
-    assert preds.shape == (X.shape[0],)
-    assert np.allclose(preds, m.mean_)
-
-
 def test_train_defaults_match_documented_regression_baseline(
     toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -55,7 +38,7 @@ def test_train_defaults_match_documented_regression_baseline(
 
     assert model.algorithm == "dt"
     assert model.task == "regression"
-    assert model.tree_type == "target_mean"
+    assert model.tree_type == "cart"
     assert model.criterion == "mean"
 
 
@@ -76,6 +59,16 @@ def test_train_auto_detects_integer_targets_as_classification() -> None:
 
     assert model.task == "classification"
     assert np.array_equal(model.predict(X), y.astype(np.float64))
+
+
+def test_train_auto_defaults_to_cart_for_classification_targets() -> None:
+    X = np.random.randn(100, 3)
+    y = np.random.choice([0, 1], 100)
+
+    model = train(X, y)
+
+    assert model.task == "classification"
+    assert model.tree_type == "cart"
 
 
 def test_train_auto_detects_float_targets_as_regression() -> None:
@@ -165,21 +158,6 @@ def test_train_accepts_prebuilt_table(
     assert np.array_equal(model.predict(table), y)
 
 
-@pytest.mark.parametrize(
-    "y, expected",
-    [
-        (np.array([1.0, 1.0, 1.0]), 1.0),
-        (np.array([0.0, 2.0]), 1.0),
-        (np.array([5.0]), 5.0),
-    ],
-)
-def test_mean_is_computed_correctly(y: NDArray[np.float64], expected: float) -> None:
-    X = np.zeros((y.shape[0], 2))
-    m = train(X, y, algorithm="dt", tree_type="target_mean")
-    assert m.mean_ == pytest.approx(expected, abs=1e-12)
-    assert np.allclose(m.predict(X), expected)
-
-
 def test_train_raises_on_mismatched_lengths() -> None:
     X = np.zeros((3, 1))
     y = np.ones(2)
@@ -199,7 +177,6 @@ def test_train_cart_classifier(
     assert model.task == "classification"
     assert model.criterion == "gini"
     assert model.tree_type == "cart"
-    assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
 
@@ -470,7 +447,6 @@ def test_optimize_inference_preserves_predictions_and_ir(
     assert optimized.task == model.task
     assert optimized.criterion == model.criterion
     assert optimized.tree_type == model.tree_type
-    assert optimized.mean_ == model.mean_
     assert optimized.serialize() == model.serialize()
     assert optimized.to_ir_json() == model.to_ir_json()
     assert np.allclose(
@@ -636,7 +612,6 @@ def test_train_id3_classifier(
     assert model.task == "classification"
     assert model.criterion == "entropy"
     assert model.tree_type == "id3"
-    assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
 
@@ -652,7 +627,6 @@ def test_train_c45_classifier(
     assert model.task == "classification"
     assert model.criterion == "entropy"
     assert model.tree_type == "c45"
-    assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
 
@@ -668,7 +642,6 @@ def test_train_oblivious_classifier(
     assert model.task == "classification"
     assert model.criterion == "gini"
     assert model.tree_type == "oblivious"
-    assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
 
@@ -684,7 +657,6 @@ def test_train_randomized_classifier(
     assert model.task == "classification"
     assert model.criterion == "gini"
     assert model.tree_type == "randomized"
-    assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
 
@@ -706,7 +678,6 @@ def test_train_cart_regressor() -> None:
     assert model.task == "regression"
     assert model.criterion == "mean"
     assert model.tree_type == "cart"
-    assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
 
@@ -728,7 +699,6 @@ def test_train_oblivious_regressor() -> None:
     assert model.task == "regression"
     assert model.criterion == "mean"
     assert model.tree_type == "oblivious"
-    assert model.mean_ is None
     assert np.array_equal(model.predict(X), y)
 
 
@@ -750,7 +720,6 @@ def test_train_randomized_regressor() -> None:
     assert model.task == "regression"
     assert model.criterion == "mean"
     assert model.tree_type == "randomized"
-    assert model.mean_ is None
     preds = model.predict(X)
     baseline = np.full_like(y, fill_value=np.mean(y))
     assert np.sum((preds - y) ** 2) < np.sum((baseline - y) ** 2)
@@ -759,7 +728,6 @@ def test_train_randomized_regressor() -> None:
 @pytest.mark.parametrize(
     ("task", "tree_type", "expected_criterion"),
     [
-        ("regression", "target_mean", "mean"),
         ("regression", "cart", "mean"),
         ("regression", "randomized", "mean"),
         ("regression", "oblivious", "mean"),
@@ -785,19 +753,6 @@ def test_auto_criterion_resolves_by_task_and_tree_type(
     model = train(X, y, task=task, tree_type=tree_type, criterion="auto", canaries=0)
 
     assert model.criterion == expected_criterion
-
-
-def test_train_target_mean_can_use_median_criterion() -> None:
-    X = np.zeros((3, 1))
-    y = np.array([0.0, 0.0, 100.0])
-
-    model = train(X, y, criterion="median")
-
-    assert model.task == "regression"
-    assert model.criterion == "median"
-    assert model.tree_type == "target_mean"
-    assert model.mean_ == 0.0
-    assert np.array_equal(model.predict(X), np.array([0.0, 0.0, 0.0]))
 
 
 def test_train_cart_regressor_can_use_median_criterion() -> None:
@@ -915,7 +870,6 @@ def test_train_rejects_non_finite_targets(task: str, tree_type: str) -> None:
     [
         ("regression", "id3", "auto"),
         ("regression", "c45", "auto"),
-        ("classification", "target_mean", "auto"),
         ("classification", "cart", "mean"),
     ],
 )
@@ -1162,7 +1116,7 @@ def test_train_accepts_scipy_dense_matrix_like_inputs_if_installed() -> None:
     assert np.array_equal(model.predict(X), np.array([0.0, 1.0, 1.0]))
 
 
-def test_model_to_ir_json_exports_target_mean_metadata() -> None:
+def test_model_to_ir_json_exports_regressor_metadata() -> None:
     X = np.array([[0.0, 0.0], [1.0, 10.0], [0.0, 20.0], [1.0, 30.0]])
     y = np.array([1.0, 3.0, 5.0, 7.0])
 
@@ -1171,7 +1125,7 @@ def test_model_to_ir_json_exports_target_mean_metadata() -> None:
 
     assert ir["ir_version"] == "1.0.0"
     assert ir["model"]["algorithm"] == "dt"
-    assert ir["model"]["tree_type"] == "target_mean"
+    assert ir["model"]["tree_type"] == "cart"
     assert ir["training_metadata"]["canaries"] == 2
     assert ir["input_schema"]["feature_count"] == 2
 
