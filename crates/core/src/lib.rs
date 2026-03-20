@@ -1,4 +1,6 @@
 use forestfire_data::{BinnedColumnKind, TableAccess, numeric_bin_boundaries};
+#[cfg(feature = "polars")]
+use polars::prelude::{Column, DataFrame, DataType, LazyFrame};
 use rayon::ThreadPoolBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -180,6 +182,15 @@ pub enum PredictError {
         row_index: usize,
         value: f64,
     },
+    NullValue {
+        feature: String,
+        row_index: usize,
+    },
+    UnsupportedFeatureType {
+        feature: String,
+        dtype: String,
+    },
+    Polars(String),
 }
 
 impl Display for PredictError {
@@ -223,11 +234,29 @@ impl Display for PredictError {
                 "Feature {} at row {} must be binary for inference, found {}.",
                 feature_index, row_index, value
             ),
+            PredictError::NullValue { feature, row_index } => write!(
+                f,
+                "Feature '{}' contains a null value at row {}.",
+                feature, row_index
+            ),
+            PredictError::UnsupportedFeatureType { feature, dtype } => write!(
+                f,
+                "Feature '{}' has unsupported dtype '{}'.",
+                feature, dtype
+            ),
+            PredictError::Polars(message) => write!(f, "Polars inference failed: {}.", message),
         }
     }
 }
 
 impl Error for PredictError {}
+
+#[cfg(feature = "polars")]
+impl From<polars::error::PolarsError> for PredictError {
+    fn from(value: polars::error::PolarsError) -> Self {
+        PredictError::Polars(value.to_string())
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Parallelism {
@@ -729,6 +758,18 @@ impl Model {
         Ok(self.predict_table(&table))
     }
 
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_dataframe(&self, df: &DataFrame) -> Result<Vec<f64>, PredictError> {
+        let columns = polars_named_columns(df)?;
+        self.predict_named_columns(columns)
+    }
+
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_lazyframe(&self, lf: &LazyFrame) -> Result<Vec<f64>, PredictError> {
+        let df = lf.clone().collect()?;
+        self.predict_polars_dataframe(&df)
+    }
+
     pub fn algorithm(&self) -> TrainAlgorithm {
         match self {
             Model::TargetMean(_)
@@ -830,10 +871,81 @@ impl Model {
     }
 }
 
+#[cfg(feature = "polars")]
+fn polars_named_columns(df: &DataFrame) -> Result<BTreeMap<String, Vec<f64>>, PredictError> {
+    df.get_columns()
+        .iter()
+        .map(|column| {
+            let name = column.name().to_string();
+            Ok((name, polars_column_values(column)?))
+        })
+        .collect()
+}
+
+#[cfg(feature = "polars")]
+fn polars_column_values(column: &Column) -> Result<Vec<f64>, PredictError> {
+    let name = column.name().to_string();
+    let series = column.as_materialized_series();
+    match series.dtype() {
+        DataType::Boolean => series
+            .bool()?
+            .into_iter()
+            .enumerate()
+            .map(|(row_index, value)| {
+                value
+                    .map(|value| f64::from(u8::from(value)))
+                    .ok_or_else(|| PredictError::NullValue {
+                        feature: name.clone(),
+                        row_index,
+                    })
+            })
+            .collect(),
+        DataType::Float64 => series
+            .f64()?
+            .into_iter()
+            .enumerate()
+            .map(|(row_index, value)| {
+                value.ok_or_else(|| PredictError::NullValue {
+                    feature: name.clone(),
+                    row_index,
+                })
+            })
+            .collect(),
+        DataType::Float32
+        | DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => {
+            let casted = series.cast(&DataType::Float64)?;
+            casted
+                .f64()?
+                .into_iter()
+                .enumerate()
+                .map(|(row_index, value)| {
+                    value.ok_or_else(|| PredictError::NullValue {
+                        feature: name.clone(),
+                        row_index,
+                    })
+                })
+                .collect()
+        }
+        dtype => Err(PredictError::UnsupportedFeatureType {
+            feature: name,
+            dtype: dtype.to_string(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use forestfire_data::DenseTable;
+    #[cfg(feature = "polars")]
+    use polars::prelude::{DataFrame, IntoLazy, NamedFrom, Series};
     use std::collections::BTreeMap;
 
     #[test]
@@ -1424,6 +1536,78 @@ mod tests {
                 ("f1".to_string(), vec![0.0, 1.0, 0.0, 1.0]),
             ]))
             .unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_predicts_from_polars_dataframe() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), &[0.0, 0.0, 1.0, 1.0]).into(),
+            Series::new("f1".into(), &[0.0, 1.0, 0.0, 1.0]).into(),
+        ])
+        .unwrap();
+
+        let preds = model.predict_polars_dataframe(&df).unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_predicts_from_polars_lazyframe() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), &[0.0, 0.0, 1.0, 1.0]).into(),
+            Series::new("f1".into(), &[0.0, 1.0, 0.0, 1.0]).into(),
+        ])
+        .unwrap();
+
+        let preds = model.predict_polars_lazyframe(&df.lazy()).unwrap();
 
         assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
     }

@@ -3,10 +3,15 @@ name = "forestfire-core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+polars = ["dep:polars"]
+
 [dependencies]
 arrow.workspace = true
 forestfire-data = { path = "../data" }
 num_cpus.workspace = true
+polars = { version = "0.46", optional = true, default-features = false, features = ["lazy"] }
 rayon.workspace = true
 schemars = { version = "0.8", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
