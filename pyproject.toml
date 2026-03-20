@@ -10,6 +10,7 @@ members = ["bindings/python"]
 dev = [
     "pytest>=8,<9",
     "numpy>=2.1.0",
+    "matplotlib>=3.10,<4",
     "maturin>=1.4,<2",
     "isort>=5.13,<6",
     "mypy>=1.17,<2",

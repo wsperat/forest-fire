@@ -1,14 +1,23 @@
 use forestfire_core::{
-    Criterion, Model, Task, TrainAlgorithm, TrainConfig, TreeType, train as train_model,
+    Criterion, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm, TrainConfig,
+    TreeType, train as train_model,
 };
-use forestfire_data::{Table, TableAccess, TableKind};
+use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
-use pyo3::types::{PyDict, PyType};
+use pyo3::types::{PyBytes, PyDict, PyType};
 use pyo3::{Bound, prelude::*};
+use std::collections::BTreeMap;
+
+const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
 
 #[pyclass(name = "Model")]
 struct PyModel {
     inner: Model,
+}
+
+#[pyclass(name = "OptimizedModel")]
+struct PyOptimizedModel {
+    inner: CoreOptimizedModel,
 }
 
 #[pyclass(name = "Table")]
@@ -28,11 +37,17 @@ fn build_training_table(
     x: &Bound<PyAny>,
     y: Option<&Bound<PyAny>>,
     canaries: usize,
+    bins: NumericBins,
 ) -> PyResult<Table> {
     if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
         if y.is_some() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "y must be omitted when x is already a Table.",
+            ));
+        }
+        if bins != NumericBins::Auto {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "bins must be omitted when x is already a Table.",
             ));
         }
         return Ok(table.inner.clone());
@@ -44,57 +59,173 @@ fn build_training_table(
         )
     })?;
     if is_scipy_sparse_matrix(x)? {
-        return build_sparse_training_table(x, y, canaries);
+        return build_sparse_training_table(x, y, canaries, bins);
     }
     let x_rows = extract_matrix(x)?;
     let y_values = extract_vector(y)?;
 
-    Table::with_canaries(x_rows, y_values, canaries)
+    Table::with_options(x_rows, y_values, canaries, bins)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
-fn build_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
+fn build_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
     if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        if bins != NumericBins::Auto {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "bins must be omitted when x is already a Table.",
+            ));
+        }
         return Ok(table.inner.clone());
     }
 
     if is_scipy_sparse_matrix(x)? {
-        return build_sparse_feature_table(x);
+        return build_sparse_feature_table(x, bins);
     }
 
     let x_rows = extract_matrix(x)?;
     let y_values = vec![0.0; x_rows.len()];
 
-    Table::with_canaries(x_rows, y_values, 0)
+    Table::with_options(x_rows, y_values, 0, bins)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+enum InferenceInput {
+    Rows(Vec<Vec<f64>>),
+    NamedColumns(BTreeMap<String, Vec<f64>>),
+    SparseBinaryColumns {
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    },
+    TrainingTable(Table),
+}
+
+fn build_inference_input(x: &Bound<PyAny>) -> PyResult<InferenceInput> {
+    if let Ok(table) = x.extract::<PyRef<'_, PyTable>>() {
+        return Ok(InferenceInput::TrainingTable(table.inner.clone()));
+    }
+
+    if is_scipy_sparse_matrix(x)? {
+        let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
+        return Ok(InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        });
+    }
+
+    if let Ok(columns) = extract_named_columns(x) {
+        return Ok(InferenceInput::NamedColumns(columns));
+    }
+
+    Ok(InferenceInput::Rows(extract_matrix(x)?))
 }
 
 fn is_scipy_sparse_matrix(x: &Bound<PyAny>) -> PyResult<bool> {
     Ok(x.hasattr("getnnz")? && x.hasattr("nonzero")?)
 }
 
+fn is_polars_lazyframe(x: &Bound<PyAny>) -> PyResult<bool> {
+    if !(x.hasattr("collect")? && x.hasattr("slice")?) {
+        return Ok(false);
+    }
+
+    let class = x.getattr("__class__")?;
+    let name: String = class.getattr("__name__")?.extract()?;
+    let module: String = class.getattr("__module__")?.extract()?;
+    Ok(name == "LazyFrame" && module.starts_with("polars"))
+}
+
+fn row_count(x: &Bound<PyAny>) -> PyResult<usize> {
+    if x.hasattr("height")? {
+        return x.getattr("height")?.extract();
+    }
+
+    if x.hasattr("shape")? {
+        let shape: Vec<usize> = x.getattr("shape")?.extract()?;
+        return Ok(shape.first().copied().unwrap_or(0));
+    }
+
+    x.len()
+}
+
+fn predict_lazyframe_in_batches<F>(x: &Bound<PyAny>, predict_batch: F) -> PyResult<Vec<f64>>
+where
+    F: Fn(InferenceInput) -> PyResult<Vec<f64>>,
+{
+    let mut predictions = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let sliced = x.call_method1("slice", (offset, LAZYFRAME_PREDICT_BATCH_ROWS))?;
+        let batch = sliced.call_method0("collect")?;
+        let height = row_count(&batch)?;
+        if height == 0 {
+            break;
+        }
+        predictions.extend(predict_batch(build_inference_input(&batch)?)?);
+        if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+            break;
+        }
+        offset += height;
+    }
+    Ok(predictions)
+}
+
+fn predict_input_with_model(model: &Model, input: InferenceInput) -> PyResult<Vec<f64>> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    }
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
+fn predict_input_with_optimized_model(
+    model: &CoreOptimizedModel,
+    input: InferenceInput,
+) -> PyResult<Vec<f64>> {
+    match input {
+        InferenceInput::Rows(rows) => model.predict_rows(rows),
+        InferenceInput::NamedColumns(columns) => model.predict_named_columns(columns),
+        InferenceInput::SparseBinaryColumns {
+            n_rows,
+            n_features,
+            columns,
+        } => model.predict_sparse_binary_columns(n_rows, n_features, columns),
+        InferenceInput::TrainingTable(table) => Ok(model.predict_table(&table)),
+    }
+    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
 fn build_sparse_training_table(
     x: &Bound<PyAny>,
     y: &Bound<PyAny>,
     canaries: usize,
+    bins: NumericBins,
 ) -> PyResult<Table> {
     let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
     let y_values = extract_vector(y)?;
-    let table = forestfire_data::SparseTable::from_sparse_binary_columns(
-        n_rows, n_features, columns, y_values, canaries,
+    let table = forestfire_data::SparseTable::from_sparse_binary_columns_with_options(
+        n_rows, n_features, columns, y_values, canaries, bins,
     )
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
     Ok(Table::Sparse(table))
 }
 
-fn build_sparse_feature_table(x: &Bound<PyAny>) -> PyResult<Table> {
+fn build_sparse_feature_table(x: &Bound<PyAny>, bins: NumericBins) -> PyResult<Table> {
     let (n_rows, n_features, columns) = extract_sparse_binary_columns(x)?;
-    let table = forestfire_data::SparseTable::from_sparse_binary_columns(
+    let table = forestfire_data::SparseTable::from_sparse_binary_columns_with_options(
         n_rows,
         n_features,
         columns,
         vec![0.0; n_rows],
         0,
+        bins,
     )
     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
     Ok(Table::Sparse(table))
@@ -192,6 +323,11 @@ fn extract_index_vector(values: &Bound<PyAny>) -> PyResult<Vec<usize>> {
 }
 
 fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
+    if x.hasattr("collect")? {
+        let collected = x.call_method0("collect")?;
+        return extract_matrix(&collected);
+    }
+
     if let Ok(array) = x.extract::<PyReadonlyArray2<'_, f64>>() {
         let view = array.as_array();
         return Ok(view.rows().into_iter().map(|row| row.to_vec()).collect());
@@ -241,6 +377,46 @@ fn extract_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
     }
 
     extract_matrix_from_rows(x)
+}
+
+fn extract_named_columns(x: &Bound<PyAny>) -> PyResult<BTreeMap<String, Vec<f64>>> {
+    if x.hasattr("collect")? {
+        let collected = x.call_method0("collect")?;
+        return extract_named_columns(&collected);
+    }
+
+    if x.hasattr("to_pydict")? {
+        let columns = x.call_method0("to_pydict")?;
+        return extract_named_columns_from_dict(columns.cast::<PyDict>()?);
+    }
+
+    if let Ok(columns) = x.cast::<PyDict>() {
+        return extract_named_columns_from_dict(columns);
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "Input is not a named-column mapping.",
+    ))
+}
+
+fn extract_named_columns_from_dict(
+    columns: &Bound<'_, PyDict>,
+) -> PyResult<BTreeMap<String, Vec<f64>>> {
+    let scalar_row = columns
+        .iter()
+        .next()
+        .is_some_and(|(_, value)| value.try_iter().is_err());
+    if scalar_row {
+        return columns
+            .iter()
+            .map(|(name, value)| Ok((name.extract::<String>()?, vec![extract_scalar(&value)?])))
+            .collect();
+    }
+
+    columns
+        .iter()
+        .map(|(name, values)| Ok((name.extract::<String>()?, extract_vector(&values)?)))
+        .collect()
 }
 
 fn extract_matrix_from_columns(columns: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
@@ -402,6 +578,32 @@ fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
     }
 }
 
+fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
+    let Some(bins) = bins else {
+        return Ok(NumericBins::Auto);
+    };
+
+    if let Ok(value) = bins.extract::<usize>() {
+        return NumericBins::fixed(value)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()));
+    }
+
+    if let Ok(value) = bins.extract::<String>() {
+        if value == "auto" {
+            return Ok(NumericBins::Auto);
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported bins value '{}'. Expected 'auto' or an integer between 1 and {}.",
+            value, MAX_NUMERIC_BINS
+        )));
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+        "Unsupported bins value. Expected 'auto' or an integer between 1 and {}.",
+        MAX_NUMERIC_BINS
+    )))
+}
+
 fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
@@ -436,7 +638,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, physical_cores=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -446,9 +648,10 @@ fn train(
     tree_type: &str,
     criterion: &str,
     canaries: usize,
+    bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
 ) -> PyResult<PyModel> {
-    let table = build_training_table(x, y, canaries)?;
+    let table = build_training_table(x, y, canaries, parse_bins(bins)?)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
         task: parse_task(task)?,
@@ -476,9 +679,21 @@ impl PyModel {
         py: Python<'py>,
         x: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let table = build_feature_table(x)?;
-        let preds = self.inner.predict_table(&table);
+        let preds = if is_polars_lazyframe(x)? {
+            predict_lazyframe_in_batches(x, |input| predict_input_with_model(&self.inner, input))?
+        } else {
+            predict_input_with_model(&self.inner, build_inference_input(x)?)?
+        };
         Ok(PyArray1::from_vec(py, preds))
+    }
+
+    #[pyo3(signature = (physical_cores=None))]
+    fn optimize_inference(&self, physical_cores: Option<usize>) -> PyResult<PyOptimizedModel> {
+        let inner = self
+            .inner
+            .optimize_inference(physical_cores)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(PyOptimizedModel { inner })
     }
 
     #[getter]
@@ -528,14 +743,103 @@ impl PyModel {
 }
 
 #[pymethods]
+impl PyOptimizedModel {
+    #[classmethod]
+    #[pyo3(signature = (serialized, physical_cores=None))]
+    fn deserialize_compiled(
+        _cls: &Bound<PyType>,
+        serialized: &[u8],
+        physical_cores: Option<usize>,
+    ) -> PyResult<Self> {
+        let inner = CoreOptimizedModel::deserialize_compiled(serialized, physical_cores)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let preds = if is_polars_lazyframe(x)? {
+            predict_lazyframe_in_batches(x, |input| {
+                predict_input_with_optimized_model(&self.inner, input)
+            })?
+        } else {
+            predict_input_with_optimized_model(&self.inner, build_inference_input(x)?)?
+        };
+        Ok(PyArray1::from_vec(py, preds))
+    }
+
+    #[getter]
+    fn algorithm(&self) -> &'static str {
+        algorithm_name(self.inner.algorithm())
+    }
+
+    #[getter]
+    fn task(&self) -> &'static str {
+        task_name(self.inner.task())
+    }
+
+    #[getter]
+    fn criterion(&self) -> &'static str {
+        criterion_name(self.inner.criterion())
+    }
+
+    #[getter]
+    fn tree_type(&self) -> &'static str {
+        tree_type_name(self.inner.tree_type())
+    }
+
+    #[getter]
+    fn mean_(&self) -> Option<f64> {
+        self.inner.mean_value()
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.to_ir_json_pretty()
+        } else {
+            self.inner.to_ir_json()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if pretty {
+            self.inner.serialize_pretty()
+        } else {
+            self.inner.serialize()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    fn serialize_compiled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .serialize_compiled()
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+}
+
+#[pymethods]
 impl PyTable {
     #[new]
-    #[pyo3(signature = (x, y=None, canaries=2))]
-    fn new(x: &Bound<PyAny>, y: Option<&Bound<PyAny>>, canaries: usize) -> PyResult<Self> {
+    #[pyo3(signature = (x, y=None, canaries=2, bins=None))]
+    fn new(
+        x: &Bound<PyAny>,
+        y: Option<&Bound<PyAny>>,
+        canaries: usize,
+        bins: Option<&Bound<PyAny>>,
+    ) -> PyResult<Self> {
+        let bins = parse_bins(bins)?;
         let inner = if let Some(y) = y {
-            build_training_table(x, Some(y), canaries)?
+            build_training_table(x, Some(y), canaries, bins)?
         } else {
-            build_feature_table(x)?
+            build_feature_table(x, bins)?
         };
 
         Ok(Self { inner })
@@ -565,8 +869,9 @@ impl PyTable {
 #[pymodule]
 fn forestfire(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyModel>()?;
+    m.add_class::<PyOptimizedModel>()?;
     m.add_class::<PyTable>()?;
     m.add_function(wrap_pyfunction!(train, m)?)?;
-    m.add("__all__", vec!["Model", "Table", "train"])?;
+    m.add("__all__", vec!["Model", "OptimizedModel", "Table", "train"])?;
     Ok(())
 }

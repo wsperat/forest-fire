@@ -2,11 +2,12 @@
 
 Python bindings for the unified ForestFire training interface.
 
-The Python package is built around four objects:
+The Python package is built around five objects:
 
 - `Table` for validated training data
 - `train(...)` for fitting
 - `Model.predict(...)` for inference
+- `Model.optimize_inference(...)` for optimized inference runtimes
 - `Model.serialize(...)` / `Model.deserialize(...)` for portability
 
 ## Quickstart
@@ -27,10 +28,15 @@ model = train(
     task="classification",
     tree_type="cart",
     criterion="gini",
+    bins="auto",
     physical_cores=4,
 )
 
-preds = model.predict(table)
+preds = model.predict(X)
+fast_model = model.optimize_inference(physical_cores=4)
+fast_preds = fast_model.predict(X)
+compiled = fast_model.serialize_compiled()
+restored_fast = fast_model.deserialize_compiled(compiled, physical_cores=4)
 serialized = model.serialize(pretty=True)
 restored = model.deserialize(serialized)
 ir_json = model.to_ir_json(pretty=True)
@@ -47,6 +53,7 @@ train(
     tree_type="target_mean",
     criterion="auto",
     canaries=2,
+    bins="auto",
     physical_cores=None,
 )
 ```
@@ -101,6 +108,31 @@ Current stopping behavior:
 - standard trees stop at the current node
 - oblivious trees stop the remaining depth growth
 
+#### `bins`
+
+Current values:
+
+- `"auto"`
+- integer `1..=512`
+
+Why it exists:
+
+- split search benefits from bounded numeric cardinality
+- power-of-two bin counts fit the optimized runtimes cleanly
+- different datasets need different bin budgets
+
+Current `auto` behavior:
+
+- per numeric feature, ForestFire picks the highest power of two up to `512`
+- the chosen count is also capped by the number of distinct observed values
+- that keeps every realized bin populated while avoiding a larger-than-useful bin space
+
+Why this is the default:
+
+- tiny datasets do not waste work on hundreds of empty bins
+- larger datasets can still use up to `512` bins
+- the result stays regular enough for fast training and inference kernels
+
 #### `physical_cores`
 
 This controls CPU usage during fitting. The library uses physical cores as the public knob because split scoring is memory-sensitive and that tends to be a more honest resource limit than logical threads.
@@ -110,6 +142,8 @@ This controls CPU usage during fitting. The library uses physical cores as the p
 ### `Table`
 
 `Table` is the public container for validated training data. You can pass raw data directly to `train(...)`, but building a `Table` explicitly is useful when you want preprocessing and validation separated from fitting.
+
+`Table` is intentionally training-oriented. For inference, the intended path is to pass raw arrays, dicts, dataframes, lazyframes, or sparse matrices directly to `predict(...)`.
 
 `Table` chooses between:
 
@@ -128,13 +162,115 @@ This controls CPU usage during fitting. The library uses physical cores as the p
 
 ### `DenseTable`
 
-`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into `512` bins, and binary `0/1` columns are stored as booleans so they are both smaller and cheaper to split on.
+`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into a power-of-two number of bins, using the highest populated count up to `512` by default, and binary `0/1` columns are stored as booleans so they are both smaller and cheaper to split on.
 
 ### `SparseTable`
 
 `SparseTable` is binary-only. Internally it stores, per feature, the row positions where the value is `1`. That keeps memory proportional to the number of positive entries rather than the full dense shape.
 
 SciPy sparse matrices are converted into this representation by reading their shape and nonzero coordinates. They are not densified first.
+
+## Optimized inference
+
+Use:
+
+- `fast_model = model.optimize_inference(physical_cores=None)`
+
+The returned `OptimizedModel` predicts the same values and serializes to the same IR as the original `Model`. It is a prediction-optimized runtime view over the same trained model, not a different model artifact.
+
+### What it changes internally
+
+- CART-style binary trees are lowered into compact fallthrough/jump layouts
+- binary splits pick the next child by fallthrough or one stored jump instead of the original training structure
+- multiway classifier splits use a dense bin lookup table instead of scanning the branch list
+- oblivious trees are evaluated from compact level arrays into a leaf index
+- multi-row inputs are preprocessed together before scoring
+- compiled binary and oblivious runtimes use compact column-major binned matrices so one split can scan many rows at once
+- `polars.LazyFrame` inputs are collected and scored in batches of about `10_000` rows
+- row batches are scored in parallel across the requested physical cores
+- batch columns are stored as `u8` whenever a feature’s effective bins fit in `<= 255`, and as `u16` only when larger bin ids are actually needed
+
+### What that means at the CPU level
+
+#### Prediction-only node layouts
+
+The optimized runtime removes training-only fields from the hot prediction path. That reduces object size, cache pressure, and the amount of general-case logic the predictor loop has to carry around.
+
+#### Compiled CART-style fallthrough layout
+
+For binary trees, the optimized runtime keeps the more common child as the next node in memory and stores only the less common branch as an explicit jump target. That shrinks the hot node representation and reduces branch-heavy traversal logic.
+
+#### Dense lookup for multiway nodes
+
+For multiway classifier nodes, the optimized runtime replaces “scan branches until one matches” with “index the precomputed child table by bin id”. That reduces dependent comparisons and makes access more regular.
+
+#### Compact oblivious-tree loops
+
+Oblivious trees become a sequence of feature-index and threshold arrays plus a final leaf array. Scoring becomes a fixed loop that accumulates a leaf index, which is much more regular than standard pointer-chasing tree traversal.
+
+#### Whole-batch preprocessing and compact column-major batches
+
+Inference inputs are converted into compact bin ids before the optimized traversal runs. For compiled binary and oblivious runtimes, those bins are arranged column-major so the predictor can read one feature across many rows before moving on.
+
+With adaptive binning, the batch layout is tighter than before:
+
+- features with small effective bin domains are packed as `u8`
+- only features that actually exceed `255` need `u16`
+- compact columns reduce memory bandwidth and improve cache density in the hot loops
+
+#### Batch partitioning for compiled binary trees
+
+Compiled CART-style trees operate on row batches, not just one row at a time. At each node, the runtime partitions a row-index buffer into “fallthrough” and “jump” segments, then continues traversal on those contiguous row slices. That keeps feature reads and branch outcomes grouped together.
+
+#### Row-parallel scoring
+
+Rows are independent at prediction time, so the optimized runtime parallelizes across them with a dedicated thread pool. That keeps the model read-only and shared while each worker operates on separate rows.
+
+#### LazyFrame streaming
+
+`polars.LazyFrame` inputs are not collected all at once. They are sliced into batches of roughly `10_000` rows, collected, preprocessed, scored, and appended in order. That keeps memory usage bounded while still benefiting from the optimized batch kernels.
+
+### Where it helps most
+
+- large prediction batches
+- deeper trees
+- compiled binary trees
+- multiway classifiers
+- repeated scoring of the same model
+- large lazyframe predictions
+
+### Where it helps less
+
+- tiny batches
+- `target_mean`
+- very shallow trees
+- workloads dominated by input conversion instead of traversal
+- some single-core oblivious workloads, where layout conversion can still dominate
+
+### Why the IR stays the same
+
+`OptimizedModel` delegates serialization and IR export to the original semantic model. That keeps portability stable: optimization changes execution strategy, not model meaning.
+
+## Benchmarks
+
+Run:
+
+- `task benchmark-inference`
+
+Artifacts are written to:
+
+- [docs/benchmarks/inference_benchmark_results.json](docs/benchmarks/inference_benchmark_results.json)
+- [docs/benchmarks/cart_runtime.png](docs/benchmarks/cart_runtime.png)
+- [docs/benchmarks/cart_speedup.png](docs/benchmarks/cart_speedup.png)
+- [docs/benchmarks/oblivious_runtime.png](docs/benchmarks/oblivious_runtime.png)
+- [docs/benchmarks/oblivious_speedup.png](docs/benchmarks/oblivious_speedup.png)
+
+Current checked-in run:
+
+- compiled CART optimized single-core averages about `1.056x` baseline
+- compiled CART optimized parallel averages about `1.053x` baseline
+- oblivious optimized single-core averages about `0.902x` baseline
+- oblivious optimized parallel averages about `1.009x` baseline
 
 ## Serialization and IR
 
@@ -152,6 +288,25 @@ This round-trips the current model through the JSON IR.
 Use:
 
 - `model.to_ir_json(pretty=False)`
+
+### Compiled optimized artifacts
+
+Optimized runtimes also support a dedicated compiled binary artifact:
+
+- `compiled = optimized.serialize_compiled()`
+- `restored = OptimizedModel.deserialize_compiled(compiled, physical_cores=None)`
+
+This is not a second semantic model format. The split is:
+
+- JSON IR for portability, inspection, and semantic stability
+- compiled artifact for faster reload of the optimized CPU runtime
+
+The compiled artifact stores both:
+
+- the semantic model payload needed to preserve the same IR
+- the already-lowered optimized runtime layout
+
+So reloading a compiled artifact avoids repeating the runtime-lowering step that `optimize_inference(...)` normally performs.
 
 The IR is designed to be inference-complete for the features implemented today. It records:
 

@@ -17,6 +17,7 @@ class Table:
         x: Any,
         y: Any | None = None,
         canaries: int = 2,
+        bins: str | int = "auto",
     ) -> None: ...
 
 def train(
@@ -27,8 +28,27 @@ def train(
     tree_type: str = "target_mean",
     criterion: str = "auto",
     canaries: int = 2,
+    bins: str | int = "auto",
     physical_cores: int | None = None,
 ) -> "Model": ...
+
+class OptimizedModel:
+    algorithm: str
+    task: str
+    criterion: str
+    tree_type: str
+    mean_: float | None
+
+    @classmethod
+    def deserialize_compiled(
+        cls,
+        serialized: bytes,
+        physical_cores: int | None = None,
+    ) -> "OptimizedModel": ...
+    def predict(self, x: Table | Any) -> NDArray[np.float64]: ...
+    def to_ir_json(self, pretty: bool = False) -> str: ...
+    def serialize(self, pretty: bool = False) -> str: ...
+    def serialize_compiled(self) -> bytes: ...
 
 class Model:
     algorithm: str
@@ -39,6 +59,10 @@ class Model:
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model": ...
+    def optimize_inference(
+        self,
+        physical_cores: int | None = None,
+    ) -> "OptimizedModel": ...
     def predict(self, x: Table | Any) -> NDArray[np.float64]: ...
     def to_ir_json(self, pretty: bool = False) -> str: ...
     def serialize(self, pretty: bool = False) -> str: ...

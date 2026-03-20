@@ -1,11 +1,11 @@
-use arrow::array::{BooleanArray, Float64Array, UInt16Array};
+use arrow::array::{BooleanArray, Float64Array, UInt8Array, UInt16Array};
 use rand::seq::SliceRandom;
 use rand::{SeedableRng, rngs::StdRng};
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-const NUMERIC_BINS: usize = 512;
+pub const MAX_NUMERIC_BINS: usize = 512;
 const DEFAULT_CANARIES: usize = 2;
 
 type PreprocessedRows = (Vec<Vec<f64>>, Float64Array, usize, usize);
@@ -14,6 +14,7 @@ pub trait TableAccess: Sync {
     fn n_rows(&self) -> usize;
     fn n_features(&self) -> usize;
     fn canaries(&self) -> usize;
+    fn numeric_bin_cap(&self) -> usize;
     fn binned_feature_count(&self) -> usize;
     fn feature_value(&self, feature_index: usize, row_index: usize) -> f64;
     fn is_binary_feature(&self, index: usize) -> bool;
@@ -37,6 +38,29 @@ pub enum TableKind {
     Sparse,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NumericBins {
+    #[default]
+    Auto,
+    Fixed(usize),
+}
+
+impl NumericBins {
+    pub fn fixed(requested: usize) -> Result<Self, DenseTableError> {
+        if requested == 0 || requested > MAX_NUMERIC_BINS {
+            return Err(DenseTableError::InvalidBinCount { requested });
+        }
+        Ok(Self::Fixed(requested))
+    }
+
+    pub fn cap(self) -> usize {
+        match self {
+            NumericBins::Auto => MAX_NUMERIC_BINS,
+            NumericBins::Fixed(requested) => requested,
+        }
+    }
+}
+
 /// Arrow-backed dense table for tabular regression/classification data.
 #[derive(Debug, Clone)]
 pub struct DenseTable {
@@ -47,6 +71,7 @@ pub struct DenseTable {
     n_rows: usize,
     n_features: usize,
     canaries: usize,
+    numeric_bins: NumericBins,
 }
 
 /// Arrow-backed sparse table specialized for binary feature matrices.
@@ -59,6 +84,7 @@ pub struct SparseTable {
     n_rows: usize,
     n_features: usize,
     canaries: usize,
+    numeric_bins: NumericBins,
 }
 
 #[derive(Debug, Clone)]
@@ -86,7 +112,8 @@ enum FeatureColumn {
 
 #[derive(Debug, Clone)]
 enum BinnedFeatureColumn {
-    Numeric(UInt16Array),
+    NumericU8(UInt8Array),
+    NumericU16(UInt16Array),
     Binary(BooleanArray),
 }
 
@@ -98,7 +125,8 @@ pub enum FeatureColumnRef<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum BinnedFeatureColumnRef<'a> {
-    Numeric(&'a UInt16Array),
+    NumericU8(&'a UInt8Array),
+    NumericU16(&'a UInt16Array),
     Binary(&'a BooleanArray),
 }
 
@@ -127,6 +155,9 @@ pub enum DenseTableError {
     NonBinaryColumn {
         column: usize,
     },
+    InvalidBinCount {
+        requested: usize,
+    },
 }
 
 impl Display for DenseTableError {
@@ -151,6 +182,11 @@ impl Display for DenseTableError {
                 "SparseTable requires binary features, but column {} contains non-binary values.",
                 column
             ),
+            DenseTableError::InvalidBinCount { requested } => write!(
+                f,
+                "Invalid bins value {}. Expected 'auto' or an integer between 1 and {}.",
+                requested, MAX_NUMERIC_BINS
+            ),
         }
     }
 }
@@ -167,9 +203,23 @@ impl DenseTable {
         y: Vec<f64>,
         canaries: usize,
     ) -> Result<Self, DenseTableError> {
+        Self::with_options(x, y, canaries, NumericBins::Auto)
+    }
+
+    pub fn with_options(
+        x: Vec<Vec<f64>>,
+        y: Vec<f64>,
+        canaries: usize,
+        numeric_bins: NumericBins,
+    ) -> Result<Self, DenseTableError> {
         let (columns, target, n_rows, n_features) = preprocess_rows(&x, y)?;
         Ok(Self::from_columns(
-            &columns, target, n_rows, n_features, canaries,
+            &columns,
+            target,
+            n_rows,
+            n_features,
+            canaries,
+            numeric_bins,
         ))
     }
 
@@ -179,6 +229,7 @@ impl DenseTable {
         n_rows: usize,
         n_features: usize,
         canaries: usize,
+        numeric_bins: NumericBins,
     ) -> Self {
         let feature_columns = columns
             .iter()
@@ -187,7 +238,7 @@ impl DenseTable {
 
         let real_binned_columns: Vec<BinnedFeatureColumn> = columns
             .iter()
-            .map(|column| build_binned_feature_column(column))
+            .map(|column| build_binned_feature_column(column, numeric_bins))
             .collect();
         let canary_columns: Vec<(BinnedColumnKind, BinnedFeatureColumn)> = (0..canaries)
             .flat_map(|copy_index| {
@@ -220,6 +271,7 @@ impl DenseTable {
             n_rows,
             n_features,
             canaries,
+            numeric_bins,
         }
     }
 
@@ -236,6 +288,11 @@ impl DenseTable {
     #[inline]
     pub fn canaries(&self) -> usize {
         self.canaries
+    }
+
+    #[inline]
+    pub fn numeric_bin_cap(&self) -> usize {
+        self.numeric_bins.cap()
     }
 
     #[inline]
@@ -267,7 +324,8 @@ impl DenseTable {
     #[inline]
     pub fn binned_feature_column(&self, index: usize) -> BinnedFeatureColumnRef<'_> {
         match &self.binned_feature_columns[index] {
-            BinnedFeatureColumn::Numeric(column) => BinnedFeatureColumnRef::Numeric(column),
+            BinnedFeatureColumn::NumericU8(column) => BinnedFeatureColumnRef::NumericU8(column),
+            BinnedFeatureColumn::NumericU16(column) => BinnedFeatureColumnRef::NumericU16(column),
             BinnedFeatureColumn::Binary(column) => BinnedFeatureColumnRef::Binary(column),
         }
     }
@@ -275,7 +333,8 @@ impl DenseTable {
     #[inline]
     pub fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
         match &self.binned_feature_columns[feature_index] {
-            BinnedFeatureColumn::Numeric(column) => column.value(row_index),
+            BinnedFeatureColumn::NumericU8(column) => u16::from(column.value(row_index)),
+            BinnedFeatureColumn::NumericU16(column) => column.value(row_index),
             BinnedFeatureColumn::Binary(column) => u16::from(u8::from(column.value(row_index))),
         }
     }
@@ -284,7 +343,7 @@ impl DenseTable {
     pub fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
         match &self.binned_feature_columns[feature_index] {
             BinnedFeatureColumn::Binary(column) => Some(column.value(row_index)),
-            BinnedFeatureColumn::Numeric(_) => None,
+            BinnedFeatureColumn::NumericU8(_) | BinnedFeatureColumn::NumericU16(_) => None,
         }
     }
 
@@ -325,10 +384,24 @@ impl SparseTable {
         y: Vec<f64>,
         canaries: usize,
     ) -> Result<Self, DenseTableError> {
+        Self::with_options(x, y, canaries, NumericBins::Auto)
+    }
+
+    pub fn with_options(
+        x: Vec<Vec<f64>>,
+        y: Vec<f64>,
+        canaries: usize,
+        numeric_bins: NumericBins,
+    ) -> Result<Self, DenseTableError> {
         let (columns, target, n_rows, n_features) = preprocess_rows(&x, y)?;
         validate_binary_columns(&columns)?;
         Ok(Self::from_columns(
-            &columns, target, n_rows, n_features, canaries,
+            &columns,
+            target,
+            n_rows,
+            n_features,
+            canaries,
+            numeric_bins,
         ))
     }
 
@@ -338,6 +411,7 @@ impl SparseTable {
         n_rows: usize,
         n_features: usize,
         canaries: usize,
+        numeric_bins: NumericBins,
     ) -> Self {
         let feature_columns: Vec<SparseBinaryColumn> = columns
             .iter()
@@ -375,6 +449,7 @@ impl SparseTable {
             n_rows,
             n_features,
             canaries,
+            numeric_bins,
         }
     }
 
@@ -384,6 +459,24 @@ impl SparseTable {
         columns: Vec<Vec<usize>>,
         y: Vec<f64>,
         canaries: usize,
+    ) -> Result<Self, DenseTableError> {
+        Self::from_sparse_binary_columns_with_options(
+            n_rows,
+            n_features,
+            columns,
+            y,
+            canaries,
+            NumericBins::Auto,
+        )
+    }
+
+    pub fn from_sparse_binary_columns_with_options(
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+        y: Vec<f64>,
+        canaries: usize,
+        numeric_bins: NumericBins,
     ) -> Result<Self, DenseTableError> {
         if n_rows != y.len() {
             return Err(DenseTableError::MismatchedLengths {
@@ -443,6 +536,7 @@ impl SparseTable {
             n_rows,
             n_features,
             canaries,
+            numeric_bins,
         })
     }
 
@@ -459,6 +553,11 @@ impl SparseTable {
     #[inline]
     pub fn canaries(&self) -> usize {
         self.canaries
+    }
+
+    #[inline]
+    pub fn numeric_bin_cap(&self) -> usize {
+        self.numeric_bins.cap()
     }
 
     #[inline]
@@ -524,15 +623,34 @@ impl Table {
         y: Vec<f64>,
         canaries: usize,
     ) -> Result<Self, DenseTableError> {
+        Self::with_options(x, y, canaries, NumericBins::Auto)
+    }
+
+    pub fn with_options(
+        x: Vec<Vec<f64>>,
+        y: Vec<f64>,
+        canaries: usize,
+        numeric_bins: NumericBins,
+    ) -> Result<Self, DenseTableError> {
         let (columns, target, n_rows, n_features) = preprocess_rows(&x, y)?;
 
         if columns.iter().all(|column| is_binary_column(column)) {
             Ok(Self::Sparse(SparseTable::from_columns(
-                &columns, target, n_rows, n_features, canaries,
+                &columns,
+                target,
+                n_rows,
+                n_features,
+                canaries,
+                numeric_bins,
             )))
         } else {
             Ok(Self::Dense(DenseTable::from_columns(
-                &columns, target, n_rows, n_features, canaries,
+                &columns,
+                target,
+                n_rows,
+                n_features,
+                canaries,
+                numeric_bins,
             )))
         }
     }
@@ -570,6 +688,10 @@ impl TableAccess for DenseTable {
 
     fn canaries(&self) -> usize {
         self.canaries()
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        self.numeric_bin_cap()
     }
 
     fn binned_feature_count(&self) -> usize {
@@ -616,6 +738,10 @@ impl TableAccess for SparseTable {
 
     fn canaries(&self) -> usize {
         self.canaries()
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        self.numeric_bin_cap()
     }
 
     fn binned_feature_count(&self) -> usize {
@@ -670,6 +796,13 @@ impl TableAccess for Table {
         match self {
             Table::Dense(table) => table.canaries(),
             Table::Sparse(table) => table.canaries(),
+        }
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        match self {
+            Table::Dense(table) => table.numeric_bin_cap(),
+            Table::Sparse(table) => table.numeric_bin_cap(),
         }
     }
 
@@ -784,11 +917,20 @@ fn build_feature_column(values: &[f64]) -> FeatureColumn {
     }
 }
 
-fn build_binned_feature_column(values: &[f64]) -> BinnedFeatureColumn {
+fn build_binned_feature_column(values: &[f64], numeric_bins: NumericBins) -> BinnedFeatureColumn {
     if is_binary_column(values) {
         BinnedFeatureColumn::Binary(BooleanArray::from(to_binary_values(values)))
     } else {
-        BinnedFeatureColumn::Numeric(UInt16Array::from(bin_numeric_column(values)))
+        let bins = bin_numeric_column(values, numeric_bins);
+        if bins.iter().all(|value| *value <= u16::from(u8::MAX)) {
+            BinnedFeatureColumn::NumericU8(UInt8Array::from(
+                bins.into_iter()
+                    .map(|value| value as u8)
+                    .collect::<Vec<_>>(),
+            ))
+        } else {
+            BinnedFeatureColumn::NumericU16(UInt16Array::from(bins))
+        }
     }
 }
 
@@ -818,7 +960,7 @@ fn sparse_binary_column_from_values(values: &[f64]) -> SparseBinaryColumn {
     }
 }
 
-pub fn numeric_bin_boundaries(values: &[f64]) -> Vec<(u16, f64)> {
+pub fn numeric_bin_boundaries(values: &[f64], numeric_bins: NumericBins) -> Vec<(u16, f64)> {
     if values.is_empty() {
         return Vec::new();
     }
@@ -840,7 +982,7 @@ pub fn numeric_bin_boundaries(values: &[f64]) -> Vec<(u16, f64)> {
         })
         .len();
 
-    let max_bin = (NUMERIC_BINS - 1) as u16;
+    let bin_count = resolved_numeric_bin_count(values.len(), unique_value_count, numeric_bins);
     let mut unique_rank = 0usize;
     let mut start = 0usize;
     let mut boundaries = Vec::new();
@@ -852,10 +994,16 @@ pub fn numeric_bin_boundaries(values: &[f64]) -> Vec<(u16, f64)> {
             .position(|(_row_idx, value)| value.total_cmp(&current_value) != Ordering::Equal)
             .map_or(ranked_values.len(), |offset| start + offset);
 
-        let bin = if unique_value_count == 1 {
-            0
-        } else {
-            ((unique_rank * usize::from(max_bin)) / (unique_value_count - 1)) as u16
+        let bin = match numeric_bins {
+            NumericBins::Auto => ((start * bin_count) / values.len()) as u16,
+            NumericBins::Fixed(_) => {
+                let max_bin = (bin_count - 1) as u16;
+                if unique_value_count == 1 {
+                    0
+                } else {
+                    ((unique_rank * usize::from(max_bin)) / (unique_value_count - 1)) as u16
+                }
+            }
         };
 
         if let Some((last_bin, last_upper_bound)) = boundaries.last_mut() {
@@ -875,7 +1023,7 @@ pub fn numeric_bin_boundaries(values: &[f64]) -> Vec<(u16, f64)> {
     boundaries
 }
 
-fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
+fn bin_numeric_column(values: &[f64], numeric_bins: NumericBins) -> Vec<u16> {
     if values.is_empty() {
         return Vec::new();
     }
@@ -898,7 +1046,7 @@ fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
         .len();
 
     let mut bins = vec![0u16; values.len()];
-    let max_bin = (NUMERIC_BINS - 1) as u16;
+    let bin_count = resolved_numeric_bin_count(values.len(), unique_value_count, numeric_bins);
     let mut unique_rank = 0usize;
     let mut start = 0usize;
 
@@ -909,10 +1057,16 @@ fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
             .position(|(_row_idx, value)| value.total_cmp(&current_value) != Ordering::Equal)
             .map_or(ranked_values.len(), |offset| start + offset);
 
-        let bin = if unique_value_count == 1 {
-            0
-        } else {
-            ((unique_rank * usize::from(max_bin)) / (unique_value_count - 1)) as u16
+        let bin = match numeric_bins {
+            NumericBins::Auto => ((start * bin_count) / values.len()) as u16,
+            NumericBins::Fixed(_) => {
+                let max_bin = (bin_count - 1) as u16;
+                if unique_value_count == 1 {
+                    0
+                } else {
+                    ((unique_rank * usize::from(max_bin)) / (unique_value_count - 1)) as u16
+                }
+            }
         };
 
         for (row_idx, _value) in &ranked_values[start..end] {
@@ -926,18 +1080,51 @@ fn bin_numeric_column(values: &[f64]) -> Vec<u16> {
     bins
 }
 
+fn resolved_numeric_bin_count(
+    value_count: usize,
+    unique_value_count: usize,
+    numeric_bins: NumericBins,
+) -> usize {
+    match numeric_bins {
+        NumericBins::Auto => {
+            let populated_bin_cap = (value_count / 2).max(1);
+            let capped_unique_values = unique_value_count
+                .min(MAX_NUMERIC_BINS)
+                .min(populated_bin_cap)
+                .max(1);
+            highest_power_of_two_at_most(capped_unique_values)
+        }
+        NumericBins::Fixed(requested) => requested.min(unique_value_count).max(1),
+    }
+}
+
+fn highest_power_of_two_at_most(value: usize) -> usize {
+    if value <= 1 {
+        1
+    } else {
+        1usize << (usize::BITS as usize - 1 - value.leading_zeros() as usize)
+    }
+}
+
 fn shuffle_canary_column(
     values: &BinnedFeatureColumn,
     copy_index: usize,
     source_index: usize,
 ) -> BinnedFeatureColumn {
     match values {
-        BinnedFeatureColumn::Numeric(values) => {
+        BinnedFeatureColumn::NumericU8(values) => {
             let mut shuffled = (0..values.len())
                 .map(|idx| values.value(idx))
                 .collect::<Vec<_>>();
             shuffle_values(&mut shuffled, copy_index, source_index);
-            BinnedFeatureColumn::Numeric(UInt16Array::from(shuffled))
+            BinnedFeatureColumn::NumericU8(UInt8Array::from(shuffled))
+        }
+        BinnedFeatureColumn::NumericU16(values) => {
+            let mut shuffled = (0..values.len())
+                .map(|idx| values.value(idx))
+                .collect::<Vec<_>>();
+            shuffle_values(&mut shuffled, copy_index, source_index);
+            BinnedFeatureColumn::NumericU16(UInt16Array::from(shuffled))
         }
         BinnedFeatureColumn::Binary(values) => {
             BinnedFeatureColumn::Binary(shuffle_boolean_array(values, copy_index, source_index))
@@ -989,7 +1176,7 @@ fn shuffle_values<T>(values: &mut [T], copy_index: usize, source_index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn builds_arrow_backed_dense_table() {
@@ -1048,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn bins_numeric_columns_into_512_rank_bins() {
+    fn auto_bins_numeric_columns_into_power_of_two_bins_up_to_512() {
         let x: Vec<Vec<f64>> = (0..1024).map(|value| vec![value as f64]).collect();
         let y: Vec<f64> = vec![1.0; 1024];
 
@@ -1067,6 +1254,67 @@ mod tests {
     }
 
     #[test]
+    fn auto_bins_choose_highest_populated_power_of_two() {
+        let x: Vec<Vec<f64>> = (0..300).map(|value| vec![value as f64]).collect();
+        let y = vec![0.0; 300];
+
+        let table = DenseTable::with_canaries(x, y, 0).unwrap();
+
+        assert_eq!(
+            (0..300)
+                .map(|idx| table.binned_value(0, idx))
+                .collect::<BTreeSet<_>>()
+                .len(),
+            128
+        );
+    }
+
+    #[test]
+    fn auto_bins_require_at_least_two_rows_per_bin() {
+        let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
+        let y = vec![0.0; 8];
+
+        let table = DenseTable::with_canaries(x, y, 0).unwrap();
+        let counts = (0..table.n_rows()).fold(BTreeMap::new(), |mut counts, row_idx| {
+            *counts
+                .entry(table.binned_value(0, row_idx))
+                .or_insert(0usize) += 1;
+            counts
+        });
+
+        assert_eq!(counts.len(), 4);
+        assert!(counts.values().all(|count| *count >= 2));
+    }
+
+    #[test]
+    fn fixed_bins_cap_numeric_columns_to_requested_limit() {
+        let x: Vec<Vec<f64>> = (0..300).map(|value| vec![value as f64]).collect();
+        let y = vec![0.0; 300];
+
+        let table = DenseTable::with_options(x, y, 0, NumericBins::Fixed(64)).unwrap();
+
+        assert_eq!(
+            (0..300)
+                .map(|idx| table.binned_value(0, idx))
+                .collect::<BTreeSet<_>>()
+                .len(),
+            64
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_fixed_bin_count() {
+        assert_eq!(
+            NumericBins::fixed(0).unwrap_err(),
+            DenseTableError::InvalidBinCount { requested: 0 }
+        );
+        assert_eq!(
+            NumericBins::fixed(513).unwrap_err(),
+            DenseTableError::InvalidBinCount { requested: 513 }
+        );
+    }
+
+    #[test]
     fn keeps_equal_values_in_the_same_bin() {
         let table = DenseTable::with_canaries(
             vec![vec![0.0], vec![0.0], vec![1.0], vec![1.0], vec![2.0]],
@@ -1077,7 +1325,8 @@ mod tests {
 
         assert_eq!(table.binned_value(0, 0), table.binned_value(0, 1));
         assert_eq!(table.binned_value(0, 2), table.binned_value(0, 3));
-        assert!(table.binned_value(0, 1) < table.binned_value(0, 2));
+        assert!(table.binned_value(0, 1) <= table.binned_value(0, 2));
+        assert!(table.binned_value(0, 3) < table.binned_value(0, 4));
     }
 
     #[test]
@@ -1098,6 +1347,21 @@ mod tests {
         assert_eq!(table.feature_value(0, 1), 1.0);
         assert_eq!(table.binned_boolean_value(0, 0), Some(false));
         assert_eq!(table.binned_boolean_value(0, 1), Some(true));
+    }
+
+    #[test]
+    fn stores_small_auto_binned_numeric_columns_as_u8() {
+        let table = DenseTable::with_canaries(
+            (0..8).map(|value| vec![value as f64]).collect(),
+            vec![0.0; 8],
+            0,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            table.binned_feature_column(0),
+            BinnedFeatureColumnRef::NumericU8(_)
+        ));
     }
 
     #[test]
@@ -1207,9 +1471,9 @@ mod tests {
 
     #[test]
     fn numeric_bin_boundaries_capture_training_bin_upper_bounds() {
-        let boundaries = numeric_bin_boundaries(&[1.0, 1.0, 2.0, 10.0]);
+        let boundaries = numeric_bin_boundaries(&[1.0, 1.0, 2.0, 10.0], NumericBins::Auto);
 
-        assert_eq!(boundaries, vec![(0, 1.0), (255, 2.0), (511, 10.0)]);
+        assert_eq!(boundaries, vec![(0, 1.0), (1, 10.0)]);
     }
 
     fn binned_snapshot(table: &DenseTable) -> Vec<u16> {

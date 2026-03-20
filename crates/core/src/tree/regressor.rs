@@ -296,6 +296,10 @@ impl DecisionTreeRegressor {
         self.num_features
     }
 
+    pub(crate) fn structure(&self) -> &RegressionTreeStructure {
+        &self.structure
+    }
+
     pub(crate) fn feature_preprocessing(&self) -> &[FeaturePreprocessing] {
         &self.feature_preprocessing
     }
@@ -883,6 +887,9 @@ fn mean(rows: &[usize], targets: &[f64]) -> f64 {
 }
 
 fn median(rows: &[usize], targets: &[f64]) -> f64 {
+    if rows.is_empty() {
+        return 0.0;
+    }
     let mut values: Vec<f64> = rows.iter().map(|row_idx| targets[*row_idx]).collect();
     values.sort_by(|left, right| left.total_cmp(right));
 
@@ -1024,10 +1031,10 @@ fn push_node(nodes: &mut Vec<RegressionNode>, node: RegressionNode) -> usize {
 mod tests {
     use super::*;
     use crate::{FeaturePreprocessing, Model, NumericBinBoundary};
-    use forestfire_data::DenseTable;
+    use forestfire_data::{DenseTable, NumericBins};
 
     fn quadratic_table() -> DenseTable {
-        DenseTable::with_canaries(
+        DenseTable::with_options(
             vec![
                 vec![0.0],
                 vec![1.0],
@@ -1035,28 +1042,26 @@ mod tests {
                 vec![3.0],
                 vec![4.0],
                 vec![5.0],
+                vec![6.0],
+                vec![7.0],
             ],
-            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0],
+            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0],
             0,
+            NumericBins::Fixed(512),
         )
         .unwrap()
     }
 
     fn canary_target_table() -> DenseTable {
         let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
-        let probe = DenseTable::with_canaries(x.clone(), vec![0.0; 8], 1).unwrap();
+        let probe =
+            DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
         let canary_index = probe.n_features();
         let y = (0..probe.n_rows())
-            .map(|row_idx| {
-                if probe.binned_value(canary_index, row_idx) > 255 {
-                    100.0
-                } else {
-                    -100.0
-                }
-            })
+            .map(|row_idx| probe.binned_value(canary_index, row_idx) as f64)
             .collect();
 
-        DenseTable::with_canaries(x, y, 1).unwrap()
+        DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
     }
 
     #[test]

@@ -37,6 +37,7 @@ impl Regressor for forestfire_core::DecisionTreeRegressor {
 mod tests {
     use super::*;
     use forestfire_core::{Model, TargetMeanTree, TrainConfig, TreeType, train};
+    use forestfire_data::NumericBins;
 
     #[test]
     fn trait_predictions_match_inherent_methods() {
@@ -68,7 +69,7 @@ mod tests {
 
     #[test]
     fn regression_tree_trait_predictions_match_inherent_methods() {
-        let table = forestfire_data::DenseTable::with_canaries(
+        let table = forestfire_data::DenseTable::with_options(
             vec![
                 vec![0.0],
                 vec![1.0],
@@ -76,9 +77,12 @@ mod tests {
                 vec![3.0],
                 vec![4.0],
                 vec![5.0],
+                vec![6.0],
+                vec![7.0],
             ],
-            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0],
+            vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0],
             0,
+            NumericBins::Fixed(64),
         )
         .unwrap();
 
@@ -98,6 +102,6 @@ mod tests {
         let via_inherent = m.predict_table(&table);
 
         assert_eq!(via_trait, via_inherent);
-        assert_eq!(via_trait, vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0]);
+        assert_eq!(via_trait, vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0]);
     }
 }

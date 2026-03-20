@@ -1,9 +1,17 @@
-use forestfire_data::{TableAccess, numeric_bin_boundaries};
+use forestfire_data::{
+    BinnedColumnKind, MAX_NUMERIC_BINS, NumericBins, TableAccess, numeric_bin_boundaries,
+};
+#[cfg(feature = "polars")]
+use polars::prelude::{Column, DataFrame, DataType, IdxSize, LazyFrame};
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
+use wide::{u16x8, u32x8};
 
 pub mod ir;
 pub mod tree;
@@ -27,6 +35,17 @@ pub use tree::regressor::RegressionTreeError;
 pub use tree::regressor::RegressionTreeOptions;
 pub use tree::regressor::train_cart_regressor;
 pub use tree::regressor::train_oblivious_regressor;
+
+const PARALLEL_INFERENCE_ROW_THRESHOLD: usize = 256;
+const PARALLEL_INFERENCE_CHUNK_ROWS: usize = 256;
+const STANDARD_BATCH_INFERENCE_CHUNK_ROWS: usize = 4096;
+const OBLIVIOUS_SIMD_LANES: usize = 8;
+#[cfg(feature = "polars")]
+const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
+const COMPILED_ARTIFACT_MAGIC: [u8; 4] = *b"FFCA";
+const COMPILED_ARTIFACT_VERSION: u16 = 1;
+const COMPILED_ARTIFACT_BACKEND_CPU: u16 = 1;
+const COMPILED_ARTIFACT_HEADER_LEN: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
@@ -156,6 +175,174 @@ impl Display for TrainError {
 
 impl Error for TrainError {}
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PredictError {
+    RaggedRows {
+        row: usize,
+        expected: usize,
+        actual: usize,
+    },
+    FeatureCountMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    ColumnLengthMismatch {
+        feature: String,
+        expected: usize,
+        actual: usize,
+    },
+    MissingFeature(String),
+    UnexpectedFeature(String),
+    InvalidBinaryValue {
+        feature_index: usize,
+        row_index: usize,
+        value: f64,
+    },
+    NullValue {
+        feature: String,
+        row_index: usize,
+    },
+    UnsupportedFeatureType {
+        feature: String,
+        dtype: String,
+    },
+    Polars(String),
+}
+
+impl Display for PredictError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PredictError::RaggedRows {
+                row,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "Ragged inference row at index {}: expected {} columns, found {}.",
+                row, expected, actual
+            ),
+            PredictError::FeatureCountMismatch { expected, actual } => write!(
+                f,
+                "Inference input has {} features, but the model expects {}.",
+                actual, expected
+            ),
+            PredictError::ColumnLengthMismatch {
+                feature,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "Feature '{}' has {} values, expected {}.",
+                feature, actual, expected
+            ),
+            PredictError::MissingFeature(feature) => {
+                write!(f, "Missing required feature '{}'.", feature)
+            }
+            PredictError::UnexpectedFeature(feature) => {
+                write!(f, "Unexpected feature '{}'.", feature)
+            }
+            PredictError::InvalidBinaryValue {
+                feature_index,
+                row_index,
+                value,
+            } => write!(
+                f,
+                "Feature {} at row {} must be binary for inference, found {}.",
+                feature_index, row_index, value
+            ),
+            PredictError::NullValue { feature, row_index } => write!(
+                f,
+                "Feature '{}' contains a null value at row {}.",
+                feature, row_index
+            ),
+            PredictError::UnsupportedFeatureType { feature, dtype } => write!(
+                f,
+                "Feature '{}' has unsupported dtype '{}'.",
+                feature, dtype
+            ),
+            PredictError::Polars(message) => write!(f, "Polars inference failed: {}.", message),
+        }
+    }
+}
+
+impl Error for PredictError {}
+
+#[cfg(feature = "polars")]
+impl From<polars::error::PolarsError> for PredictError {
+    fn from(value: polars::error::PolarsError) -> Self {
+        PredictError::Polars(value.to_string())
+    }
+}
+
+#[derive(Debug)]
+pub enum OptimizeError {
+    InvalidPhysicalCoreCount { requested: usize, available: usize },
+    ThreadPoolBuildFailed(String),
+}
+
+impl Display for OptimizeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OptimizeError::InvalidPhysicalCoreCount {
+                requested,
+                available,
+            } => write!(
+                f,
+                "Requested {} physical cores, but the available physical core count is {}.",
+                requested, available
+            ),
+            OptimizeError::ThreadPoolBuildFailed(message) => {
+                write!(f, "Failed to build inference thread pool: {}.", message)
+            }
+        }
+    }
+}
+
+impl Error for OptimizeError {}
+
+#[derive(Debug)]
+pub enum CompiledArtifactError {
+    ArtifactTooShort { actual: usize, minimum: usize },
+    InvalidMagic([u8; 4]),
+    UnsupportedVersion(u16),
+    UnsupportedBackend(u16),
+    Encode(String),
+    Decode(String),
+    InvalidSemanticModel(IrError),
+    InvalidRuntime(OptimizeError),
+}
+
+impl Display for CompiledArtifactError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompiledArtifactError::ArtifactTooShort { actual, minimum } => write!(
+                f,
+                "Compiled artifact is too short: expected at least {} bytes, found {}.",
+                minimum, actual
+            ),
+            CompiledArtifactError::InvalidMagic(magic) => {
+                write!(f, "Compiled artifact has invalid magic bytes: {:?}.", magic)
+            }
+            CompiledArtifactError::UnsupportedVersion(version) => {
+                write!(f, "Unsupported compiled artifact version: {}.", version)
+            }
+            CompiledArtifactError::UnsupportedBackend(backend) => {
+                write!(f, "Unsupported compiled artifact backend: {}.", backend)
+            }
+            CompiledArtifactError::Encode(message) => {
+                write!(f, "Failed to encode compiled artifact: {}.", message)
+            }
+            CompiledArtifactError::Decode(message) => {
+                write!(f, "Failed to decode compiled artifact: {}.", message)
+            }
+            CompiledArtifactError::InvalidSemanticModel(err) => err.fmt(f),
+            CompiledArtifactError::InvalidRuntime(err) => err.fmt(f),
+        }
+    }
+}
+
+impl Error for CompiledArtifactError {}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Parallelism {
     thread_count: usize,
@@ -181,14 +368,1519 @@ pub(crate) fn capture_feature_preprocessing(table: &dyn TableAccess) -> Vec<Feat
                     .map(|row_index| table.feature_value(feature_index, row_index))
                     .collect::<Vec<_>>();
                 FeaturePreprocessing::Numeric {
-                    bin_boundaries: numeric_bin_boundaries(&values)
-                        .into_iter()
-                        .map(|(bin, upper_bound)| NumericBinBoundary { bin, upper_bound })
-                        .collect(),
+                    bin_boundaries: numeric_bin_boundaries(
+                        &values,
+                        NumericBins::Fixed(table.numeric_bin_cap()),
+                    )
+                    .into_iter()
+                    .map(|(bin, upper_bound)| NumericBinBoundary { bin, upper_bound })
+                    .collect(),
                 }
             }
         })
         .collect()
+}
+
+#[derive(Debug, Clone)]
+enum InferenceFeatureColumn {
+    Numeric(Vec<f64>),
+    Binary(Vec<bool>),
+}
+
+#[derive(Debug, Clone)]
+enum InferenceBinnedColumn {
+    Numeric(Vec<u16>),
+    Binary(Vec<bool>),
+}
+
+#[derive(Debug, Clone)]
+enum CompactBinnedColumn {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+}
+
+impl CompactBinnedColumn {
+    #[inline(always)]
+    fn value_at(&self, row_index: usize) -> u16 {
+        match self {
+            CompactBinnedColumn::U8(values) => u16::from(values[row_index]),
+            CompactBinnedColumn::U16(values) => values[row_index],
+        }
+    }
+
+    #[inline(always)]
+    fn slice_u8(&self, start: usize, len: usize) -> Option<&[u8]> {
+        match self {
+            CompactBinnedColumn::U8(values) => Some(&values[start..start + len]),
+            CompactBinnedColumn::U16(_) => None,
+        }
+    }
+
+    #[inline(always)]
+    fn slice_u16(&self, start: usize, len: usize) -> Option<&[u16]> {
+        match self {
+            CompactBinnedColumn::U8(_) => None,
+            CompactBinnedColumn::U16(values) => Some(&values[start..start + len]),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InferenceTable {
+    feature_columns: Vec<InferenceFeatureColumn>,
+    binned_feature_columns: Vec<InferenceBinnedColumn>,
+    n_rows: usize,
+}
+
+impl InferenceTable {
+    pub(crate) fn from_rows(
+        rows: Vec<Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        let expected = preprocessing.len();
+        if let Some((row_index, actual)) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(row_index, row)| (row.len() != expected).then_some((row_index, row.len())))
+        {
+            return Err(PredictError::RaggedRows {
+                row: row_index,
+                expected,
+                actual,
+            });
+        }
+
+        let columns = (0..expected)
+            .map(|feature_index| {
+                rows.iter()
+                    .map(|row| row[feature_index])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        Self::from_columns(columns, preprocessing)
+    }
+
+    pub(crate) fn from_named_columns(
+        columns: BTreeMap<String, Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        let expected = preprocessing.len();
+        if columns.len() != expected {
+            for feature_index in 0..expected {
+                let name = format!("f{}", feature_index);
+                if !columns.contains_key(&name) {
+                    return Err(PredictError::MissingFeature(name));
+                }
+            }
+            if let Some(unexpected) = columns.keys().find(|name| {
+                name.strip_prefix('f')
+                    .and_then(|idx| idx.parse::<usize>().ok())
+                    .is_none_or(|idx| idx >= expected)
+            }) {
+                return Err(PredictError::UnexpectedFeature(unexpected.clone()));
+            }
+        }
+
+        let n_rows = columns.values().next().map_or(0, Vec::len);
+        let ordered = (0..expected)
+            .map(|feature_index| {
+                let feature_name = format!("f{}", feature_index);
+                let values = columns
+                    .get(&feature_name)
+                    .ok_or_else(|| PredictError::MissingFeature(feature_name.clone()))?;
+                if values.len() != n_rows {
+                    return Err(PredictError::ColumnLengthMismatch {
+                        feature: feature_name,
+                        expected: n_rows,
+                        actual: values.len(),
+                    });
+                }
+                Ok(values.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Self::from_columns(ordered, preprocessing)
+    }
+
+    pub(crate) fn from_sparse_binary_columns(
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        if n_features != preprocessing.len() {
+            return Err(PredictError::FeatureCountMismatch {
+                expected: preprocessing.len(),
+                actual: n_features,
+            });
+        }
+
+        let mut dense_columns = Vec::with_capacity(n_features);
+        for (feature_index, row_indices) in columns.into_iter().enumerate() {
+            match preprocessing.get(feature_index) {
+                Some(FeaturePreprocessing::Binary) => {
+                    let mut values = vec![false; n_rows];
+                    for row_index in row_indices {
+                        if row_index >= n_rows {
+                            return Err(PredictError::ColumnLengthMismatch {
+                                feature: format!("f{}", feature_index),
+                                expected: n_rows,
+                                actual: row_index + 1,
+                            });
+                        }
+                        values[row_index] = true;
+                    }
+                    dense_columns.push(values.into_iter().map(f64::from).collect());
+                }
+                Some(FeaturePreprocessing::Numeric { .. }) => {
+                    return Err(PredictError::InvalidBinaryValue {
+                        feature_index,
+                        row_index: 0,
+                        value: 1.0,
+                    });
+                }
+                None => unreachable!("validated feature count"),
+            }
+        }
+
+        Self::from_columns(dense_columns, preprocessing)
+    }
+
+    fn from_columns(
+        columns: Vec<Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+    ) -> Result<Self, PredictError> {
+        if columns.len() != preprocessing.len() {
+            return Err(PredictError::FeatureCountMismatch {
+                expected: preprocessing.len(),
+                actual: columns.len(),
+            });
+        }
+
+        let n_rows = columns.first().map_or(0, Vec::len);
+        let mut feature_columns = Vec::with_capacity(columns.len());
+        let mut binned_feature_columns = Vec::with_capacity(columns.len());
+
+        for (feature_index, (column, feature_preprocessing)) in
+            columns.into_iter().zip(preprocessing.iter()).enumerate()
+        {
+            if column.len() != n_rows {
+                return Err(PredictError::ColumnLengthMismatch {
+                    feature: format!("f{}", feature_index),
+                    expected: n_rows,
+                    actual: column.len(),
+                });
+            }
+            match feature_preprocessing {
+                FeaturePreprocessing::Binary => {
+                    let values = column
+                        .into_iter()
+                        .enumerate()
+                        .map(|(row_index, value)| match value {
+                            v if v.total_cmp(&0.0).is_eq() => Ok(false),
+                            v if v.total_cmp(&1.0).is_eq() => Ok(true),
+                            v => Err(PredictError::InvalidBinaryValue {
+                                feature_index,
+                                row_index,
+                                value: v,
+                            }),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    feature_columns.push(InferenceFeatureColumn::Binary(values.clone()));
+                    binned_feature_columns.push(InferenceBinnedColumn::Binary(values));
+                }
+                FeaturePreprocessing::Numeric { bin_boundaries } => {
+                    let bins = column
+                        .iter()
+                        .map(|value| infer_numeric_bin(*value, bin_boundaries))
+                        .collect();
+                    feature_columns.push(InferenceFeatureColumn::Numeric(column));
+                    binned_feature_columns.push(InferenceBinnedColumn::Numeric(bins));
+                }
+            }
+        }
+
+        Ok(Self {
+            feature_columns,
+            binned_feature_columns,
+            n_rows,
+        })
+    }
+
+    pub(crate) fn to_column_major_binned_matrix(&self) -> ColumnMajorBinnedMatrix {
+        let n_features = self.feature_columns.len();
+        let columns = (0..n_features)
+            .map(
+                |feature_index| match &self.binned_feature_columns[feature_index] {
+                    InferenceBinnedColumn::Numeric(values) => compact_binned_column(values),
+                    InferenceBinnedColumn::Binary(values) => CompactBinnedColumn::U8(
+                        values.iter().map(|value| u8::from(*value)).collect(),
+                    ),
+                },
+            )
+            .collect();
+
+        ColumnMajorBinnedMatrix {
+            n_rows: self.n_rows,
+            columns,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ColumnMajorBinnedMatrix {
+    n_rows: usize,
+    columns: Vec<CompactBinnedColumn>,
+}
+
+impl ColumnMajorBinnedMatrix {
+    fn from_table_access(table: &dyn TableAccess) -> Self {
+        let columns = (0..table.n_features())
+            .map(|feature_index| {
+                if table.is_binary_binned_feature(feature_index) {
+                    CompactBinnedColumn::U8(
+                        (0..table.n_rows())
+                            .map(|row_index| {
+                                u8::from(
+                                    table
+                                        .binned_boolean_value(feature_index, row_index)
+                                        .unwrap_or(false),
+                                )
+                            })
+                            .collect(),
+                    )
+                } else {
+                    compact_binned_column(
+                        &(0..table.n_rows())
+                            .map(|row_index| table.binned_value(feature_index, row_index))
+                            .collect::<Vec<_>>(),
+                    )
+                }
+            })
+            .collect();
+
+        Self {
+            n_rows: table.n_rows(),
+            columns,
+        }
+    }
+
+    #[inline(always)]
+    fn column(&self, feature_index: usize) -> &CompactBinnedColumn {
+        &self.columns[feature_index]
+    }
+}
+
+fn infer_numeric_bin(value: f64, boundaries: &[NumericBinBoundary]) -> u16 {
+    boundaries
+        .iter()
+        .find(|boundary| value <= boundary.upper_bound)
+        .map_or_else(
+            || boundaries.last().map_or(0, |boundary| boundary.bin),
+            |boundary| boundary.bin,
+        )
+}
+
+fn compact_binned_column(values: &[u16]) -> CompactBinnedColumn {
+    if values.iter().all(|value| *value <= u16::from(u8::MAX)) {
+        CompactBinnedColumn::U8(values.iter().map(|value| *value as u8).collect())
+    } else {
+        CompactBinnedColumn::U16(values.to_vec())
+    }
+}
+
+impl TableAccess for InferenceTable {
+    fn n_rows(&self) -> usize {
+        self.n_rows
+    }
+
+    fn n_features(&self) -> usize {
+        self.feature_columns.len()
+    }
+
+    fn canaries(&self) -> usize {
+        0
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        MAX_NUMERIC_BINS
+    }
+
+    fn binned_feature_count(&self) -> usize {
+        self.binned_feature_columns.len()
+    }
+
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        match &self.feature_columns[feature_index] {
+            InferenceFeatureColumn::Numeric(values) => values[row_index],
+            InferenceFeatureColumn::Binary(values) => f64::from(u8::from(values[row_index])),
+        }
+    }
+
+    fn is_binary_feature(&self, index: usize) -> bool {
+        matches!(
+            self.feature_columns[index],
+            InferenceFeatureColumn::Binary(_)
+        )
+    }
+
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        match &self.binned_feature_columns[feature_index] {
+            InferenceBinnedColumn::Numeric(values) => values[row_index],
+            InferenceBinnedColumn::Binary(values) => u16::from(values[row_index]),
+        }
+    }
+
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        match &self.binned_feature_columns[feature_index] {
+            InferenceBinnedColumn::Numeric(_) => None,
+            InferenceBinnedColumn::Binary(values) => Some(values[row_index]),
+        }
+    }
+
+    fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        BinnedColumnKind::Real {
+            source_index: index,
+        }
+    }
+
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        matches!(
+            self.binned_feature_columns[index],
+            InferenceBinnedColumn::Binary(_)
+        )
+    }
+
+    fn target_value(&self, _row_index: usize) -> f64 {
+        0.0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum OptimizedRuntime {
+    TargetMean {
+        value: f64,
+    },
+    BinaryClassifier {
+        nodes: Vec<OptimizedBinaryClassifierNode>,
+    },
+    StandardClassifier {
+        nodes: Vec<OptimizedClassifierNode>,
+        root: usize,
+    },
+    ObliviousClassifier {
+        feature_indices: Vec<usize>,
+        threshold_bins: Vec<u16>,
+        leaf_values: Vec<f64>,
+    },
+    BinaryRegressor {
+        nodes: Vec<OptimizedBinaryRegressorNode>,
+    },
+    ObliviousRegressor {
+        feature_indices: Vec<usize>,
+        threshold_bins: Vec<u16>,
+        leaf_values: Vec<f64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum OptimizedClassifierNode {
+    Leaf(f64),
+    Binary {
+        feature_index: usize,
+        threshold_bin: u16,
+        children: [usize; 2],
+    },
+    Multiway {
+        feature_index: usize,
+        child_lookup: Vec<usize>,
+        max_bin_index: usize,
+        fallback_value: f64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum OptimizedBinaryClassifierNode {
+    Leaf(f64),
+    Branch {
+        feature_index: usize,
+        threshold_bin: u16,
+        jump_index: usize,
+        jump_if_greater: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum OptimizedBinaryRegressorNode {
+    Leaf(f64),
+    Branch {
+        feature_index: usize,
+        threshold_bin: u16,
+        jump_index: usize,
+        jump_if_greater: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct InferenceExecutor {
+    thread_count: usize,
+    pool: Option<Arc<rayon::ThreadPool>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CompiledArtifactPayload {
+    semantic_ir: ModelPackageIr,
+    runtime: OptimizedRuntime,
+}
+
+impl InferenceExecutor {
+    fn new(thread_count: usize) -> Result<Self, OptimizeError> {
+        let pool = if thread_count > 1 {
+            Some(Arc::new(
+                ThreadPoolBuilder::new()
+                    .num_threads(thread_count)
+                    .build()
+                    .map_err(|err| OptimizeError::ThreadPoolBuildFailed(err.to_string()))?,
+            ))
+        } else {
+            None
+        };
+
+        Ok(Self { thread_count, pool })
+    }
+
+    fn predict_rows<F>(&self, n_rows: usize, predict_row: F) -> Vec<f64>
+    where
+        F: Fn(usize) -> f64 + Sync + Send,
+    {
+        if self.thread_count == 1 || n_rows < PARALLEL_INFERENCE_ROW_THRESHOLD {
+            return (0..n_rows).map(predict_row).collect();
+        }
+
+        self.pool
+            .as_ref()
+            .expect("thread pool exists when parallel inference is enabled")
+            .install(|| (0..n_rows).into_par_iter().map(predict_row).collect())
+    }
+
+    fn fill_chunks<F>(&self, outputs: &mut [f64], chunk_rows: usize, fill_chunk: F)
+    where
+        F: Fn(usize, &mut [f64]) + Sync + Send,
+    {
+        if self.thread_count == 1 || outputs.len() < PARALLEL_INFERENCE_ROW_THRESHOLD {
+            for (chunk_index, chunk) in outputs.chunks_mut(chunk_rows).enumerate() {
+                fill_chunk(chunk_index * chunk_rows, chunk);
+            }
+            return;
+        }
+
+        self.pool
+            .as_ref()
+            .expect("thread pool exists when parallel inference is enabled")
+            .install(|| {
+                outputs
+                    .par_chunks_mut(chunk_rows)
+                    .enumerate()
+                    .for_each(|(chunk_index, chunk)| fill_chunk(chunk_index * chunk_rows, chunk));
+            });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OptimizedModel {
+    source_model: Model,
+    runtime: OptimizedRuntime,
+    executor: InferenceExecutor,
+}
+
+impl OptimizedModel {
+    fn new(source_model: Model, physical_cores: Option<usize>) -> Result<Self, OptimizeError> {
+        let thread_count = resolve_inference_thread_count(physical_cores)?;
+        let runtime = OptimizedRuntime::from_model(&source_model);
+        let executor = InferenceExecutor::new(thread_count)?;
+
+        Ok(Self {
+            source_model,
+            runtime,
+            executor,
+        })
+    }
+
+    pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
+            let matrix = ColumnMajorBinnedMatrix::from_table_access(table);
+            return self.predict_column_major_binned_matrix(&matrix);
+        }
+
+        self.executor.predict_rows(table.n_rows(), |row_index| {
+            self.runtime.predict_table_row(table, row_index)
+        })
+    }
+
+    pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
+            let matrix = table.to_column_major_binned_matrix();
+            Ok(self.predict_column_major_binned_matrix(&matrix))
+        } else {
+            Ok(self.predict_table(&table))
+        }
+    }
+
+    pub fn predict_named_columns(
+        &self,
+        columns: BTreeMap<String, Vec<f64>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table =
+            InferenceTable::from_named_columns(columns, self.source_model.feature_preprocessing())?;
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
+            let matrix = table.to_column_major_binned_matrix();
+            Ok(self.predict_column_major_binned_matrix(&matrix))
+        } else {
+            Ok(self.predict_table(&table))
+        }
+    }
+
+    pub fn predict_sparse_binary_columns(
+        &self,
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_sparse_binary_columns(
+            n_rows,
+            n_features,
+            columns,
+            self.source_model.feature_preprocessing(),
+        )?;
+        if self.runtime.should_use_batch_matrix(table.n_rows()) {
+            let matrix = table.to_column_major_binned_matrix();
+            Ok(self.predict_column_major_binned_matrix(&matrix))
+        } else {
+            Ok(self.predict_table(&table))
+        }
+    }
+
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_dataframe(&self, df: &DataFrame) -> Result<Vec<f64>, PredictError> {
+        let columns = polars_named_columns(df)?;
+        self.predict_named_columns(columns)
+    }
+
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_lazyframe(&self, lf: &LazyFrame) -> Result<Vec<f64>, PredictError> {
+        let mut predictions = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let batch = lf
+                .clone()
+                .slice(offset, LAZYFRAME_PREDICT_BATCH_ROWS as IdxSize)
+                .collect()?;
+            let height = batch.height();
+            if height == 0 {
+                break;
+            }
+            predictions.extend(self.predict_polars_dataframe(&batch)?);
+            if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+                break;
+            }
+            offset += height as i64;
+        }
+        Ok(predictions)
+    }
+
+    pub fn algorithm(&self) -> TrainAlgorithm {
+        self.source_model.algorithm()
+    }
+
+    pub fn task(&self) -> Task {
+        self.source_model.task()
+    }
+
+    pub fn criterion(&self) -> Criterion {
+        self.source_model.criterion()
+    }
+
+    pub fn tree_type(&self) -> TreeType {
+        self.source_model.tree_type()
+    }
+
+    pub fn mean_value(&self) -> Option<f64> {
+        self.source_model.mean_value()
+    }
+
+    pub fn to_ir(&self) -> ModelPackageIr {
+        self.source_model.to_ir()
+    }
+
+    pub fn to_ir_json(&self) -> Result<String, serde_json::Error> {
+        self.source_model.to_ir_json()
+    }
+
+    pub fn to_ir_json_pretty(&self) -> Result<String, serde_json::Error> {
+        self.source_model.to_ir_json_pretty()
+    }
+
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        self.source_model.serialize()
+    }
+
+    pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
+        self.source_model.serialize_pretty()
+    }
+
+    pub fn serialize_compiled(&self) -> Result<Vec<u8>, CompiledArtifactError> {
+        let payload = CompiledArtifactPayload {
+            semantic_ir: self.source_model.to_ir(),
+            runtime: self.runtime.clone(),
+        };
+        let mut payload_bytes = Vec::new();
+        ciborium::into_writer(&payload, &mut payload_bytes)
+            .map_err(|err| CompiledArtifactError::Encode(err.to_string()))?;
+        let mut bytes = Vec::with_capacity(COMPILED_ARTIFACT_HEADER_LEN + payload_bytes.len());
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_MAGIC);
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_BACKEND_CPU.to_le_bytes());
+        bytes.extend_from_slice(&payload_bytes);
+        Ok(bytes)
+    }
+
+    pub fn deserialize_compiled(
+        serialized: &[u8],
+        physical_cores: Option<usize>,
+    ) -> Result<Self, CompiledArtifactError> {
+        if serialized.len() < COMPILED_ARTIFACT_HEADER_LEN {
+            return Err(CompiledArtifactError::ArtifactTooShort {
+                actual: serialized.len(),
+                minimum: COMPILED_ARTIFACT_HEADER_LEN,
+            });
+        }
+
+        let magic = [serialized[0], serialized[1], serialized[2], serialized[3]];
+        if magic != COMPILED_ARTIFACT_MAGIC {
+            return Err(CompiledArtifactError::InvalidMagic(magic));
+        }
+
+        let version = u16::from_le_bytes([serialized[4], serialized[5]]);
+        if version != COMPILED_ARTIFACT_VERSION {
+            return Err(CompiledArtifactError::UnsupportedVersion(version));
+        }
+
+        let backend = u16::from_le_bytes([serialized[6], serialized[7]]);
+        if backend != COMPILED_ARTIFACT_BACKEND_CPU {
+            return Err(CompiledArtifactError::UnsupportedBackend(backend));
+        }
+
+        let payload: CompiledArtifactPayload = ciborium::from_reader(std::io::Cursor::new(
+            &serialized[COMPILED_ARTIFACT_HEADER_LEN..],
+        ))
+        .map_err(|err| CompiledArtifactError::Decode(err.to_string()))?;
+        let source_model = ir::model_from_ir(payload.semantic_ir)
+            .map_err(CompiledArtifactError::InvalidSemanticModel)?;
+        let thread_count = resolve_inference_thread_count(physical_cores)
+            .map_err(CompiledArtifactError::InvalidRuntime)?;
+        let executor =
+            InferenceExecutor::new(thread_count).map_err(CompiledArtifactError::InvalidRuntime)?;
+
+        Ok(Self {
+            source_model,
+            runtime: payload.runtime,
+            executor,
+        })
+    }
+
+    fn predict_column_major_binned_matrix(&self, matrix: &ColumnMajorBinnedMatrix) -> Vec<f64> {
+        self.runtime
+            .predict_column_major_matrix(matrix, &self.executor)
+    }
+}
+
+impl OptimizedRuntime {
+    fn supports_batch_matrix(&self) -> bool {
+        matches!(
+            self,
+            OptimizedRuntime::BinaryClassifier { .. }
+                | OptimizedRuntime::BinaryRegressor { .. }
+                | OptimizedRuntime::ObliviousClassifier { .. }
+                | OptimizedRuntime::ObliviousRegressor { .. }
+        )
+    }
+
+    fn should_use_batch_matrix(&self, n_rows: usize) -> bool {
+        n_rows > 1 && self.supports_batch_matrix()
+    }
+
+    fn from_model(model: &Model) -> Self {
+        match model {
+            Model::TargetMean(target_mean) => Self::TargetMean {
+                value: target_mean.mean,
+            },
+            Model::DecisionTreeClassifier(classifier) => Self::from_classifier(classifier),
+            Model::DecisionTreeRegressor(regressor) => Self::from_regressor(regressor),
+        }
+    }
+
+    fn from_classifier(classifier: &DecisionTreeClassifier) -> Self {
+        match classifier.structure() {
+            tree::classifier::TreeStructure::Standard { nodes, root } => {
+                if classifier_nodes_are_binary_only(nodes) {
+                    return Self::BinaryClassifier {
+                        nodes: build_binary_classifier_layout(
+                            nodes,
+                            *root,
+                            classifier.class_labels(),
+                        ),
+                    };
+                }
+
+                let optimized_nodes = nodes
+                    .iter()
+                    .map(|node| match node {
+                        tree::classifier::TreeNode::Leaf { class_index, .. } => {
+                            OptimizedClassifierNode::Leaf(classifier.class_labels()[*class_index])
+                        }
+                        tree::classifier::TreeNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            left_child,
+                            right_child,
+                            ..
+                        } => OptimizedClassifierNode::Binary {
+                            feature_index: *feature_index,
+                            threshold_bin: *threshold_bin,
+                            children: [*left_child, *right_child],
+                        },
+                        tree::classifier::TreeNode::MultiwaySplit {
+                            feature_index,
+                            fallback_class_index,
+                            branches,
+                            ..
+                        } => {
+                            let max_bin_index = branches
+                                .iter()
+                                .map(|(bin, _)| usize::from(*bin))
+                                .max()
+                                .unwrap_or(0);
+                            let mut child_lookup = vec![usize::MAX; max_bin_index + 1];
+                            for (bin, child_index) in branches {
+                                child_lookup[usize::from(*bin)] = *child_index;
+                            }
+                            OptimizedClassifierNode::Multiway {
+                                feature_index: *feature_index,
+                                child_lookup,
+                                max_bin_index,
+                                fallback_value: classifier.class_labels()[*fallback_class_index],
+                            }
+                        }
+                    })
+                    .collect();
+
+                Self::StandardClassifier {
+                    nodes: optimized_nodes,
+                    root: *root,
+                }
+            }
+            tree::classifier::TreeStructure::Oblivious {
+                splits,
+                leaf_class_indices,
+                ..
+            } => Self::ObliviousClassifier {
+                feature_indices: splits.iter().map(|split| split.feature_index).collect(),
+                threshold_bins: splits.iter().map(|split| split.threshold_bin).collect(),
+                leaf_values: leaf_class_indices
+                    .iter()
+                    .map(|class_index| classifier.class_labels()[*class_index])
+                    .collect(),
+            },
+        }
+    }
+
+    fn from_regressor(regressor: &DecisionTreeRegressor) -> Self {
+        match regressor.structure() {
+            tree::regressor::RegressionTreeStructure::Standard { nodes, root } => {
+                Self::BinaryRegressor {
+                    nodes: build_binary_regressor_layout(nodes, *root),
+                }
+            }
+            tree::regressor::RegressionTreeStructure::Oblivious {
+                splits,
+                leaf_values,
+                ..
+            } => Self::ObliviousRegressor {
+                feature_indices: splits.iter().map(|split| split.feature_index).collect(),
+                threshold_bins: splits.iter().map(|split| split.threshold_bin).collect(),
+                leaf_values: leaf_values.clone(),
+            },
+        }
+    }
+
+    #[inline(always)]
+    fn predict_table_row(&self, table: &dyn TableAccess, row_index: usize) -> f64 {
+        match self {
+            OptimizedRuntime::TargetMean { value } => *value,
+            OptimizedRuntime::BinaryClassifier { nodes } => {
+                predict_binary_classifier_row(nodes, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+            }
+            OptimizedRuntime::StandardClassifier { nodes, root } => {
+                predict_standard_classifier_row(nodes, *root, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+            }
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| table.binned_value(feature_index, row_index),
+            ),
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_row(nodes, |feature_index| {
+                    table.binned_value(feature_index, row_index)
+                })
+            }
+            OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| table.binned_value(feature_index, row_index),
+            ),
+        }
+    }
+
+    fn predict_column_major_matrix(
+        &self,
+        matrix: &ColumnMajorBinnedMatrix,
+        executor: &InferenceExecutor,
+    ) -> Vec<f64> {
+        match self {
+            OptimizedRuntime::BinaryClassifier { nodes } => {
+                predict_binary_classifier_column_major_matrix(nodes, matrix, executor)
+            }
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            }
+            | OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_column_major_matrix(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                matrix,
+                executor,
+            ),
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_column_major_matrix(nodes, matrix, executor)
+            }
+            _ => executor.predict_rows(matrix.n_rows, |row_index| {
+                self.predict_binned_row_from_columns(matrix, row_index)
+            }),
+        }
+    }
+
+    #[inline(always)]
+    fn predict_binned_row_from_columns(
+        &self,
+        matrix: &ColumnMajorBinnedMatrix,
+        row_index: usize,
+    ) -> f64 {
+        match self {
+            OptimizedRuntime::TargetMean { value } => *value,
+            OptimizedRuntime::BinaryClassifier { nodes } => {
+                predict_binary_classifier_row(nodes, |feature_index| {
+                    matrix.column(feature_index).value_at(row_index)
+                })
+            }
+            OptimizedRuntime::StandardClassifier { nodes, root } => {
+                predict_standard_classifier_row(nodes, *root, |feature_index| {
+                    matrix.column(feature_index).value_at(row_index)
+                })
+            }
+            OptimizedRuntime::ObliviousClassifier {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| matrix.column(feature_index).value_at(row_index),
+            ),
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                predict_binary_regressor_row(nodes, |feature_index| {
+                    matrix.column(feature_index).value_at(row_index)
+                })
+            }
+            OptimizedRuntime::ObliviousRegressor {
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+            } => predict_oblivious_row(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                |feature_index| matrix.column(feature_index).value_at(row_index),
+            ),
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_standard_classifier_row<F>(
+    nodes: &[OptimizedClassifierNode],
+    root: usize,
+    bin_at: F,
+) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut node_index = root;
+    loop {
+        match &nodes[node_index] {
+            OptimizedClassifierNode::Leaf(value) => return *value,
+            OptimizedClassifierNode::Binary {
+                feature_index,
+                threshold_bin,
+                children,
+            } => {
+                let go_right = usize::from(bin_at(*feature_index) > *threshold_bin);
+                node_index = children[go_right];
+            }
+            OptimizedClassifierNode::Multiway {
+                feature_index,
+                child_lookup,
+                max_bin_index,
+                fallback_value,
+            } => {
+                let bin = usize::from(bin_at(*feature_index));
+                if bin > *max_bin_index {
+                    return *fallback_value;
+                }
+                let child_index = child_lookup[bin];
+                if child_index == usize::MAX {
+                    return *fallback_value;
+                }
+                node_index = child_index;
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_binary_classifier_row<F>(nodes: &[OptimizedBinaryClassifierNode], bin_at: F) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut node_index = 0usize;
+    loop {
+        match &nodes[node_index] {
+            OptimizedBinaryClassifierNode::Leaf(value) => return *value,
+            OptimizedBinaryClassifierNode::Branch {
+                feature_index,
+                threshold_bin,
+                jump_index,
+                jump_if_greater,
+            } => {
+                let go_right = bin_at(*feature_index) > *threshold_bin;
+                node_index = if go_right == *jump_if_greater {
+                    *jump_index
+                } else {
+                    node_index + 1
+                };
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_binary_regressor_row<F>(nodes: &[OptimizedBinaryRegressorNode], bin_at: F) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut node_index = 0usize;
+    loop {
+        match &nodes[node_index] {
+            OptimizedBinaryRegressorNode::Leaf(value) => return *value,
+            OptimizedBinaryRegressorNode::Branch {
+                feature_index,
+                threshold_bin,
+                jump_index,
+                jump_if_greater,
+            } => {
+                let go_right = bin_at(*feature_index) > *threshold_bin;
+                node_index = if go_right == *jump_if_greater {
+                    *jump_index
+                } else {
+                    node_index + 1
+                };
+            }
+        }
+    }
+}
+
+fn predict_binary_classifier_column_major_matrix(
+    nodes: &[OptimizedBinaryClassifierNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    executor: &InferenceExecutor,
+) -> Vec<f64> {
+    let mut outputs = vec![0.0; matrix.n_rows];
+    executor.fill_chunks(
+        &mut outputs,
+        STANDARD_BATCH_INFERENCE_CHUNK_ROWS,
+        |start_row, chunk| predict_binary_classifier_chunk(nodes, matrix, start_row, chunk),
+    );
+    outputs
+}
+
+fn predict_binary_classifier_chunk(
+    nodes: &[OptimizedBinaryClassifierNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) {
+    let mut row_indices: Vec<usize> = (0..output.len()).collect();
+    let mut stack = vec![(0usize, 0usize, output.len())];
+
+    while let Some((node_index, start, end)) = stack.pop() {
+        match &nodes[node_index] {
+            OptimizedBinaryClassifierNode::Leaf(value) => {
+                for position in start..end {
+                    output[row_indices[position]] = *value;
+                }
+            }
+            OptimizedBinaryClassifierNode::Branch {
+                feature_index,
+                threshold_bin,
+                jump_index,
+                jump_if_greater,
+            } => {
+                let fallthrough_index = node_index + 1;
+                if *jump_index == fallthrough_index {
+                    stack.push((fallthrough_index, start, end));
+                    continue;
+                }
+
+                let column = matrix.column(*feature_index);
+                let mut partition = start;
+                let mut jump_start = end;
+                match column {
+                    CompactBinnedColumn::U8(values) if *threshold_bin <= u16::from(u8::MAX) => {
+                        let threshold = *threshold_bin as u8;
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = values[start_row + row_offset] > threshold;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
+                    }
+                    _ => {
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = column.value_at(start_row + row_offset) > *threshold_bin;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
+                    }
+                }
+
+                if jump_start < end {
+                    stack.push((*jump_index, jump_start, end));
+                }
+                if start < jump_start {
+                    stack.push((fallthrough_index, start, jump_start));
+                }
+            }
+        }
+    }
+}
+
+fn predict_binary_regressor_column_major_matrix(
+    nodes: &[OptimizedBinaryRegressorNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    executor: &InferenceExecutor,
+) -> Vec<f64> {
+    let mut outputs = vec![0.0; matrix.n_rows];
+    executor.fill_chunks(
+        &mut outputs,
+        STANDARD_BATCH_INFERENCE_CHUNK_ROWS,
+        |start_row, chunk| predict_binary_regressor_chunk(nodes, matrix, start_row, chunk),
+    );
+    outputs
+}
+
+fn predict_binary_regressor_chunk(
+    nodes: &[OptimizedBinaryRegressorNode],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) {
+    let mut row_indices: Vec<usize> = (0..output.len()).collect();
+    let mut stack = vec![(0usize, 0usize, output.len())];
+
+    while let Some((node_index, start, end)) = stack.pop() {
+        match &nodes[node_index] {
+            OptimizedBinaryRegressorNode::Leaf(value) => {
+                for position in start..end {
+                    output[row_indices[position]] = *value;
+                }
+            }
+            OptimizedBinaryRegressorNode::Branch {
+                feature_index,
+                threshold_bin,
+                jump_index,
+                jump_if_greater,
+            } => {
+                let fallthrough_index = node_index + 1;
+                if *jump_index == fallthrough_index {
+                    stack.push((fallthrough_index, start, end));
+                    continue;
+                }
+
+                let column = matrix.column(*feature_index);
+                let mut partition = start;
+                let mut jump_start = end;
+                match column {
+                    CompactBinnedColumn::U8(values) if *threshold_bin <= u16::from(u8::MAX) => {
+                        let threshold = *threshold_bin as u8;
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = values[start_row + row_offset] > threshold;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
+                    }
+                    _ => {
+                        while partition < jump_start {
+                            let row_offset = row_indices[partition];
+                            let go_right = column.value_at(start_row + row_offset) > *threshold_bin;
+                            let goes_jump = go_right == *jump_if_greater;
+                            if goes_jump {
+                                jump_start -= 1;
+                                row_indices.swap(partition, jump_start);
+                            } else {
+                                partition += 1;
+                            }
+                        }
+                    }
+                }
+
+                if jump_start < end {
+                    stack.push((*jump_index, jump_start, end));
+                }
+                if start < jump_start {
+                    stack.push((fallthrough_index, start, jump_start));
+                }
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn predict_oblivious_row<F>(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    bin_at: F,
+) -> f64
+where
+    F: Fn(usize) -> u16,
+{
+    let mut leaf_index = 0usize;
+    for (&feature_index, &threshold_bin) in feature_indices.iter().zip(threshold_bins) {
+        let go_right = usize::from(bin_at(feature_index) > threshold_bin);
+        leaf_index = (leaf_index << 1) | go_right;
+    }
+    leaf_values[leaf_index]
+}
+
+fn classifier_nodes_are_binary_only(nodes: &[tree::classifier::TreeNode]) -> bool {
+    nodes.iter().all(|node| {
+        matches!(
+            node,
+            tree::classifier::TreeNode::Leaf { .. }
+                | tree::classifier::TreeNode::BinarySplit { .. }
+        )
+    })
+}
+
+fn classifier_node_sample_count(nodes: &[tree::classifier::TreeNode], node_index: usize) -> usize {
+    match &nodes[node_index] {
+        tree::classifier::TreeNode::Leaf { sample_count, .. }
+        | tree::classifier::TreeNode::BinarySplit { sample_count, .. }
+        | tree::classifier::TreeNode::MultiwaySplit { sample_count, .. } => *sample_count,
+    }
+}
+
+fn build_binary_classifier_layout(
+    nodes: &[tree::classifier::TreeNode],
+    root: usize,
+    class_labels: &[f64],
+) -> Vec<OptimizedBinaryClassifierNode> {
+    let mut layout = Vec::with_capacity(nodes.len());
+    append_binary_classifier_node(nodes, root, class_labels, &mut layout);
+    layout
+}
+
+fn append_binary_classifier_node(
+    nodes: &[tree::classifier::TreeNode],
+    node_index: usize,
+    class_labels: &[f64],
+    layout: &mut Vec<OptimizedBinaryClassifierNode>,
+) -> usize {
+    let current_index = layout.len();
+    layout.push(OptimizedBinaryClassifierNode::Leaf(0.0));
+
+    match &nodes[node_index] {
+        tree::classifier::TreeNode::Leaf { class_index, .. } => {
+            layout[current_index] = OptimizedBinaryClassifierNode::Leaf(class_labels[*class_index]);
+        }
+        tree::classifier::TreeNode::BinarySplit {
+            feature_index,
+            threshold_bin,
+            left_child,
+            right_child,
+            ..
+        } => {
+            let (fallthrough_child, jump_child, jump_if_greater) = if left_child == right_child {
+                (*left_child, *left_child, true)
+            } else {
+                let left_count = classifier_node_sample_count(nodes, *left_child);
+                let right_count = classifier_node_sample_count(nodes, *right_child);
+                if left_count >= right_count {
+                    (*left_child, *right_child, true)
+                } else {
+                    (*right_child, *left_child, false)
+                }
+            };
+
+            let fallthrough_index =
+                append_binary_classifier_node(nodes, fallthrough_child, class_labels, layout);
+            debug_assert_eq!(fallthrough_index, current_index + 1);
+            let jump_index = if jump_child == fallthrough_child {
+                fallthrough_index
+            } else {
+                append_binary_classifier_node(nodes, jump_child, class_labels, layout)
+            };
+
+            layout[current_index] = OptimizedBinaryClassifierNode::Branch {
+                feature_index: *feature_index,
+                threshold_bin: *threshold_bin,
+                jump_index,
+                jump_if_greater,
+            };
+        }
+        tree::classifier::TreeNode::MultiwaySplit { .. } => {
+            unreachable!("multiway nodes are filtered out before binary layout construction");
+        }
+    }
+
+    current_index
+}
+
+fn regressor_node_sample_count(
+    nodes: &[tree::regressor::RegressionNode],
+    node_index: usize,
+) -> usize {
+    match &nodes[node_index] {
+        tree::regressor::RegressionNode::Leaf { sample_count, .. }
+        | tree::regressor::RegressionNode::BinarySplit { sample_count, .. } => *sample_count,
+    }
+}
+
+fn build_binary_regressor_layout(
+    nodes: &[tree::regressor::RegressionNode],
+    root: usize,
+) -> Vec<OptimizedBinaryRegressorNode> {
+    let mut layout = Vec::with_capacity(nodes.len());
+    append_binary_regressor_node(nodes, root, &mut layout);
+    layout
+}
+
+fn append_binary_regressor_node(
+    nodes: &[tree::regressor::RegressionNode],
+    node_index: usize,
+    layout: &mut Vec<OptimizedBinaryRegressorNode>,
+) -> usize {
+    let current_index = layout.len();
+    layout.push(OptimizedBinaryRegressorNode::Leaf(0.0));
+
+    match &nodes[node_index] {
+        tree::regressor::RegressionNode::Leaf { value, .. } => {
+            layout[current_index] = OptimizedBinaryRegressorNode::Leaf(*value);
+        }
+        tree::regressor::RegressionNode::BinarySplit {
+            feature_index,
+            threshold_bin,
+            left_child,
+            right_child,
+            ..
+        } => {
+            let (fallthrough_child, jump_child, jump_if_greater) = if left_child == right_child {
+                (*left_child, *left_child, true)
+            } else {
+                let left_count = regressor_node_sample_count(nodes, *left_child);
+                let right_count = regressor_node_sample_count(nodes, *right_child);
+                if left_count >= right_count {
+                    (*left_child, *right_child, true)
+                } else {
+                    (*right_child, *left_child, false)
+                }
+            };
+
+            let fallthrough_index = append_binary_regressor_node(nodes, fallthrough_child, layout);
+            debug_assert_eq!(fallthrough_index, current_index + 1);
+            let jump_index = if jump_child == fallthrough_child {
+                fallthrough_index
+            } else {
+                append_binary_regressor_node(nodes, jump_child, layout)
+            };
+
+            layout[current_index] = OptimizedBinaryRegressorNode::Branch {
+                feature_index: *feature_index,
+                threshold_bin: *threshold_bin,
+                jump_index,
+                jump_if_greater,
+            };
+        }
+    }
+
+    current_index
+}
+
+fn predict_oblivious_column_major_matrix(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    matrix: &ColumnMajorBinnedMatrix,
+    executor: &InferenceExecutor,
+) -> Vec<f64> {
+    let mut outputs = vec![0.0; matrix.n_rows];
+    executor.fill_chunks(
+        &mut outputs,
+        PARALLEL_INFERENCE_CHUNK_ROWS,
+        |start_row, chunk| {
+            predict_oblivious_chunk(
+                feature_indices,
+                threshold_bins,
+                leaf_values,
+                matrix,
+                start_row,
+                chunk,
+            )
+        },
+    );
+    outputs
+}
+
+fn predict_oblivious_chunk(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) {
+    let processed = simd_predict_oblivious_chunk(
+        feature_indices,
+        threshold_bins,
+        leaf_values,
+        matrix,
+        start_row,
+        output,
+    );
+
+    for (offset, out) in output.iter_mut().enumerate().skip(processed) {
+        let row_index = start_row + offset;
+        *out = predict_oblivious_row(
+            feature_indices,
+            threshold_bins,
+            leaf_values,
+            |feature_index| matrix.column(feature_index).value_at(row_index),
+        );
+    }
+}
+
+fn simd_predict_oblivious_chunk(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) -> usize {
+    let mut processed = 0usize;
+    let ones = u32x8::splat(1);
+
+    while processed + OBLIVIOUS_SIMD_LANES <= output.len() {
+        let base_row = start_row + processed;
+        let mut leaf_indices = u32x8::splat(0);
+
+        for (&feature_index, &threshold_bin) in feature_indices.iter().zip(threshold_bins) {
+            let column = matrix.column(feature_index);
+            let bins = if let Some(lanes) = column.slice_u8(base_row, OBLIVIOUS_SIMD_LANES) {
+                let lanes: [u8; OBLIVIOUS_SIMD_LANES] = lanes
+                    .try_into()
+                    .expect("lane width matches the fixed SIMD width");
+                u32x8::new([
+                    u32::from(lanes[0]),
+                    u32::from(lanes[1]),
+                    u32::from(lanes[2]),
+                    u32::from(lanes[3]),
+                    u32::from(lanes[4]),
+                    u32::from(lanes[5]),
+                    u32::from(lanes[6]),
+                    u32::from(lanes[7]),
+                ])
+            } else {
+                let lanes: [u16; OBLIVIOUS_SIMD_LANES] = column
+                    .slice_u16(base_row, OBLIVIOUS_SIMD_LANES)
+                    .expect("column is u16 when not u8")
+                    .try_into()
+                    .expect("lane width matches the fixed SIMD width");
+                u32x8::from(u16x8::new(lanes))
+            };
+            let threshold = u32x8::splat(u32::from(threshold_bin));
+            let bit = bins.cmp_gt(threshold) & ones;
+            leaf_indices = (leaf_indices << 1) | bit;
+        }
+
+        let lane_indices = leaf_indices.to_array();
+        for lane in 0..OBLIVIOUS_SIMD_LANES {
+            output[processed + lane] =
+                leaf_values[usize::try_from(lane_indices[lane]).expect("leaf index fits usize")];
+        }
+        processed += OBLIVIOUS_SIMD_LANES;
+    }
+
+    processed
 }
 
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
@@ -334,6 +2026,20 @@ fn resolve_parallelism(physical_cores: Option<usize>) -> Result<Parallelism, Tra
     })
 }
 
+fn resolve_inference_thread_count(physical_cores: Option<usize>) -> Result<usize, OptimizeError> {
+    let available = num_cpus::get_physical().max(1);
+    let requested = physical_cores.unwrap_or(available);
+
+    if requested == 0 {
+        return Err(OptimizeError::InvalidPhysicalCoreCount {
+            requested,
+            available,
+        });
+    }
+
+    Ok(requested.min(available))
+}
+
 fn run_with_parallelism<T, F>(parallelism: Parallelism, train_fn: F) -> Result<T, TrainError>
 where
     T: Send,
@@ -357,6 +2063,62 @@ impl Model {
             Model::DecisionTreeClassifier(model) => model.predict_table(table),
             Model::DecisionTreeRegressor(model) => model.predict_table(table),
         }
+    }
+
+    pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_rows(rows, self.feature_preprocessing())?;
+        Ok(self.predict_table(&table))
+    }
+
+    pub fn predict_named_columns(
+        &self,
+        columns: BTreeMap<String, Vec<f64>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_named_columns(columns, self.feature_preprocessing())?;
+        Ok(self.predict_table(&table))
+    }
+
+    pub fn predict_sparse_binary_columns(
+        &self,
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+    ) -> Result<Vec<f64>, PredictError> {
+        let table = InferenceTable::from_sparse_binary_columns(
+            n_rows,
+            n_features,
+            columns,
+            self.feature_preprocessing(),
+        )?;
+        Ok(self.predict_table(&table))
+    }
+
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_dataframe(&self, df: &DataFrame) -> Result<Vec<f64>, PredictError> {
+        let columns = polars_named_columns(df)?;
+        self.predict_named_columns(columns)
+    }
+
+    #[cfg(feature = "polars")]
+    pub fn predict_polars_lazyframe(&self, lf: &LazyFrame) -> Result<Vec<f64>, PredictError> {
+        let mut predictions = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let batch = lf
+                .clone()
+                .slice(offset, LAZYFRAME_PREDICT_BATCH_ROWS as IdxSize)
+                .collect()?;
+            let height = batch.height();
+            if height == 0 {
+                break;
+            }
+            predictions.extend(self.predict_polars_dataframe(&batch)?);
+            if height < LAZYFRAME_PREDICT_BATCH_ROWS {
+                break;
+            }
+            offset += height as i64;
+        }
+        Ok(predictions)
     }
 
     pub fn algorithm(&self) -> TrainAlgorithm {
@@ -425,6 +2187,13 @@ impl Model {
         self.to_ir_json_pretty()
     }
 
+    pub fn optimize_inference(
+        &self,
+        physical_cores: Option<usize>,
+    ) -> Result<OptimizedModel, OptimizeError> {
+        OptimizedModel::new(self.clone(), physical_cores)
+    }
+
     pub fn json_schema() -> schemars::schema::RootSchema {
         ModelPackageIr::json_schema()
     }
@@ -460,10 +2229,98 @@ impl Model {
     }
 }
 
+#[cfg(feature = "polars")]
+fn polars_named_columns(df: &DataFrame) -> Result<BTreeMap<String, Vec<f64>>, PredictError> {
+    df.get_columns()
+        .iter()
+        .map(|column| {
+            let name = column.name().to_string();
+            Ok((name, polars_column_values(column)?))
+        })
+        .collect()
+}
+
+#[cfg(feature = "polars")]
+fn polars_column_values(column: &Column) -> Result<Vec<f64>, PredictError> {
+    let name = column.name().to_string();
+    let series = column.as_materialized_series();
+    match series.dtype() {
+        DataType::Boolean => series
+            .bool()?
+            .into_iter()
+            .enumerate()
+            .map(|(row_index, value)| {
+                value
+                    .map(|value| f64::from(u8::from(value)))
+                    .ok_or_else(|| PredictError::NullValue {
+                        feature: name.clone(),
+                        row_index,
+                    })
+            })
+            .collect(),
+        DataType::Float64 => series
+            .f64()?
+            .into_iter()
+            .enumerate()
+            .map(|(row_index, value)| {
+                value.ok_or_else(|| PredictError::NullValue {
+                    feature: name.clone(),
+                    row_index,
+                })
+            })
+            .collect(),
+        DataType::Float32
+        | DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => {
+            let casted = series.cast(&DataType::Float64)?;
+            casted
+                .f64()?
+                .into_iter()
+                .enumerate()
+                .map(|(row_index, value)| {
+                    value.ok_or_else(|| PredictError::NullValue {
+                        feature: name.clone(),
+                        row_index,
+                    })
+                })
+                .collect()
+        }
+        dtype => Err(PredictError::UnsupportedFeatureType {
+            feature: name,
+            dtype: dtype.to_string(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use forestfire_data::DenseTable;
+    #[cfg(feature = "polars")]
+    use polars::prelude::{DataFrame, IntoLazy, NamedFrom, Series};
+    use std::collections::BTreeMap;
+
+    const PREDICTION_TOLERANCE: f64 = 10e-6;
+
+    fn assert_predictions_close(left: &[f64], right: &[f64]) {
+        assert_eq!(left.len(), right.len());
+        for (idx, (lhs, rhs)) in left.iter().zip(right.iter()).enumerate() {
+            assert!(
+                (lhs - rhs).abs() <= PREDICTION_TOLERANCE,
+                "prediction mismatch at index {}: left={} right={} tolerance={}",
+                idx,
+                lhs,
+                rhs,
+                PREDICTION_TOLERANCE
+            );
+        }
+    }
 
     #[test]
     fn unified_train_dispatches_regression_cart() {
@@ -983,6 +2840,683 @@ mod tests {
         assert_eq!(model.tree_type(), restored.tree_type());
         assert_eq!(model.criterion(), restored.criterion());
         assert_eq!(model.predict_table(&table), restored.predict_table(&table));
+    }
+
+    #[test]
+    fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+
+        assert_eq!(model.to_ir_json().unwrap(), optimized.to_ir_json().unwrap());
+        assert_eq!(model.serialize().unwrap(), optimized.serialize().unwrap());
+        assert_predictions_close(
+            &model.predict_table(&table),
+            &optimized.predict_table(&table),
+        );
+        let model_preds = model
+            .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+            .unwrap();
+        let optimized_preds = optimized
+            .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+            .unwrap();
+        assert_predictions_close(model_preds.as_slice(), optimized_preds.as_slice());
+    }
+
+    #[test]
+    fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 1.0, 1.0, 2.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(2)).unwrap();
+
+        assert_eq!(model.to_ir_json().unwrap(), optimized.to_ir_json().unwrap());
+        assert_predictions_close(
+            &model.predict_table(&table),
+            &optimized.predict_table(&table),
+        );
+        let model_preds = model
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 1.0]),
+                ("f1".to_string(), vec![1.0, 1.0]),
+            ]))
+            .unwrap();
+        let optimized_preds = optimized
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 1.0]),
+                ("f1".to_string(), vec![1.0, 1.0]),
+            ]))
+            .unwrap();
+        assert_predictions_close(model_preds.as_slice(), optimized_preds.as_slice());
+    }
+
+    #[test]
+    fn optimized_oblivious_model_matches_base_on_large_batch() {
+        let rows = (0..32)
+            .map(|idx| vec![f64::from((idx % 2) as u8), f64::from(((idx / 2) % 2) as u8)])
+            .collect::<Vec<_>>();
+        let targets = rows.iter().map(|row| row[0] + row[1]).collect::<Vec<_>>();
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(2)).unwrap();
+
+        assert_predictions_close(
+            &model.predict_rows(rows.clone()).unwrap(),
+            &optimized.predict_rows(rows).unwrap(),
+        );
+    }
+
+    #[test]
+    fn optimized_cart_model_batch_and_single_row_predictions_match() {
+        let rows = vec![
+            vec![0.0],
+            vec![1.0],
+            vec![2.0],
+            vec![3.0],
+            vec![4.0],
+            vec![5.0],
+        ];
+        let targets = vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0];
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+
+        let batch_preds = optimized.predict_rows(rows.clone()).unwrap();
+        let single_row_preds = rows
+            .iter()
+            .map(|row| optimized.predict_rows(vec![row.clone()]).unwrap()[0])
+            .collect::<Vec<_>>();
+        let base_preds = model.predict_rows(rows).unwrap();
+
+        assert_predictions_close(&batch_preds, &single_row_preds);
+        assert_predictions_close(&batch_preds, &base_preds);
+    }
+
+    #[test]
+    fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
+        let rows = (0..64)
+            .map(|idx| vec![f64::from((idx % 2) as u8), f64::from(((idx / 2) % 2) as u8)])
+            .collect::<Vec<_>>();
+        let targets = rows
+            .iter()
+            .map(|row| row[0] + row[1] * 0.5)
+            .collect::<Vec<_>>();
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+
+        let batch_preds = optimized.predict_rows(rows.clone()).unwrap();
+        let single_row_preds = rows
+            .iter()
+            .map(|row| optimized.predict_rows(vec![row.clone()]).unwrap()[0])
+            .collect::<Vec<_>>();
+        let base_preds = model.predict_rows(rows).unwrap();
+
+        assert_predictions_close(&batch_preds, &single_row_preds);
+        assert_predictions_close(&batch_preds, &base_preds);
+    }
+
+    #[test]
+    fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+        let compiled = optimized.serialize_compiled().unwrap();
+        let restored = OptimizedModel::deserialize_compiled(&compiled, Some(1)).unwrap();
+        let rows = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+        ];
+
+        assert_eq!(&compiled[..4], &COMPILED_ARTIFACT_MAGIC);
+        assert_eq!(
+            optimized.serialize().unwrap(),
+            restored.serialize().unwrap()
+        );
+        assert_eq!(
+            optimized.to_ir_json().unwrap(),
+            restored.to_ir_json().unwrap()
+        );
+        assert_predictions_close(
+            &optimized.predict_rows(rows.clone()).unwrap(),
+            &restored.predict_rows(rows).unwrap(),
+        );
+    }
+
+    #[test]
+    fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
+        let rows = (0..32)
+            .map(|idx| vec![f64::from((idx % 2) as u8), f64::from(((idx / 2) % 2) as u8)])
+            .collect::<Vec<_>>();
+        let targets = rows.iter().map(|row| row[0] + row[1] * 0.5).collect();
+        let table = DenseTable::with_canaries(rows.clone(), targets, 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Oblivious,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.optimize_inference(Some(1)).unwrap();
+        let compiled = optimized.serialize_compiled().unwrap();
+        let restored = OptimizedModel::deserialize_compiled(&compiled, Some(2)).unwrap();
+
+        assert_eq!(
+            optimized.serialize().unwrap(),
+            restored.serialize().unwrap()
+        );
+        assert_predictions_close(
+            &optimized.predict_rows(rows.clone()).unwrap(),
+            &restored.predict_rows(rows).unwrap(),
+        );
+    }
+
+    #[test]
+    fn compiled_artifact_rejects_invalid_header() {
+        let err = OptimizedModel::deserialize_compiled(b"bad", Some(1)).unwrap_err();
+        assert!(matches!(
+            err,
+            CompiledArtifactError::ArtifactTooShort { .. }
+        ));
+
+        let err =
+            OptimizedModel::deserialize_compiled(b"NOPE\x01\0\x01\0payload", Some(1)).unwrap_err();
+        assert!(matches!(err, CompiledArtifactError::InvalidMagic(_)));
+    }
+
+    #[test]
+    fn optimized_model_rejects_zero_physical_cores() {
+        let table = DenseTable::with_canaries(vec![vec![0.0]], vec![1.0], 0).unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::TargetMean,
+                criterion: Criterion::Mean,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model.optimize_inference(Some(0)).unwrap_err();
+
+        assert!(matches!(
+            err,
+            OptimizeError::InvalidPhysicalCoreCount { requested: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn model_predicts_from_raw_rows_without_building_a_training_table() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let preds = model
+            .predict_rows(vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ])
+            .unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn model_predicts_from_named_columns() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let preds = model
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 0.0, 1.0, 1.0]),
+                ("f1".to_string(), vec![0.0, 1.0, 0.0, 1.0]),
+            ]))
+            .unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn model_rejects_missing_named_feature() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model
+            .predict_named_columns(BTreeMap::from([("f0".to_string(), vec![0.0, 1.0])]))
+            .unwrap_err();
+
+        assert!(matches!(err, PredictError::MissingFeature(feature) if feature == "f1"));
+    }
+
+    #[test]
+    fn model_rejects_unexpected_named_feature() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model
+            .predict_named_columns(BTreeMap::from([
+                ("f0".to_string(), vec![0.0, 1.0]),
+                ("f1".to_string(), vec![0.0, 1.0]),
+                ("f2".to_string(), vec![0.0, 1.0]),
+            ]))
+            .unwrap_err();
+
+        assert!(matches!(err, PredictError::UnexpectedFeature(feature) if feature == "f2"));
+    }
+
+    #[test]
+    fn model_rejects_invalid_binary_value_during_inference() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let err = model.predict_rows(vec![vec![0.5, 1.0]]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            PredictError::InvalidBinaryValue {
+                feature_index: 0,
+                row_index: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn model_predicts_from_sparse_binary_columns() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+
+        let preds = model
+            .predict_sparse_binary_columns(4, 2, vec![vec![2, 3], vec![1, 3]])
+            .unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_predicts_from_polars_dataframe() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), &[0.0, 0.0, 1.0, 1.0]).into(),
+            Series::new("f1".into(), &[0.0, 1.0, 0.0, 1.0]).into(),
+        ])
+        .unwrap();
+
+        let preds = model.predict_polars_dataframe(&df).unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_predicts_from_polars_lazyframe() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), &[0.0, 0.0, 1.0, 1.0]).into(),
+            Series::new("f1".into(), &[0.0, 1.0, 0.0, 1.0]).into(),
+        ])
+        .unwrap();
+
+        let preds = model.predict_polars_lazyframe(&df.lazy()).unwrap();
+
+        assert_eq!(preds, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let optimized = model.clone().optimize_inference(Some(1)).unwrap();
+        let n_rows = 20_003usize;
+        let f0: Vec<f64> = [0.0, 0.0, 1.0, 1.0]
+            .iter()
+            .copied()
+            .cycle()
+            .take(n_rows)
+            .collect();
+        let f1: Vec<f64> = [0.0, 1.0, 0.0, 1.0]
+            .iter()
+            .copied()
+            .cycle()
+            .take(n_rows)
+            .collect();
+        let expected: Vec<f64> = [0.0, 0.0, 0.0, 1.0]
+            .iter()
+            .copied()
+            .cycle()
+            .take(n_rows)
+            .collect();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), f0).into(),
+            Series::new("f1".into(), f1).into(),
+        ])
+        .unwrap();
+
+        let preds = model.predict_polars_lazyframe(&df.clone().lazy()).unwrap();
+        let optimized_preds = optimized.predict_polars_lazyframe(&df.lazy()).unwrap();
+
+        assert_eq!(preds, expected);
+        assert_eq!(optimized_preds, expected);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn model_rejects_polars_nulls() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 1.0],
+            ],
+            vec![0.0, 0.0, 0.0, 1.0],
+            0,
+        )
+        .unwrap();
+        let model = train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Gini,
+                physical_cores: Some(1),
+            },
+        )
+        .unwrap();
+        let df = DataFrame::new(vec![
+            Series::new("f0".into(), &[Some(0.0), None]).into(),
+            Series::new("f1".into(), &[Some(0.0), Some(1.0)]).into(),
+        ])
+        .unwrap();
+
+        let err = model.predict_polars_dataframe(&df).unwrap_err();
+
+        assert!(
+            matches!(err, PredictError::NullValue { feature, row_index } if feature == "f0" && row_index == 1)
+        );
     }
 
     #[test]
