@@ -1381,7 +1381,7 @@ mod tests {
     }
 
     fn criterion_choice_table() -> DenseTable {
-        DenseTable::with_canaries(
+        DenseTable::with_options(
             vec![
                 vec![0.0, 1.0],
                 vec![4.0, 1.0],
@@ -1393,6 +1393,7 @@ mod tests {
             ],
             vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             0,
+            NumericBins::Fixed(8),
         )
         .unwrap()
     }

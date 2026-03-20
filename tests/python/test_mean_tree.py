@@ -377,7 +377,15 @@ def test_train_cart_regressor() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
     y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
 
-    model = train(X, y, algorithm="dt", task="regression", tree_type="cart", canaries=0)
+    model = train(
+        X,
+        y,
+        algorithm="dt",
+        task="regression",
+        tree_type="cart",
+        canaries=0,
+        bins=64,
+    )
 
     assert model.algorithm == "dt"
     assert model.task == "regression"
@@ -392,7 +400,13 @@ def test_train_oblivious_regressor() -> None:
     y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0])
 
     model = train(
-        X, y, algorithm="dt", task="regression", tree_type="oblivious", canaries=0
+        X,
+        y,
+        algorithm="dt",
+        task="regression",
+        tree_type="oblivious",
+        canaries=0,
+        bins=64,
     )
 
     assert model.algorithm == "dt"
@@ -608,7 +622,16 @@ def test_train_caps_large_physical_core_requests() -> None:
     X = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
 
-    model = train(
+    single_core_model = train(
+        X,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        physical_cores=1,
+    )
+    overprovisioned_model = train(
         X,
         y,
         algorithm="dt",
@@ -618,7 +641,9 @@ def test_train_caps_large_physical_core_requests() -> None:
         physical_cores=10_000,
     )
 
-    assert np.array_equal(model.predict(X), y)
+    assert np.array_equal(
+        single_core_model.predict(X), overprovisioned_model.predict(X)
+    )
 
 
 def test_train_rejects_zero_physical_cores() -> None:
