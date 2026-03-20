@@ -9,8 +9,8 @@ use crate::tree::regressor::{
     RegressionTreeAlgorithm, RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::{
-    FeaturePreprocessing, InputFeatureKind, Model, NumericBinBoundary, Task, TrainAlgorithm,
-    TreeType,
+    Criterion, FeaturePreprocessing, InputFeatureKind, Model, NumericBinBoundary, RandomForest,
+    Task, TrainAlgorithm, TreeType,
 };
 use schemars::schema::RootSchema;
 use schemars::{JsonSchema, schema_for};
@@ -427,18 +427,25 @@ impl ModelPackageIr {
 }
 
 pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
-    let tree = match model {
-        Model::TargetMean(target_mean) => target_mean.to_ir_tree(),
-        Model::DecisionTreeClassifier(classifier) => classifier.to_ir_tree(),
-        Model::DecisionTreeRegressor(regressor) => regressor.to_ir_tree(),
+    let trees = match model {
+        Model::RandomForest(forest) => forest
+            .trees()
+            .iter()
+            .map(model_tree_definition)
+            .collect::<Vec<_>>(),
+        _ => vec![model_tree_definition(model)],
     };
-    let representation = match &tree {
+    let representation = match &trees[0] {
         TreeDefinition::NodeTree { .. } => "node_tree",
         TreeDefinition::ObliviousLevels { .. } => "oblivious_levels",
     };
-    let class_labels = match model {
-        Model::DecisionTreeClassifier(classifier) => Some(classifier.class_labels().to_vec()),
-        Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => None,
+    let class_labels = model.class_labels();
+    let is_ensemble = matches!(model, Model::RandomForest(_));
+    let tree_count = trees.len();
+    let aggregation_kind = match model.task() {
+        Task::Regression if is_ensemble => "average",
+        Task::Classification if is_ensemble => "average_class_probabilities",
+        _ => "identity_single_tree",
     };
 
     ModelPackageIr {
@@ -459,11 +466,11 @@ pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
             num_outputs: 1,
             supports_missing: false,
             supports_categorical: false,
-            is_ensemble: false,
-            trees: vec![tree],
+            is_ensemble,
+            trees,
             aggregation: Aggregation {
-                kind: "identity_single_tree".to_string(),
-                tree_weights: vec![1.0],
+                kind: aggregation_kind.to_string(),
+                tree_weights: vec![1.0; tree_count],
                 normalize_by_weight_sum: true,
             },
         },
@@ -489,11 +496,7 @@ pub(crate) fn model_to_ir(model: &Model) -> ModelPackageIr {
         },
         preprocessing: preprocessing(model),
         postprocessing: postprocessing(model, class_labels),
-        training_metadata: match model {
-            Model::TargetMean(target_mean) => target_mean.training_metadata(),
-            Model::DecisionTreeClassifier(classifier) => classifier.training_metadata(),
-            Model::DecisionTreeRegressor(regressor) => regressor.training_metadata(),
-        },
+        training_metadata: model.training_metadata(),
         integrity: IntegritySection {
             serialization: "json".to_string(),
             canonical_json: true,
@@ -509,10 +512,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
     validate_ir_header(&ir)?;
     validate_inference_options(&ir.inference_options)?;
 
-    if ir.model.trees.len() != 1 {
-        return Err(IrError::InvalidTreeCount(ir.model.trees.len()));
-    }
-
     let algorithm = parse_algorithm(&ir.model.algorithm)?;
     let task = parse_task(&ir.model.task)?;
     let tree_type = parse_tree_type(&ir.model.tree_type)?;
@@ -522,6 +521,40 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
     let options = tree_options(&ir.training_metadata);
     let training_canaries = ir.training_metadata.canaries;
     let deserialized_class_labels = classification_labels(&ir).ok();
+
+    if algorithm != TrainAlgorithm::Rf && ir.model.trees.len() != 1 {
+        return Err(IrError::InvalidTreeCount(ir.model.trees.len()));
+    }
+
+    if algorithm == TrainAlgorithm::Rf {
+        let trees = ir
+            .model
+            .trees
+            .into_iter()
+            .map(|tree| {
+                single_model_from_ir_parts(
+                    task,
+                    tree_type,
+                    criterion,
+                    feature_preprocessing.clone(),
+                    num_features,
+                    options,
+                    training_canaries,
+                    deserialized_class_labels.clone(),
+                    tree,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(Model::RandomForest(RandomForest::new(
+            task,
+            criterion,
+            tree_type,
+            trees,
+            num_features,
+            feature_preprocessing,
+        )));
+    }
+
     let tree = ir
         .model
         .trees
@@ -529,13 +562,32 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
         .next()
         .expect("validated single tree");
 
-    match (algorithm, task, tree_type, tree) {
-        (
-            TrainAlgorithm::Dt,
-            Task::Regression,
-            TreeType::TargetMean,
-            TreeDefinition::NodeTree { nodes, .. },
-        ) => {
+    single_model_from_ir_parts(
+        task,
+        tree_type,
+        criterion,
+        feature_preprocessing,
+        num_features,
+        options,
+        training_canaries,
+        deserialized_class_labels,
+        tree,
+    )
+}
+
+fn single_model_from_ir_parts(
+    task: Task,
+    tree_type: TreeType,
+    criterion: Criterion,
+    feature_preprocessing: Vec<FeaturePreprocessing>,
+    num_features: usize,
+    options: DecisionTreeOptions,
+    training_canaries: usize,
+    deserialized_class_labels: Option<Vec<f64>>,
+    tree: TreeDefinition,
+) -> Result<Model, IrError> {
+    match (task, tree_type, tree) {
+        (Task::Regression, TreeType::TargetMean, TreeDefinition::NodeTree { nodes, .. }) => {
             let mean = extract_target_mean_leaf(&nodes)?;
             Ok(Model::TargetMean(TargetMeanTree::from_ir_parts(
                 mean,
@@ -546,7 +598,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             )))
         }
         (
-            TrainAlgorithm::Dt,
             Task::Classification,
             TreeType::Id3 | TreeType::C45 | TreeType::Cart | TreeType::Randomized,
             TreeDefinition::NodeTree {
@@ -580,7 +631,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             ))
         }
         (
-            TrainAlgorithm::Dt,
             Task::Classification,
             TreeType::Oblivious,
             TreeDefinition::ObliviousLevels { levels, leaves, .. },
@@ -609,7 +659,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             ))
         }
         (
-            TrainAlgorithm::Dt,
             Task::Regression,
             TreeType::Cart | TreeType::Randomized,
             TreeDefinition::NodeTree {
@@ -640,7 +689,6 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             ),
         )),
         (
-            TrainAlgorithm::Dt,
             Task::Regression,
             TreeType::Oblivious,
             TreeDefinition::ObliviousLevels { levels, leaves, .. },
@@ -668,7 +716,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                 ),
             ))
         }
-        (_, _, _, tree) => Err(IrError::UnsupportedRepresentation(match tree {
+        (_, _, tree) => Err(IrError::UnsupportedRepresentation(match tree {
             TreeDefinition::NodeTree { .. } => "node_tree".to_string(),
             TreeDefinition::ObliviousLevels { .. } => "oblivious_levels".to_string(),
         })),
@@ -714,6 +762,7 @@ fn validate_inference_options(options: &InferenceOptions) -> Result<(), IrError>
 fn parse_algorithm(value: &str) -> Result<TrainAlgorithm, IrError> {
     match value {
         "dt" => Ok(TrainAlgorithm::Dt),
+        "rf" => Ok(TrainAlgorithm::Rf),
         _ => Err(IrError::UnsupportedAlgorithm(value.to_string())),
     }
 }
@@ -1320,6 +1369,16 @@ fn required_capabilities(model: &Model, representation: &str) -> Vec<String> {
 pub(crate) fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
+        TrainAlgorithm::Rf => "rf",
+    }
+}
+
+fn model_tree_definition(model: &Model) -> TreeDefinition {
+    match model {
+        Model::TargetMean(target_mean) => target_mean.to_ir_tree(),
+        Model::DecisionTreeClassifier(classifier) => classifier.to_ir_tree(),
+        Model::DecisionTreeRegressor(regressor) => regressor.to_ir_tree(),
+        Model::RandomForest(_) => unreachable!("forest IR expands into member trees"),
     }
 }
 

@@ -588,8 +588,9 @@ fn extract_scalar(value: &Bound<PyAny>) -> PyResult<f64> {
 fn parse_algorithm(algorithm: &str) -> PyResult<TrainAlgorithm> {
     match algorithm {
         "dt" => Ok(TrainAlgorithm::Dt),
+        "rf" => Ok(TrainAlgorithm::Rf),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported algorithm '{}'. Expected one of: dt",
+            "Unsupported algorithm '{}'. Expected one of: dt, rf",
             algorithm
         ))),
     }
@@ -664,6 +665,7 @@ fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
 fn algorithm_name(algorithm: TrainAlgorithm) -> &'static str {
     match algorithm {
         TrainAlgorithm::Dt => "dt",
+        TrainAlgorithm::Rf => "rf",
     }
 }
 
@@ -696,7 +698,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="regression", tree_type="target_mean", criterion="auto", canaries=2, bins=None, physical_cores=None, n_trees=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     x: &Bound<PyAny>,
@@ -708,6 +710,7 @@ fn train(
     canaries: usize,
     bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
+    n_trees: Option<usize>,
 ) -> PyResult<PyModel> {
     let table = build_training_table(x, y, canaries, parse_bins(bins)?)?;
     let config = TrainConfig {
@@ -716,6 +719,7 @@ fn train(
         tree_type: parse_tree_type(tree_type)?,
         criterion: parse_criterion(criterion)?,
         physical_cores,
+        n_trees,
     };
     let model = train_model(&table, config)
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;

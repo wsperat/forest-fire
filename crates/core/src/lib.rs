@@ -13,10 +13,12 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use wide::{u16x8, u32x8};
 
+mod forest;
 pub mod ir;
 mod training;
 pub mod tree;
 
+pub use forest::RandomForest;
 pub use ir::IrError;
 pub use ir::ModelPackageIr;
 pub use tree::classifier::DecisionTreeAlgorithm;
@@ -53,6 +55,7 @@ const COMPILED_ARTIFACT_HEADER_LEN: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
     Dt,
+    Rf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +112,7 @@ pub struct TrainConfig {
     pub tree_type: TreeType,
     pub criterion: Criterion,
     pub physical_cores: Option<usize>,
+    pub n_trees: Option<usize>,
 }
 
 impl Default for TrainConfig {
@@ -119,6 +123,7 @@ impl Default for TrainConfig {
             tree_type: TreeType::TargetMean,
             criterion: Criterion::Auto,
             physical_cores: None,
+            n_trees: None,
         }
     }
 }
@@ -128,6 +133,7 @@ pub enum Model {
     TargetMean(TargetMeanTree),
     DecisionTreeClassifier(DecisionTreeClassifier),
     DecisionTreeRegressor(DecisionTreeRegressor),
+    RandomForest(RandomForest),
 }
 
 #[derive(Debug)]
@@ -145,6 +151,7 @@ pub enum TrainError {
         tree_type: TreeType,
         criterion: Criterion,
     },
+    InvalidTreeCount(usize),
 }
 
 impl Display for TrainError {
@@ -173,6 +180,13 @@ impl Display for TrainError {
                 "Unsupported training configuration: task={:?}, tree_type={:?}, criterion={:?}.",
                 task, tree_type, criterion
             ),
+            TrainError::InvalidTreeCount(n_trees) => {
+                write!(
+                    f,
+                    "Random forest requires at least one tree. Received {}.",
+                    n_trees
+                )
+            }
         }
     }
 }
@@ -287,6 +301,7 @@ impl From<polars::error::PolarsError> for PredictError {
 pub enum OptimizeError {
     InvalidPhysicalCoreCount { requested: usize, available: usize },
     ThreadPoolBuildFailed(String),
+    UnsupportedModelType(&'static str),
 }
 
 impl Display for OptimizeError {
@@ -302,6 +317,13 @@ impl Display for OptimizeError {
             ),
             OptimizeError::ThreadPoolBuildFailed(message) => {
                 write!(f, "Failed to build inference thread pool: {}.", message)
+            }
+            OptimizeError::UnsupportedModelType(model_type) => {
+                write!(
+                    f,
+                    "Optimized inference is not supported for model type '{}'.",
+                    model_type
+                )
             }
         }
     }
@@ -1163,6 +1185,9 @@ impl OptimizedRuntime {
             },
             Model::DecisionTreeClassifier(classifier) => Self::from_classifier(classifier),
             Model::DecisionTreeRegressor(regressor) => Self::from_regressor(regressor),
+            Model::RandomForest(_) => {
+                unreachable!("random forests do not have an optimized single-runtime lowering yet")
+            }
         }
     }
 
@@ -1952,6 +1977,7 @@ impl Model {
             Model::TargetMean(model) => model.predict_table(table),
             Model::DecisionTreeClassifier(model) => model.predict_table(table),
             Model::DecisionTreeRegressor(model) => model.predict_table(table),
+            Model::RandomForest(model) => model.predict_table(table),
         }
     }
 
@@ -1966,6 +1992,7 @@ impl Model {
     ) -> Result<Vec<Vec<f64>>, PredictError> {
         match self {
             Model::DecisionTreeClassifier(model) => Ok(model.predict_proba_table(table)),
+            Model::RandomForest(model) => model.predict_proba_table(table),
             Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => {
                 Err(PredictError::ProbabilityPredictionRequiresClassification)
             }
@@ -2056,6 +2083,7 @@ impl Model {
             Model::TargetMean(_)
             | Model::DecisionTreeClassifier(_)
             | Model::DecisionTreeRegressor(_) => TrainAlgorithm::Dt,
+            Model::RandomForest(_) => TrainAlgorithm::Rf,
         }
     }
 
@@ -2063,6 +2091,7 @@ impl Model {
         match self {
             Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => Task::Regression,
             Model::DecisionTreeClassifier(_) => Task::Classification,
+            Model::RandomForest(model) => model.task(),
         }
     }
 
@@ -2071,6 +2100,7 @@ impl Model {
             Model::TargetMean(model) => model.criterion(),
             Model::DecisionTreeClassifier(model) => model.criterion(),
             Model::DecisionTreeRegressor(model) => model.criterion(),
+            Model::RandomForest(model) => model.criterion(),
         }
     }
 
@@ -2089,13 +2119,16 @@ impl Model {
                 RegressionTreeAlgorithm::Randomized => TreeType::Randomized,
                 RegressionTreeAlgorithm::Oblivious => TreeType::Oblivious,
             },
+            Model::RandomForest(model) => model.tree_type(),
         }
     }
 
     pub fn mean_value(&self) -> Option<f64> {
         match self {
             Model::TargetMean(model) => Some(model.mean),
-            Model::DecisionTreeClassifier(_) | Model::DecisionTreeRegressor(_) => None,
+            Model::DecisionTreeClassifier(_)
+            | Model::DecisionTreeRegressor(_)
+            | Model::RandomForest(_) => None,
         }
     }
 
@@ -2123,6 +2156,9 @@ impl Model {
         &self,
         physical_cores: Option<usize>,
     ) -> Result<OptimizedModel, OptimizeError> {
+        if matches!(self, Model::RandomForest(_)) {
+            return Err(OptimizeError::UnsupportedModelType("random_forest"));
+        }
         OptimizedModel::new(self.clone(), physical_cores)
     }
 
@@ -2149,6 +2185,7 @@ impl Model {
             Model::TargetMean(model) => model.num_features(),
             Model::DecisionTreeClassifier(model) => model.num_features(),
             Model::DecisionTreeRegressor(model) => model.num_features(),
+            Model::RandomForest(model) => model.num_features(),
         }
     }
 
@@ -2157,6 +2194,24 @@ impl Model {
             Model::TargetMean(model) => model.feature_preprocessing(),
             Model::DecisionTreeClassifier(model) => model.feature_preprocessing(),
             Model::DecisionTreeRegressor(model) => model.feature_preprocessing(),
+            Model::RandomForest(model) => model.feature_preprocessing(),
+        }
+    }
+
+    pub(crate) fn class_labels(&self) -> Option<Vec<f64>> {
+        match self {
+            Model::DecisionTreeClassifier(model) => Some(model.class_labels().to_vec()),
+            Model::RandomForest(model) => model.class_labels(),
+            Model::TargetMean(_) | Model::DecisionTreeRegressor(_) => None,
+        }
+    }
+
+    pub(crate) fn training_metadata(&self) -> ir::TrainingMetadata {
+        match self {
+            Model::TargetMean(model) => model.training_metadata(),
+            Model::DecisionTreeClassifier(model) => model.training_metadata(),
+            Model::DecisionTreeRegressor(model) => model.training_metadata(),
+            Model::RandomForest(model) => model.training_metadata(),
         }
     }
 }

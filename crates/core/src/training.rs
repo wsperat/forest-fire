@@ -1,5 +1,6 @@
 use crate::{
-    Criterion, Model, Parallelism, Task, TrainAlgorithm, TrainConfig, TrainError, TreeType, tree,
+    Criterion, Model, Parallelism, RandomForest, Task, TrainAlgorithm, TrainConfig, TrainError,
+    TreeType, tree,
 };
 use forestfire_data::TableAccess;
 use rayon::ThreadPoolBuilder;
@@ -8,106 +9,158 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     let criterion = resolve_criterion(config.task, config.tree_type, config.criterion)?;
     let parallelism = resolve_parallelism(config.physical_cores)?;
 
-    run_with_parallelism(parallelism, || {
-        match (config.algorithm, config.task, config.tree_type, criterion) {
-            (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Mean)
-            | (TrainAlgorithm::Dt, Task::Regression, TreeType::TargetMean, Criterion::Median) => {
-                tree::mean_tree::train_target_mean_with_criterion(train_set, criterion)
-                    .map(Model::TargetMean)
-                    .map_err(TrainError::Mean)
-            }
-            (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Gini)
-            | (TrainAlgorithm::Dt, Task::Classification, TreeType::Id3, Criterion::Entropy) => {
-                tree::classifier::train_id3_with_criterion_and_parallelism(
-                    train_set,
-                    criterion,
-                    parallelism,
-                )
-                .map(Model::DecisionTreeClassifier)
-                .map_err(TrainError::DecisionTree)
-            }
-            (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Gini)
-            | (TrainAlgorithm::Dt, Task::Classification, TreeType::C45, Criterion::Entropy) => {
-                tree::classifier::train_c45_with_criterion_and_parallelism(
-                    train_set,
-                    criterion,
-                    parallelism,
-                )
-                .map(Model::DecisionTreeClassifier)
-                .map_err(TrainError::DecisionTree)
-            }
-            (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Gini)
-            | (TrainAlgorithm::Dt, Task::Classification, TreeType::Cart, Criterion::Entropy) => {
-                tree::classifier::train_cart_with_criterion_and_parallelism(
-                    train_set,
-                    criterion,
-                    parallelism,
-                )
-                .map(Model::DecisionTreeClassifier)
-                .map_err(TrainError::DecisionTree)
-            }
-            (TrainAlgorithm::Dt, Task::Classification, TreeType::Randomized, Criterion::Gini)
-            | (
-                TrainAlgorithm::Dt,
-                Task::Classification,
-                TreeType::Randomized,
-                Criterion::Entropy,
-            ) => tree::classifier::train_randomized_with_criterion_and_parallelism(
+    run_with_parallelism(parallelism, || match config.algorithm {
+        TrainAlgorithm::Dt => train_single_model(
+            train_set,
+            config.task,
+            config.tree_type,
+            criterion,
+            parallelism,
+        ),
+        TrainAlgorithm::Rf => train_random_forest(
+            train_set,
+            config.task,
+            config.tree_type,
+            criterion,
+            parallelism,
+            config.n_trees.unwrap_or(10),
+        ),
+    })
+}
+
+fn train_single_model(
+    train_set: &dyn TableAccess,
+    task: Task,
+    tree_type: TreeType,
+    criterion: Criterion,
+    parallelism: Parallelism,
+) -> Result<Model, TrainError> {
+    match (task, tree_type, criterion) {
+        (Task::Regression, TreeType::TargetMean, Criterion::Mean)
+        | (Task::Regression, TreeType::TargetMean, Criterion::Median) => {
+            tree::mean_tree::train_target_mean_with_criterion(train_set, criterion)
+                .map(Model::TargetMean)
+                .map_err(TrainError::Mean)
+        }
+        (Task::Classification, TreeType::Id3, Criterion::Gini)
+        | (Task::Classification, TreeType::Id3, Criterion::Entropy) => {
+            tree::classifier::train_id3_with_criterion_and_parallelism(
                 train_set,
                 criterion,
                 parallelism,
             )
             .map(Model::DecisionTreeClassifier)
-            .map_err(TrainError::DecisionTree),
-            (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Gini)
-            | (TrainAlgorithm::Dt, Task::Classification, TreeType::Oblivious, Criterion::Entropy) => {
-                tree::classifier::train_oblivious_with_criterion_and_parallelism(
-                    train_set,
-                    criterion,
-                    parallelism,
-                )
-                .map(Model::DecisionTreeClassifier)
-                .map_err(TrainError::DecisionTree)
-            }
-            (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Mean)
-            | (TrainAlgorithm::Dt, Task::Regression, TreeType::Cart, Criterion::Median) => {
-                tree::regressor::train_cart_regressor_with_criterion_and_parallelism(
-                    train_set,
-                    criterion,
-                    parallelism,
-                )
-                .map(Model::DecisionTreeRegressor)
-                .map_err(TrainError::RegressionTree)
-            }
-            (TrainAlgorithm::Dt, Task::Regression, TreeType::Randomized, Criterion::Mean)
-            | (TrainAlgorithm::Dt, Task::Regression, TreeType::Randomized, Criterion::Median) => {
-                tree::regressor::train_randomized_regressor_with_criterion_and_parallelism(
-                    train_set,
-                    criterion,
-                    parallelism,
-                )
-                .map(Model::DecisionTreeRegressor)
-                .map_err(TrainError::RegressionTree)
-            }
-            (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Mean)
-            | (TrainAlgorithm::Dt, Task::Regression, TreeType::Oblivious, Criterion::Median) => {
-                tree::regressor::train_oblivious_regressor_with_criterion_and_parallelism(
-                    train_set,
-                    criterion,
-                    parallelism,
-                )
-                .map(Model::DecisionTreeRegressor)
-                .map_err(TrainError::RegressionTree)
-            }
-            (TrainAlgorithm::Dt, task, tree_type, criterion) => {
-                Err(TrainError::UnsupportedConfiguration {
-                    task,
-                    tree_type,
-                    criterion,
-                })
-            }
+            .map_err(TrainError::DecisionTree)
         }
-    })
+        (Task::Classification, TreeType::C45, Criterion::Gini)
+        | (Task::Classification, TreeType::C45, Criterion::Entropy) => {
+            tree::classifier::train_c45_with_criterion_and_parallelism(
+                train_set,
+                criterion,
+                parallelism,
+            )
+            .map(Model::DecisionTreeClassifier)
+            .map_err(TrainError::DecisionTree)
+        }
+        (Task::Classification, TreeType::Cart, Criterion::Gini)
+        | (Task::Classification, TreeType::Cart, Criterion::Entropy) => {
+            tree::classifier::train_cart_with_criterion_and_parallelism(
+                train_set,
+                criterion,
+                parallelism,
+            )
+            .map(Model::DecisionTreeClassifier)
+            .map_err(TrainError::DecisionTree)
+        }
+        (Task::Classification, TreeType::Randomized, Criterion::Gini)
+        | (Task::Classification, TreeType::Randomized, Criterion::Entropy) => {
+            tree::classifier::train_randomized_with_criterion_and_parallelism(
+                train_set,
+                criterion,
+                parallelism,
+            )
+            .map(Model::DecisionTreeClassifier)
+            .map_err(TrainError::DecisionTree)
+        }
+        (Task::Classification, TreeType::Oblivious, Criterion::Gini)
+        | (Task::Classification, TreeType::Oblivious, Criterion::Entropy) => {
+            tree::classifier::train_oblivious_with_criterion_and_parallelism(
+                train_set,
+                criterion,
+                parallelism,
+            )
+            .map(Model::DecisionTreeClassifier)
+            .map_err(TrainError::DecisionTree)
+        }
+        (Task::Regression, TreeType::Cart, Criterion::Mean)
+        | (Task::Regression, TreeType::Cart, Criterion::Median) => {
+            tree::regressor::train_cart_regressor_with_criterion_and_parallelism(
+                train_set,
+                criterion,
+                parallelism,
+            )
+            .map(Model::DecisionTreeRegressor)
+            .map_err(TrainError::RegressionTree)
+        }
+        (Task::Regression, TreeType::Randomized, Criterion::Mean)
+        | (Task::Regression, TreeType::Randomized, Criterion::Median) => {
+            tree::regressor::train_randomized_regressor_with_criterion_and_parallelism(
+                train_set,
+                criterion,
+                parallelism,
+            )
+            .map(Model::DecisionTreeRegressor)
+            .map_err(TrainError::RegressionTree)
+        }
+        (Task::Regression, TreeType::Oblivious, Criterion::Mean)
+        | (Task::Regression, TreeType::Oblivious, Criterion::Median) => {
+            tree::regressor::train_oblivious_regressor_with_criterion_and_parallelism(
+                train_set,
+                criterion,
+                parallelism,
+            )
+            .map(Model::DecisionTreeRegressor)
+            .map_err(TrainError::RegressionTree)
+        }
+        (task, tree_type, criterion) => Err(TrainError::UnsupportedConfiguration {
+            task,
+            tree_type,
+            criterion,
+        }),
+    }
+}
+
+fn train_random_forest(
+    train_set: &dyn TableAccess,
+    task: Task,
+    tree_type: TreeType,
+    criterion: Criterion,
+    parallelism: Parallelism,
+    n_trees: usize,
+) -> Result<Model, TrainError> {
+    if n_trees == 0 {
+        return Err(TrainError::InvalidTreeCount(n_trees));
+    }
+
+    let mut trees = Vec::with_capacity(n_trees);
+    for _ in 0..n_trees {
+        trees.push(train_single_model(
+            train_set,
+            task,
+            tree_type,
+            criterion,
+            parallelism,
+        )?);
+    }
+
+    Ok(Model::RandomForest(RandomForest::new(
+        task,
+        criterion,
+        tree_type,
+        trees,
+        train_set.n_features(),
+        crate::capture_feature_preprocessing(train_set),
+    )))
 }
 
 fn resolve_criterion(

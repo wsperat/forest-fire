@@ -43,6 +43,7 @@ fn unified_train_dispatches_regression_cart() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -117,6 +118,7 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
             tree_type: TreeType::Id3,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap_err();
@@ -160,6 +162,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::TargetMean,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Mean,
         ),
@@ -171,6 +174,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::Cart,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Mean,
         ),
@@ -182,6 +186,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::Randomized,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Mean,
         ),
@@ -193,6 +198,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::Oblivious,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Mean,
         ),
@@ -204,6 +210,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::Id3,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Entropy,
         ),
@@ -215,6 +222,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::C45,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Entropy,
         ),
@@ -226,6 +234,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::Cart,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Gini,
         ),
@@ -237,6 +246,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::Randomized,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Gini,
         ),
@@ -248,6 +258,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 tree_type: TreeType::Oblivious,
                 criterion: Criterion::Auto,
                 physical_cores: Some(1),
+                n_trees: None,
             },
             Criterion::Gini,
         ),
@@ -295,6 +306,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::TargetMean,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -302,6 +314,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -309,6 +322,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::Randomized,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -316,6 +330,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     ] {
         let single_core = train(&regression_table, config).unwrap();
@@ -341,6 +356,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::Id3,
             criterion: Criterion::Entropy,
             physical_cores: Some(1),
+            n_trees: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -348,6 +364,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::C45,
             criterion: Criterion::Entropy,
             physical_cores: Some(1),
+            n_trees: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -355,6 +372,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -362,6 +380,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::Randomized,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -369,6 +388,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     ] {
         let single_core = train(&classification_table, config).unwrap();
@@ -429,6 +449,7 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -440,6 +461,7 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(usize::MAX),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -472,6 +494,7 @@ fn ir_exports_target_mean_with_training_binning() {
             tree_type: TreeType::TargetMean,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -522,6 +545,7 @@ fn ir_exports_classifier_with_multiway_postprocessing() {
             tree_type: TreeType::Id3,
             criterion: Criterion::Entropy,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -567,6 +591,7 @@ fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -614,6 +639,7 @@ fn serialized_model_round_trips_through_deserialize() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -649,6 +675,7 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -690,6 +717,7 @@ fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -730,6 +758,7 @@ fn optimized_oblivious_model_matches_base_on_large_batch() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -761,6 +790,7 @@ fn optimized_cart_model_batch_and_single_row_predictions_match() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -795,6 +825,7 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -832,6 +863,7 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -875,6 +907,7 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -916,6 +949,7 @@ fn optimized_model_rejects_zero_physical_cores() {
             tree_type: TreeType::TargetMean,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -949,6 +983,7 @@ fn model_predicts_from_raw_rows_without_building_a_training_table() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -986,6 +1021,7 @@ fn model_predicts_from_named_columns() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1021,6 +1057,7 @@ fn model_rejects_missing_named_feature() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1053,6 +1090,7 @@ fn model_rejects_unexpected_named_feature() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1089,6 +1127,7 @@ fn model_rejects_invalid_binary_value_during_inference() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1126,6 +1165,7 @@ fn model_predicts_from_sparse_binary_columns() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1159,6 +1199,7 @@ fn model_predicts_from_polars_dataframe() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1195,6 +1236,7 @@ fn model_predicts_from_polars_lazyframe() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1231,6 +1273,7 @@ fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1289,6 +1332,7 @@ fn model_rejects_polars_nulls() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap();
@@ -1326,6 +1370,7 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap()
@@ -1361,6 +1406,7 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             tree_type: TreeType::Oblivious,
             criterion: Criterion::Mean,
             physical_cores: Some(1),
+            n_trees: None,
         },
     )
     .unwrap()

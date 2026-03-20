@@ -53,6 +53,7 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 tree_type,
                 criterion,
                 physical_cores: None,
+                n_trees: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -83,6 +84,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 tree_type,
                 criterion,
                 physical_cores: None,
+                n_trees: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -118,6 +120,7 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             tree_type: TreeType::Cart,
             criterion: Criterion::Gini,
             physical_cores: None,
+            n_trees: None,
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -166,6 +169,7 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             tree_type: TreeType::Cart,
             criterion: Criterion::Mean,
             physical_cores: None,
+            n_trees: None,
         },
     )?;
 

@@ -184,6 +184,52 @@ def test_predict_proba_returns_class_probabilities(
     )
 
 
+def test_predict_proba_batch_and_single_row_match(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    batch_proba = model.predict_proba(X)
+    single_row_proba = np.vstack(
+        [model.predict_proba(X[row_idx : row_idx + 1]) for row_idx in range(X.shape[0])]
+    )
+
+    assert np.allclose(
+        batch_proba,
+        single_row_proba,
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+
+
+def test_predict_proba_accepts_named_feature_dict(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    proba = model.predict_proba(
+        {"f0": [0.0, 0.0, 1.0, 1.0], "f1": [0.0, 1.0, 0.0, 1.0]}
+    )
+
+    assert np.allclose(proba.sum(axis=1), 1.0)
+    assert np.array_equal(np.argmax(proba, axis=1), y.astype(int))
+
+
+def test_predict_proba_accepts_single_named_feature_row(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    proba = model.predict_proba({"f0": 1.0, "f1": 1.0})
+
+    assert proba.shape == (1, 2)
+    assert np.allclose(proba.sum(axis=1), 1.0)
+    assert np.argmax(proba[0]) == int(y[-1])
+
+
 def test_predict_proba_rejects_regression_models(
     toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -192,6 +238,90 @@ def test_predict_proba_rejects_regression_models(
 
     with pytest.raises(ValueError, match="only available for classification models"):
         model.predict_proba(X)
+
+
+def test_train_random_forest_classifier_shell_matches_single_tree_without_bootstrap(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    forest = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=3,
+    )
+    tree = train(
+        X, y, algorithm="dt", task="classification", tree_type="cart", canaries=0
+    )
+
+    assert forest.algorithm == "rf"
+    assert forest.task == "classification"
+    assert forest.criterion == "gini"
+    assert forest.tree_type == "cart"
+    assert np.array_equal(forest.predict(X), tree.predict(X))
+    assert np.allclose(forest.predict_proba(X), tree.predict_proba(X))
+
+
+def test_train_random_forest_regressor_shell_matches_single_tree_without_bootstrap(
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = toy_data
+    forest = train(
+        X,
+        y,
+        algorithm="rf",
+        task="regression",
+        tree_type="cart",
+        canaries=0,
+        n_trees=3,
+    )
+    tree = train(X, y, algorithm="dt", task="regression", tree_type="cart", canaries=0)
+
+    assert forest.algorithm == "rf"
+    assert forest.task == "regression"
+    assert forest.criterion == "mean"
+    assert forest.tree_type == "cart"
+    assert np.allclose(forest.predict(X), tree.predict(X))
+
+
+def test_random_forest_rejects_zero_trees(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+
+    with pytest.raises(ValueError, match="requires at least one tree"):
+        train(
+            X,
+            y,
+            algorithm="rf",
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            n_trees=0,
+        )
+
+
+def test_random_forest_round_trips_through_serialization(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=3,
+    )
+    restored = model.deserialize(model.serialize())
+
+    assert restored.algorithm == "rf"
+    assert np.array_equal(restored.predict(X), model.predict(X))
+    assert np.allclose(restored.predict_proba(X), model.predict_proba(X))
 
 
 def test_predict_accepts_feature_only_table(
@@ -333,6 +463,45 @@ def test_optimized_predict_proba_matches_base_model(
     assert np.allclose(optimized.predict_proba(X), model.predict_proba(X))
 
 
+def test_optimized_predict_proba_batch_and_single_row_match(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    batch_proba = optimized.predict_proba(X)
+    single_row_proba = np.vstack(
+        [
+            optimized.predict_proba(X[row_idx : row_idx + 1])
+            for row_idx in range(X.shape[0])
+        ]
+    )
+
+    assert np.allclose(
+        batch_proba,
+        single_row_proba,
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+    assert np.array_equal(np.argmax(batch_proba, axis=1), y.astype(int))
+
+
+def test_optimized_predict_proba_accepts_named_feature_dict(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    optimized = model.optimize_inference(physical_cores=1)
+
+    proba = optimized.predict_proba(
+        {"f0": [0.0, 0.0, 1.0, 1.0], "f1": [0.0, 1.0, 0.0, 1.0]}
+    )
+
+    assert np.allclose(proba.sum(axis=1), 1.0)
+    assert np.array_equal(np.argmax(proba, axis=1), y.astype(int))
+
+
 def test_optimize_inference_rejects_zero_physical_cores() -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
@@ -340,6 +509,26 @@ def test_optimize_inference_rejects_zero_physical_cores() -> None:
 
     with pytest.raises(ValueError, match="Requested 0 physical cores"):
         model.optimize_inference(physical_cores=0)
+
+
+def test_random_forest_optimize_inference_is_not_supported(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    model = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        n_trees=3,
+    )
+
+    with pytest.raises(
+        ValueError, match="not supported for model type 'random_forest'"
+    ):
+        model.optimize_inference(physical_cores=1)
 
 
 def test_compiled_optimized_model_round_trips() -> None:
@@ -581,7 +770,7 @@ def test_train_rejects_unknown_algorithm() -> None:
     y = np.array([0.0, 1.0])
 
     with pytest.raises(ValueError, match="Unsupported algorithm"):
-        train(X, y, algorithm="rf")
+        train(X, y, algorithm="gbm")
 
 
 def test_train_accepts_fixed_bins() -> None:

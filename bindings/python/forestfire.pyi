@@ -30,6 +30,7 @@ def train(
     canaries: int = 2,
     bins: str | int = "auto",
     physical_cores: int | None = None,
+    n_trees: int | None = None,
 ) -> "Model": ...
 
 class OptimizedModel:
