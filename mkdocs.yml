@@ -1,0 +1,36 @@
+---
+site_name: ForestFire
+site_description: Tree-based learning in Rust with a Python API.
+site_url: https://wsperat.github.io/forest-fire/
+repo_url: https://github.com/wsperat/forest-fire
+repo_name: wsperat/forest-fire
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+nav:
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - Python API: python-api.md
+  - Rust API: rust-api.md
+  - Training: training.md
+  - Models And Introspection: models.md
+  - Benchmarks: benchmarks.md
+  - Releasing:
+      - PyPI: pypi-release.md
+      - crates.io: cargo-release.md
