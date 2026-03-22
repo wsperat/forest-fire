@@ -26,6 +26,11 @@ markdown_extensions:
 nav:
   - Overview: index.md
   - Getting Started: getting-started.md
+  - Design:
+      - Architecture: design.md
+      - Canary Strategy: canaries.md
+      - Runtime And IR: runtime.md
+      - Intermediate Representation: ir.md
   - Python API: python-api.md
   - Rust API: rust-api.md
   - Training: training.md

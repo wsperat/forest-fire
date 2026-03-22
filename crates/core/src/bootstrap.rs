@@ -1,6 +1,16 @@
+//! Small deterministic bootstrap sampler used by ensemble trainers.
+//!
+//! The sampler lives in its own module because the same sampling primitive is
+//! reused by random forests and gradient boosting.
+
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
+/// Full-size bootstrap sampler.
+///
+/// The sample size always matches the training row count. That keeps the
+/// semantics close to standard random forests and also makes OOB accounting
+/// straightforward.
 #[derive(Debug, Clone)]
 pub struct BootstrapSampler {
     sample_size: usize,

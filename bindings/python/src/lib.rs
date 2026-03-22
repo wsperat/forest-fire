@@ -1,3 +1,13 @@
+//! Python bindings for ForestFire.
+//!
+//! The binding layer does three jobs:
+//!
+//! - convert Python-native inputs into the normalized Rust table/config surface
+//! - preserve Python ergonomics such as `task="auto"`, string class labels, and
+//!   single-row prediction shortcuts
+//! - keep the heavy lifting in Rust while releasing the GIL around long-running
+//!   train/predict/optimize calls
+
 use forestfire_core::{
     Criterion, IntrospectionError, MaxFeatures, Model, OptimizedModel as CoreOptimizedModel, Task,
     TrainAlgorithm, TrainConfig, TreeType, train as train_model,
@@ -156,6 +166,8 @@ fn build_inference_input(x: &Bound<PyAny>) -> PyResult<InferenceInput> {
         });
     }
 
+    // Inference is intentionally permissive: a single row like `[1, 2, 3]`
+    // should not require the caller to wrap it as `[[1, 2, 3]]`.
     if let Ok(rows) = extract_rows_or_single_row(x) {
         return Ok(InferenceInput::Rows(rows));
     }
@@ -210,6 +222,8 @@ where
         if height == 0 {
             break;
         }
+        // LazyFrames are collected in bounded batches so prediction can scale to
+        // larger-than-memory logical plans without forcing one giant materialize.
         predictions.extend(predict_batch(build_inference_input(&batch)?)?);
         if height < LAZYFRAME_PREDICT_BATCH_ROWS {
             break;

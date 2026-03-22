@@ -62,3 +62,16 @@ Useful tasks:
 - `task rust-verify`
 - `task docs-serve`
 - `task docs-build`
+
+## How to think about the API
+
+The intended user flow is:
+
+1. give the library a feature matrix and target
+2. let `Table` decide how to represent the data
+3. call the unified `train(...)` entrypoint
+4. use `predict(...)` on raw inference data
+5. optionally call `optimize_inference(...)` when scoring is performance-critical
+6. serialize the result when you need a portable artifact
+
+That is why the API is organized around `Table`, `train`, `predict`, `optimize_inference`, and `serialize`, rather than around many learner-specific classes.

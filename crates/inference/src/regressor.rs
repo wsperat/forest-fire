@@ -1,6 +1,10 @@
 use forestfire_data::TableAccess;
 
 /// Common interface for regression models.
+///
+/// The trait is intentionally tiny: it captures the one operation inference code
+/// usually needs while allowing different model backends to implement their own
+/// storage and traversal details.
 pub trait Regressor {
     /// Predict for `n_rows` rows (feature-agnostic).
     fn predict_rows(&self, n_rows: usize) -> Vec<f64>;

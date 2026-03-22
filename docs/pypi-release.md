@@ -33,6 +33,8 @@ This repository also includes GitHub Actions trusted publishing for PyPI in:
 
 That workflow builds wheels and an sdist, then publishes them through PyPI trusted publishing.
 
+The docs site is deployed separately through `.github/workflows/docs.yaml` to GitHub Pages.
+
 ## Before releasing
 
 Make sure you:
@@ -41,3 +43,11 @@ Make sure you:
 - bump the version in `bindings/python/Cargo.toml`
 - verify the PyPI project name is correct
 - run the package check task before tagging
+- ensure the GitHub trusted publisher is configured for the correct project name
+
+## Local tasks
+
+- `task python-package-build`
+- `task python-package-check`
+- `task python-package-publish-testpypi`
+- `task python-package-publish`

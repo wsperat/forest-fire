@@ -1,0 +1,160 @@
+# Design And Architecture
+
+## Why ForestFire is organized the way it is
+
+ForestFire is intentionally built around a small number of strong abstractions instead of a large catalog of learner-specific entrypoints.
+
+The core design choices are:
+
+- one unified training surface
+- one shared training-table abstraction
+- one explicit semantic model representation
+- one separate optimized runtime view
+
+Those choices are there to solve real coordination problems in tree libraries.
+
+## Unified training surface
+
+The project uses `train(...)` as the main entrypoint rather than exposing a separate class or constructor for every learner family.
+
+Why:
+
+- users think in terms of task, tree family, and constraints before they think in terms of API object hierarchies
+- the public surface stays stable as new learner families are added
+- the Python and Rust layers can stay aligned instead of drifting into unrelated APIs
+
+Tradeoff:
+
+- the configuration object gets richer over time
+- validation becomes more important because not every parameter applies to every algorithm
+
+That tradeoff is accepted deliberately. The project prefers one explicit configuration matrix over many partially overlapping public entrypoints.
+
+## Shared `Table` abstraction
+
+The learners do not operate directly on arbitrary user containers. They operate on a common `TableAccess` interface backed by dense or sparse table implementations.
+
+Why:
+
+- preprocessing should happen once, not be duplicated inside every learner
+- sparse-vs-dense storage is an execution detail, not a modeling concept
+- canary generation, binning, and feature typing belong in one place if model semantics are going to stay coherent
+
+Impact:
+
+- every learner sees the same binned representation
+- forests do not rebucket data per tree
+- optimized inference can reuse the same feature-preprocessing semantics that training used
+
+The table abstraction is one of the project’s highest-leverage design decisions because it keeps “what the data means” separate from “which learner is using it”.
+
+## Why binning is central
+
+ForestFire is built around bounded numeric bins rather than exact threshold handling everywhere.
+
+Why:
+
+- repeated exact threshold rescans are expensive
+- a bounded discrete search space enables histogram-based split search
+- the same discretization can be reused by training, serialization, and optimized runtime lowering
+
+Tradeoff:
+
+- very fine-grained exact threshold behavior is approximated by bins
+- the binning strategy becomes part of model semantics
+
+That is acceptable because the project values regularity and portability more than preserving every raw numeric distinction internally.
+
+## Why canaries exist
+
+Canaries are shuffled copies of already-preprocessed features that compete with real features during split search.
+
+Why:
+
+- impurity improvement alone does not tell you whether the model is still learning structure or just fitting noise
+- a canary feature is a practical training-time baseline for “what if this split quality were random?”
+- this makes stopping part of the split-selection process instead of a later clean-up stage
+
+This is a strong design opinion:
+
+- ForestFire prefers in-training noise competition
+- it does not treat pruning as the primary answer to overgrowth
+
+That is also why canary behavior differs by algorithm:
+
+- single trees use them directly as a local stopping signal
+- boosting keeps them because late-stage residual fitting is especially prone to noise chasing
+- random forests ignore them because bagging and feature subsampling are already the dominant regularizers there
+
+## Why optimized inference is a separate model view
+
+Training structures are rich in information:
+
+- impurity
+- gain
+- sample counts
+- multiway branch metadata
+- class counts
+
+Those are useful for debugging, inspection, and IR export, but they are not free on the hot scoring path.
+
+So ForestFire treats runtime optimization as a lowering step:
+
+- the semantic model stays the same
+- the execution layout changes
+
+This separation keeps two important properties at once:
+
+- introspection still sees the full trained structure
+- prediction can use a layout that is much closer to what CPUs want
+
+## Why the IR is first-class
+
+The IR is not an export afterthought. It is the semantic bridge between:
+
+- training
+- optimized inference
+- serialization
+- introspection
+
+Why it matters:
+
+- without an explicit semantic layer, optimized runtimes drift from trainer semantics
+- without recorded preprocessing assumptions, “deserialize and predict” is not reproducible
+- without a stable structural representation, introspection becomes tied to implementation details
+
+The IR forces the project to answer explicitly:
+
+- what a node means
+- what a leaf payload means
+- how preprocessing is represented
+- which runtime transformations preserve semantics
+
+That discipline is one of the reasons ForestFire can expose runtime lowering, dataframe export, and serialization without each feature inventing its own hidden interpretation of the model.
+
+## Why multiple tree families remain exposed
+
+The project does not collapse everything into a single default binary tree family because the structural choice genuinely changes:
+
+- inductive bias
+- interpretability
+- runtime shape
+- suitability for ensembles
+
+Examples:
+
+- `id3` and `c45` are attractive when you want direct per-bin branching structure
+- `cart` is the most general-purpose backbone for forests and boosting
+- `randomized` is valuable when deliberate stochasticity is part of the learner
+- `oblivious` gives up flexibility to gain regularity, which makes optimized execution and symmetric-tree reasoning much cleaner
+
+## The recurring theme
+
+Across the codebase, the same preference keeps showing up:
+
+- make semantics explicit
+- separate meaning from execution strategy
+- prefer regular internal representations when they unlock system-wide gains
+- let training-time design choices feed directly into runtime, export, and introspection
+
+That is the architectural throughline of the project.

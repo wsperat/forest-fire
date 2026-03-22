@@ -1,6 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ModelPackageIr",
+  "description": "Top-level model package serialized by the library.",
   "type": "object",
   "required": [
     "format_name",
@@ -482,6 +483,7 @@
       ]
     },
     "ModelSection": {
+      "description": "Structural model description independent of any concrete runtime layout.",
       "type": "object",
       "required": [
         "aggregation",
@@ -757,11 +759,13 @@
       ],
       "properties": {
         "bin": {
+          "description": "Bin identifier in the preprocessed feature space.",
           "type": "integer",
           "format": "uint16",
           "minimum": 0.0
         },
         "upper_bound": {
+          "description": "Largest raw floating-point value that still belongs to this bin.",
           "type": "number",
           "format": "double"
         }
@@ -1078,6 +1082,7 @@
       }
     },
     "TrainingMetadata": {
+      "description": "Serialized training metadata reflected back to bindings and docs.",
       "type": "object",
       "required": [
         "algorithm",
@@ -1203,6 +1208,7 @@
       }
     },
     "TreeDefinition": {
+      "description": "Concrete tree payload stored in the IR.",
       "oneOf": [
         {
           "type": "object",

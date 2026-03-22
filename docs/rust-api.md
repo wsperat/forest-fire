@@ -24,6 +24,16 @@ let model = train(&table, TrainConfig::default())?;
 - `Model`
 - `OptimizedModel`
 
+## Core capabilities
+
+`forestfire-core` currently provides:
+
+- unified training dispatch
+- decision trees, random forests, and gradient boosting
+- optimized inference runtimes
+- JSON IR serialization and deserialization
+- tree introspection metadata
+
 ## Data crate
 
 The `forestfire-data` crate provides the training-table abstractions and preprocessing/binned storage used by the learners.
@@ -31,6 +41,10 @@ The `forestfire-data` crate provides the training-table abstractions and preproc
 ## Inference crate
 
 The `forestfire-inference` crate contains inference-focused runtime utilities on top of the model IR and compiled runtimes.
+
+## Rust usage notes
+
+Use the core and data crates directly from the workspace today. The library is still early-stage, so the repository state should be treated as the source of truth for the public surface.
 
 ## Publishing order
 

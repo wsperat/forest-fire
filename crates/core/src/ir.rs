@@ -1,3 +1,14 @@
+//! Stable intermediate representation for ForestFire models.
+//!
+//! The IR sits between two worlds:
+//!
+//! - the semantic in-memory model types used for training and introspection
+//! - the lowered runtime structures used by optimized inference
+//!
+//! It exists so models can be serialized, schema-checked, inspected from other
+//! languages, and reconstructed without depending on the exact Rust memory
+//! layout of the training structs.
+
 use crate::tree::classifier::{
     DecisionTreeAlgorithm, DecisionTreeClassifier, DecisionTreeOptions,
     ObliviousSplit as ClassifierObliviousSplit, TreeNode as ClassifierTreeNode,
@@ -19,6 +30,7 @@ use std::fmt::{Display, Formatter};
 const IR_VERSION: &str = "1.0.0";
 const FORMAT_NAME: &str = "forestfire-ir";
 
+/// Top-level model package serialized by the library.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ModelPackageIr {
     pub ir_version: String,
@@ -42,6 +54,7 @@ pub struct ProducerMetadata {
     pub platform: String,
 }
 
+/// Structural model description independent of any concrete runtime layout.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ModelSection {
     pub algorithm: String,
@@ -57,6 +70,7 @@ pub struct ModelSection {
     pub aggregation: Aggregation,
 }
 
+/// Concrete tree payload stored in the IR.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "representation", rename_all = "snake_case")]
 pub enum TreeDefinition {
@@ -303,6 +317,7 @@ pub enum PostprocessingStep {
     MapClassIndexToLabel { labels: Vec<f64> },
 }
 
+/// Serialized training metadata reflected back to bindings and docs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TrainingMetadata {
     pub algorithm: String,

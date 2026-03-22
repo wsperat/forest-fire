@@ -1,3 +1,9 @@
+//! Small sampling helpers shared by multiple trainers.
+//!
+//! The functions here are intentionally tiny and deterministic so higher-level
+//! trainers can compose them without dragging sampling policy into the tree
+//! implementations themselves.
+
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
