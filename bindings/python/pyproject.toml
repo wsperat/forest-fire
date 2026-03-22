@@ -3,8 +3,8 @@ requires = ["maturin>=1.4,<2"]
 build-backend = "maturin"
 
 [project]
-name = "forestfire"
-version = "0.1.0"
+name = "forestfire-ml"
+version = "0.1.2"
 description = "Tree-based learning in Rust with a Python API."
 readme = "PYPI.md"
 license = "MIT"
