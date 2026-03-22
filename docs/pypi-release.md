@@ -1,0 +1,43 @@
+# Publishing To PyPI
+
+The Python package is published as:
+
+- package name: `forestfire-ml`
+- import name: `forestfire`
+
+## Local release flow
+
+Build and validate:
+
+```bash
+task python-package-check
+```
+
+Upload to TestPyPI:
+
+```bash
+task python-package-publish-testpypi
+```
+
+Upload to PyPI:
+
+```bash
+task python-package-publish
+```
+
+## Trusted publishing
+
+This repository also includes GitHub Actions trusted publishing for PyPI in:
+
+- `.github/workflows/publish-python.yaml`
+
+That workflow builds wheels and an sdist, then publishes them through PyPI trusted publishing.
+
+## Before releasing
+
+Make sure you:
+
+- bump the version in `bindings/python/pyproject.toml`
+- bump the version in `bindings/python/Cargo.toml`
+- verify the PyPI project name is correct
+- run the package check task before tagging
