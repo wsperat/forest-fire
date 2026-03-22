@@ -161,6 +161,33 @@ tasks:
     desc: Build a wheel for the Python extension
     deps: [install, rust-toolchain]
     cmds: [uv run maturin build -m bindings/python/Cargo.toml --release]
+  python-package-build:
+    desc: Build PyPI-ready wheel(s) and sdist for the Python package
+    deps: [install, rust-toolchain]
+    cmds:
+      - rm -rf dist
+      - >-
+        uv run maturin build
+        -m bindings/python/Cargo.toml
+        --release
+        --sdist
+        --out dist
+  python-package-check:
+    desc: Build the Python package and validate metadata with twine
+    deps: [python-package-build]
+    cmds: ["uv run --group release twine check \\\n  dist/*\n"]
+  python-package-publish-testpypi:
+    desc: Upload built distributions to TestPyPI with twine
+    deps: [python-package-check]
+    cmds:
+      - |
+        uv run --group release twine upload \
+          --repository testpypi \
+          dist/*
+  python-package-publish:
+    desc: Upload built distributions to PyPI with twine
+    deps: [python-package-check]
+    cmds: ["uv run --group release twine upload \\\n  dist/*\n"]
   python-test-ext:
     desc: Run Python tests with the Rust extension built
     cmds: [task test]
