@@ -1,8 +1,10 @@
 [package]
 name = "forestfire-python"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
-publish = false
+license = "MIT"
+repository = "https://github.com/wsperat/forest-fire"
+description = "Python extension module for the ForestFire tree-learning library."
 
 [lib]
 name = "forestfire"
