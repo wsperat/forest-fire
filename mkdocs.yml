@@ -29,6 +29,7 @@ nav:
   - Design:
       - Architecture: design.md
       - Runtime And IR: runtime.md
+      - Intermediate Representation: ir.md
   - Python API: python-api.md
   - Rust API: rust-api.md
   - Training: training.md
