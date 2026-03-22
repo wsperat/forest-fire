@@ -1,3 +1,10 @@
+//! Random forest implementation.
+//!
+//! The forest deliberately reuses the single-tree trainers instead of
+//! maintaining a separate tree-building codepath. That keeps semantics aligned:
+//! every constituent tree is still "just" a normal ForestFire tree trained on a
+//! sampled table view with per-node feature subsampling.
+
 use crate::bootstrap::BootstrapSampler;
 use crate::ir::TrainingMetadata;
 use crate::{
@@ -7,6 +14,11 @@ use crate::{
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 
+/// Bagged ensemble of decision trees.
+///
+/// The forest stores full semantic [`Model`] trees rather than a bespoke forest
+/// node format. That costs some memory, but it keeps IR conversion,
+/// introspection, and optimized lowering consistent with the single-tree path.
 #[derive(Debug, Clone)]
 pub struct RandomForest {
     task: Task,
@@ -77,6 +89,9 @@ impl RandomForest {
             return Err(TrainError::InvalidMaxFeatures(0));
         }
 
+        // Forests intentionally ignore canaries. For standalone trees they act as
+        // a regularization/stopping heuristic, but in a forest they would make
+        // bootstrap replicas overly conservative and reduce ensemble diversity.
         let train_set = NoCanaryTable::new(train_set);
         let sampler = BootstrapSampler::new(train_set.n_rows());
         let feature_preprocessing = capture_feature_preprocessing(&train_set);
@@ -91,6 +106,8 @@ impl RandomForest {
         let train_tree = |tree_index: usize| -> Result<TrainedTree, TrainError> {
             let tree_seed = mix_seed(base_seed, tree_index as u64);
             let (sampled_rows, oob_rows) = sampler.sample_with_oob(tree_seed);
+            // Sampling is implemented as a `TableAccess` view so the existing
+            // tree trainers can stay oblivious to bootstrap mechanics.
             let sampled_table = SampledTable::new(&train_set, sampled_rows);
             let model = training::train_single_model_with_feature_subset(
                 &sampled_table,
@@ -156,6 +173,9 @@ impl RandomForest {
             return Err(PredictError::ProbabilityPredictionRequiresClassification);
         }
 
+        // Forest classification aggregates full class distributions rather than
+        // voting on hard labels. This keeps `predict` and `predict_proba`
+        // consistent and matches the optimized runtime lowering.
         let mut totals = self.trees[0].predict_proba_table(table)?;
         for tree in &self.trees[1..] {
             let probs = tree.predict_proba_table(table)?;

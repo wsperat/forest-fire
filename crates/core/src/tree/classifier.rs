@@ -1,3 +1,18 @@
+//! Classification tree learners.
+//!
+//! The module intentionally supports multiple tree families because they express
+//! different tradeoffs:
+//!
+//! - `id3` / `c45` keep multiway splits for categorical-like binned features.
+//! - `cart` is the standard binary threshold learner.
+//! - `randomized` keeps the CART structure but cheapens split search.
+//! - `oblivious` uses one split per depth, which is attractive for some runtime
+//!   layouts and boosting-style ensembles.
+//!
+//! The hot numeric paths are written around binned histograms and in-place row
+//! partitioning. That is why many helpers operate on row-index buffers instead of
+//! allocating fresh row vectors at every recursive step.
+
 use crate::ir::{
     BinaryChildren, BinarySplit, IndexedLeaf, LeafIndexing, LeafPayload, MultiwayBranch,
     MultiwaySplit, NodeStats, NodeTreeNode, ObliviousLevel, ObliviousSplit as IrObliviousSplit,
@@ -23,6 +38,11 @@ pub enum DecisionTreeAlgorithm {
     Oblivious,
 }
 
+/// Shared training controls for classification tree learners.
+///
+/// The defaults are intentionally modest rather than "grow until pure", because
+/// ForestFire wants trees to be a stable building block for ensembles and
+/// interpretable standalone models.
 #[derive(Debug, Clone, Copy)]
 pub struct DecisionTreeOptions {
     pub max_depth: usize,
@@ -65,6 +85,7 @@ impl Display for DecisionTreeError {
 
 impl Error for DecisionTreeError {}
 
+/// Concrete trained classification tree.
 #[derive(Debug, Clone)]
 pub struct DecisionTreeClassifier {
     algorithm: DecisionTreeAlgorithm,
@@ -407,6 +428,9 @@ fn train_classifier(
                 parallelism,
                 options,
             };
+            // The standard binary builders partition one shared row-index buffer
+            // in place. That avoids repeatedly allocating left/right row vectors
+            // during recursive growth.
             let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
             TreeStructure::Standard { nodes, root }
         }
@@ -422,6 +446,8 @@ fn train_classifier(
                 parallelism,
                 options,
             };
+            // The multiway path now uses the same in-place row-buffer idea even
+            // though its branching factor is larger than the binary trainers.
             let root = build_multiway_node_in_place(&context, &mut nodes, &mut all_rows, 0);
             TreeStructure::Standard { nodes, root }
         }
@@ -440,20 +466,24 @@ fn train_classifier(
 }
 
 impl DecisionTreeClassifier {
+    /// Which learner family produced this tree.
     pub fn algorithm(&self) -> DecisionTreeAlgorithm {
         self.algorithm
     }
 
+    /// Split criterion used during training.
     pub fn criterion(&self) -> Criterion {
         self.criterion
     }
 
+    /// Predict one label per row from a preprocessed table.
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         (0..table.n_rows())
             .map(|row_idx| self.predict_row(table, row_idx))
             .collect()
     }
 
+    /// Return one class-probability vector per row.
     pub fn predict_proba_table(&self, table: &dyn TableAccess) -> Vec<Vec<f64>> {
         (0..table.n_rows())
             .map(|row_idx| self.predict_proba_row(table, row_idx))

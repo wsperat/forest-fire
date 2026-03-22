@@ -1,3 +1,10 @@
+//! Gradient boosting implementation.
+//!
+//! The boosting path is intentionally "LightGBM-like" rather than a direct
+//! clone. It uses second-order trees, shrinkage, and gradient-focused sampling,
+//! but it keeps ForestFire's canary mechanism active so a stage can stop before
+//! growing a tree whose best root split is indistinguishable from noise.
+
 use crate::bootstrap::BootstrapSampler;
 use crate::ir::TrainingMetadata;
 use crate::tree::second_order::{
@@ -15,6 +22,10 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 
+/// Stage-wise gradient-boosted tree ensemble.
+///
+/// The ensemble keeps explicit tree weights and a base score so the semantic
+/// model can reconstruct raw margins exactly for both prediction and IR export.
 #[derive(Debug, Clone)]
 pub struct GradientBoostedTrees {
     task: Task,
@@ -194,6 +205,9 @@ impl GradientBoostedTrees {
 
         for tree_index in 0..n_trees {
             let stage_seed = mix_seed(base_seed, tree_index as u64);
+            // Gradients/hessians are recomputed from the current ensemble margin
+            // at every stage, which keeps the tree learner focused on residual
+            // structure that earlier trees did not explain.
             let (gradients, hessians) = match config.task {
                 Task::Regression => squared_error_gradients_and_hessians(
                     raw_predictions.as_slice(),
@@ -214,6 +228,9 @@ impl GradientBoostedTrees {
             } else {
                 (0..train_set.n_rows()).collect()
             };
+            // GOSS-style sampling keeps the largest gradients deterministically
+            // and samples part of the remainder. This biases work toward the rows
+            // where the current ensemble is most wrong.
             let sampled_rows = gradient_focus_sample(
                 &base_rows,
                 &gradients,
@@ -255,6 +272,8 @@ impl GradientBoostedTrees {
             }
             .map_err(BoostingError::SecondOrderTree)?;
 
+            // A canary root win means the stage could not find a real feature
+            // stronger than shuffled noise, so boosting stops early.
             if stage_result.root_canary_selected {
                 break;
             }
@@ -266,6 +285,8 @@ impl GradientBoostedTrees {
                 .iter_mut()
                 .zip(stage_predictions.iter().copied())
             {
+                // Trees are fit on raw margins; shrinkage is applied only when
+                // updating the ensemble prediction.
                 *raw_prediction += learning_rate * stage_prediction;
             }
             tree_weights.push(learning_rate);

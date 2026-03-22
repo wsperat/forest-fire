@@ -1,3 +1,11 @@
+//! Data layer shared by training and inference.
+//!
+//! The key design choice in this crate is that both dense and sparse storage are
+//! exposed through the same [`TableAccess`] trait. Trainers therefore reason
+//! about "rows, features, bins, and targets" instead of about concrete storage
+//! formats. That keeps sampling views, inference-time reconstructed tables, and
+//! Arrow-backed tables interoperable.
+
 use arrow::array::{BooleanArray, Float64Array, UInt8Array, UInt16Array};
 use rand::seq::SliceRandom;
 use rand::{SeedableRng, rngs::StdRng};
@@ -10,6 +18,12 @@ const DEFAULT_CANARIES: usize = 2;
 
 type PreprocessedRows = (Vec<Vec<f64>>, Float64Array, usize, usize);
 
+/// Common interface consumed by tree trainers and predictors.
+///
+/// The trait exposes both raw floating-point values and pre-binned values.
+/// Training mostly works on the binned representation for speed and predictable
+/// threshold semantics; the raw values are still available for export and some
+/// user-facing reconstruction tasks.
 pub trait TableAccess: Sync {
     fn n_rows(&self) -> usize;
     fn n_features(&self) -> usize;
@@ -34,14 +48,18 @@ pub trait TableAccess: Sync {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableKind {
+    /// Standard dense row/column storage.
     Dense,
+    /// Sparse binary feature storage.
     Sparse,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NumericBins {
+    /// Use the crate-wide default bin cap.
     #[default]
     Auto,
+    /// Use a fixed number of bins for every numeric feature.
     Fixed(usize),
 }
 
@@ -62,6 +80,10 @@ impl NumericBins {
 }
 
 /// Arrow-backed dense table for tabular regression/classification data.
+///
+/// Features are ingested once, converted into a raw Arrow representation, and
+/// then binned into compact integer columns. The model trainers work primarily
+/// from those binned columns.
 #[derive(Debug, Clone)]
 pub struct DenseTable {
     feature_columns: Vec<FeatureColumn>,
@@ -75,6 +97,9 @@ pub struct DenseTable {
 }
 
 /// Arrow-backed sparse table specialized for binary feature matrices.
+///
+/// This is intentionally specialized to binary data. The sparse path is mainly
+/// about avoiding the memory cost of materializing dense one-hot-like matrices.
 #[derive(Debug, Clone)]
 pub struct SparseTable {
     feature_columns: Vec<SparseBinaryColumn>,
@@ -100,7 +125,9 @@ impl SparseBinaryColumn {
 
 #[derive(Debug, Clone)]
 pub enum Table {
+    /// Dense numeric/binary table.
     Dense(DenseTable),
+    /// Sparse binary table.
     Sparse(SparseTable),
 }
 
@@ -132,9 +159,9 @@ pub enum BinnedFeatureColumnRef<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinnedColumnKind {
-    Real {
-        source_index: usize,
-    },
+    /// Real feature originating from the input table.
+    Real { source_index: usize },
+    /// Shuffled copy of a real feature used as a canary.
     Canary {
         source_index: usize,
         copy_index: usize,
@@ -194,10 +221,13 @@ impl Display for DenseTableError {
 impl Error for DenseTableError {}
 
 impl DenseTable {
+    /// Construct a dense table with the default canary count and automatic
+    /// numeric binning.
     pub fn new(x: Vec<Vec<f64>>, y: Vec<f64>) -> Result<Self, DenseTableError> {
         Self::with_canaries(x, y, DEFAULT_CANARIES)
     }
 
+    /// Construct a dense table while choosing how many canary copies to append.
     pub fn with_canaries(
         x: Vec<Vec<f64>>,
         y: Vec<f64>,
@@ -206,6 +236,7 @@ impl DenseTable {
         Self::with_options(x, y, canaries, NumericBins::Auto)
     }
 
+    /// Construct a dense table with full preprocessing control.
     pub fn with_options(
         x: Vec<Vec<f64>>,
         y: Vec<f64>,
@@ -251,6 +282,9 @@ impl DenseTable {
                                 source_index,
                                 copy_index,
                             },
+                            // Canary columns are shuffled copies of real columns.
+                            // They are designed to look statistically plausible
+                            // while carrying no real signal.
                             shuffle_canary_column(column, copy_index, source_index),
                         )
                     })

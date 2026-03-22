@@ -37,3 +37,23 @@ The benchmark scripts compare ForestFire against:
 - XGBoost
 
 depending on the learner family being benchmarked.
+
+## Existing plots
+
+Optimized inference:
+
+![CART runtime](benchmarks/cart_runtime.png)
+
+![CART speedup](benchmarks/cart_speedup.png)
+
+![Oblivious runtime](benchmarks/oblivious_runtime.png)
+
+![Oblivious speedup](benchmarks/oblivious_speedup.png)
+
+Gradient boosting classification comparison:
+
+![GBM training comparison](benchmarks/training_library_comparison_gradient_boosting_classification.png)
+
+![GBM prediction comparison](benchmarks/prediction_library_comparison_gradient_boosting_classification.png)
+
+![GBM predict_proba comparison](benchmarks/predict_proba_library_comparison_gradient_boosting_classification.png)

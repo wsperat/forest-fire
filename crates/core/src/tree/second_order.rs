@@ -1,5 +1,12 @@
 #![allow(dead_code)]
 
+//! Second-order regression tree learner used by gradient boosting.
+//!
+//! The tree structure is intentionally reused from the ordinary regression tree
+//! path. The difference is not in how predictions are represented, but in how
+//! split gain and leaf values are computed: boosting provides per-row gradients
+//! and Hessians, and this learner turns them into Newton-style trees.
+
 use crate::sampling::sample_feature_subset;
 use crate::tree::regressor::{
     DecisionTreeRegressor, ObliviousSplit, RegressionNode, RegressionTreeAlgorithm,
@@ -13,6 +20,7 @@ use rayon::prelude::*;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+/// Extra controls required by second-order tree training.
 #[derive(Debug, Clone, Copy)]
 pub struct SecondOrderRegressionTreeOptions {
     pub tree_options: RegressionTreeOptions,
@@ -291,6 +299,9 @@ fn train_second_order_regressor(
                 options,
             };
             let mut root_canary_selected = false;
+            // This path mirrors the first-order standard-tree builders: one
+            // mutable row-index buffer, histogram-backed split scoring, and
+            // optional canary detection at the root.
             let root = build_standard_node(
                 &context,
                 &mut nodes,
@@ -305,6 +316,8 @@ fn train_second_order_regressor(
             )
         }
         RegressionTreeAlgorithm::Oblivious => {
+            // Oblivious trees are grown a level at a time because every node at
+            // the same depth shares the same feature/threshold pair.
             train_oblivious_structure(train_set, gradients, hessians, parallelism, options)
         }
     };
@@ -404,6 +417,9 @@ fn train_oblivious_structure(
             break;
         }
 
+        // Feature subsampling is performed per level. That keeps oblivious trees
+        // faithful to their "one split per depth" structure while still allowing
+        // forest/boosting-style stochasticity.
         let feature_indices = candidate_feature_indices(
             table.binned_feature_count(),
             options.tree_options.max_features,

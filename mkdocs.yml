@@ -26,6 +26,9 @@ markdown_extensions:
 nav:
   - Overview: index.md
   - Getting Started: getting-started.md
+  - Design:
+      - Architecture: design.md
+      - Runtime And IR: runtime.md
   - Python API: python-api.md
   - Rust API: rust-api.md
   - Training: training.md

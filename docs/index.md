@@ -1,5 +1,7 @@
 # ForestFire
 
+![ForestFire](forest-fire.jpg)
+
 ForestFire is a tree-learning library with a Rust core and a Python API.
 
 It is built around three ideas:
@@ -7,6 +9,12 @@ It is built around three ideas:
 - one unified `train(...)` interface instead of learner-specific entrypoints
 - one unified `Table` abstraction for training data
 - one explicit model IR for serialization, portability, and runtime lowering
+
+Those choices are deliberate:
+
+- the unified training surface keeps the public API stable even as the library grows from single trees into forests and boosting
+- the `Table` abstraction centralizes preprocessing, binning, sparse handling, and canary generation so the learners do not each re-implement data plumbing
+- the explicit IR separates model semantics from trainer internals, which is what makes optimized inference, introspection, and serialization all line up with the same underlying meaning
 
 ## What exists today
 
@@ -17,9 +25,18 @@ It is built around three ideas:
 - Python and Rust APIs
 - JSON model serialization
 
+ForestFire is intentionally opinionated in a few places:
+
+- it prefers a small number of strong public concepts over many learner-specific entrypoints
+- it treats training-time preprocessing as part of the model contract, not an invisible side effect
+- it uses canaries as an in-training stopping signal instead of relying on post-hoc pruning
+- it exposes optimized inference as a separate runtime view rather than pretending the training structure is automatically the best scoring structure
+
 ## Documentation map
 
 - [Getting Started](getting-started.md): install and first training runs
+- [Design And Architecture](design.md): the core abstractions and why they exist
+- [Runtime And IR](runtime.md): inference lowering, serialization, and execution design
 - [Python API](python-api.md): Python surface and input handling
 - [Rust API](rust-api.md): Rust crates and training entrypoints
 - [Training](training.md): algorithms, parameters, and stopping behavior
@@ -32,3 +49,4 @@ It is built around three ideas:
 - Repository: [wsperat/forest-fire](https://github.com/wsperat/forest-fire)
 - Python package: `forestfire-ml`
 - Python import name: `forestfire`
+- Docs site: [https://wsperat.github.io/forest-fire/](https://wsperat.github.io/forest-fire/)

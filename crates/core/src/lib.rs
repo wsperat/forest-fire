@@ -1,3 +1,20 @@
+//! ForestFire core model, training, inference, and interchange layer.
+//!
+//! The crate is organized around a few stable abstractions:
+//!
+//! - [`forestfire_data::TableAccess`] is the common data boundary for both
+//!   training and inference.
+//! - [`TrainConfig`] is the normalized configuration surface shared by the Rust
+//!   and Python APIs.
+//! - [`Model`] is the semantic model view used for exact prediction,
+//!   serialization, and introspection.
+//! - [`OptimizedModel`] is a lowered runtime view used when prediction speed
+//!   matters more than preserving the original tree layout.
+//!
+//! Keeping the semantic model and the runtime model separate is deliberate. It
+//! makes export and introspection straightforward while still allowing the
+//! optimized path to use layouts that are awkward to serialize directly.
+
 use forestfire_data::{
     BinnedColumnKind, MAX_NUMERIC_BINS, NumericBins, TableAccess, numeric_bin_boundaries,
 };
@@ -56,42 +73,63 @@ const COMPILED_ARTIFACT_HEADER_LEN: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
+    /// Train a single decision tree.
     Dt,
+    /// Train a bootstrap-aggregated random forest.
     Rf,
+    /// Train a second-order gradient-boosted ensemble.
     Gbm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Criterion {
+    /// Let training choose the appropriate criterion for the requested setup.
     Auto,
+    /// Gini impurity for classification.
     Gini,
+    /// Entropy / information gain for classification.
     Entropy,
+    /// Mean-based regression criterion.
     Mean,
+    /// Median-based regression criterion.
     Median,
+    /// Internal second-order criterion used by gradient boosting.
     SecondOrder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {
+    /// Predict a continuous numeric value.
     Regression,
+    /// Predict one label from a finite set.
     Classification,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeType {
+    /// Multiway information-gain tree.
     Id3,
+    /// C4.5-style multiway tree.
     C45,
+    /// Standard binary threshold tree.
     Cart,
+    /// CART-style tree with randomized candidate selection.
     Randomized,
+    /// Symmetric tree where every level shares the same split.
     Oblivious,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxFeatures {
+    /// Task-aware default: `sqrt` for classification, `third` for regression.
     Auto,
+    /// Use all features at each split.
     All,
+    /// Use `floor(sqrt(feature_count))` features.
     Sqrt,
+    /// Use roughly one third of the features.
     Third,
+    /// Use exactly this many features, capped to the available count.
     Count(usize),
 }
 
@@ -113,42 +151,69 @@ impl MaxFeatures {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputFeatureKind {
+    /// Numeric features are compared through their binned representation.
     Numeric,
+    /// Binary features stay boolean all the way through the pipeline.
     Binary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NumericBinBoundary {
+    /// Bin identifier in the preprocessed feature space.
     pub bin: u16,
+    /// Largest raw floating-point value that still belongs to this bin.
     pub upper_bound: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FeaturePreprocessing {
+    /// Numeric features are represented by explicit bin boundaries.
     Numeric {
         bin_boundaries: Vec<NumericBinBoundary>,
     },
+    /// Binary features do not require numeric bin boundaries.
     Binary,
 }
 
+/// Unified training configuration shared by the Rust and Python entry points.
+///
+/// The crate keeps one normalized config type so the binding layer only has to
+/// perform input validation and type conversion; all semantic decisions happen
+/// from this one structure downward.
 #[derive(Debug, Clone, Copy)]
 pub struct TrainConfig {
+    /// High-level training family.
     pub algorithm: TrainAlgorithm,
+    /// Regression or classification.
     pub task: Task,
+    /// Tree learner used by the selected algorithm family.
     pub tree_type: TreeType,
+    /// Split criterion. [`Criterion::Auto`] is resolved by the trainer.
     pub criterion: Criterion,
+    /// Maximum tree depth.
     pub max_depth: Option<usize>,
+    /// Smallest node size that is still allowed to split.
     pub min_samples_split: Option<usize>,
+    /// Minimum child size after a split.
     pub min_samples_leaf: Option<usize>,
+    /// Optional cap on training-side rayon threads.
     pub physical_cores: Option<usize>,
+    /// Number of trees for ensemble algorithms.
     pub n_trees: Option<usize>,
+    /// Feature subsampling strategy.
     pub max_features: MaxFeatures,
+    /// Seed used for reproducible sampling and randomized splits.
     pub seed: Option<u64>,
+    /// Whether random forests should compute out-of-bag metrics.
     pub compute_oob: bool,
+    /// Gradient boosting shrinkage factor.
     pub learning_rate: Option<f64>,
+    /// Whether gradient boosting should bootstrap rows before gradient sampling.
     pub bootstrap: bool,
+    /// Fraction of largest-gradient rows always kept by GOSS sampling.
     pub top_gradient_fraction: Option<f64>,
+    /// Fraction of the remaining rows randomly retained by GOSS sampling.
     pub other_gradient_fraction: Option<f64>,
 }
 
@@ -175,6 +240,11 @@ impl Default for TrainConfig {
     }
 }
 
+/// Top-level semantic model enum.
+///
+/// This type stays close to the learned structure rather than the fastest
+/// possible runtime layout. That is what makes it suitable for introspection,
+/// serialization, and exact behavior parity across bindings.
 #[derive(Debug, Clone)]
 pub enum Model {
     DecisionTreeClassifier(DecisionTreeClassifier),
@@ -305,30 +375,47 @@ pub enum PredictError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeStructureSummary {
+    /// Logical representation used by the tree.
     pub representation: String,
+    /// Total node count including leaves.
     pub node_count: usize,
+    /// Count of decision nodes.
     pub internal_node_count: usize,
+    /// Count of leaves.
     pub leaf_count: usize,
+    /// Maximum realized depth.
     pub actual_depth: usize,
+    /// Shortest root-to-leaf path.
     pub shortest_path: usize,
+    /// Longest root-to-leaf path.
     pub longest_path: usize,
+    /// Mean root-to-leaf path length.
     pub average_path: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredictionValueStats {
+    /// Number of leaf predictions included in the summary.
     pub count: usize,
+    /// Number of distinct prediction values across leaves.
     pub unique_count: usize,
+    /// Minimum prediction value.
     pub min: f64,
+    /// Maximum prediction value.
     pub max: f64,
+    /// Mean prediction value.
     pub mean: f64,
+    /// Standard deviation of prediction values.
     pub std_dev: f64,
+    /// Exact-value histogram over leaves.
     pub histogram: Vec<PredictionHistogramEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredictionHistogramEntry {
+    /// Exact leaf prediction value.
     pub prediction: f64,
+    /// Number of leaves with this value.
     pub count: usize,
 }
 
@@ -1099,6 +1186,11 @@ impl InferenceExecutor {
     }
 }
 
+/// Runtime-lowered model used for faster inference.
+///
+/// The optimized model keeps a copy of the source [`Model`] so it can preserve
+/// serialization and introspection behavior even after the runtime has been
+/// lowered into lookup-table-friendly structures.
 #[derive(Debug, Clone)]
 pub struct OptimizedModel {
     source_model: Model,
@@ -1119,6 +1211,7 @@ impl OptimizedModel {
         })
     }
 
+    /// Predict directly from a preprocessed table.
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = ColumnMajorBinnedMatrix::from_table_access(table);
@@ -1130,6 +1223,7 @@ impl OptimizedModel {
         })
     }
 
+    /// Predict from raw row-major inputs.
     pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
         let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
         if self.runtime.should_use_batch_matrix(table.n_rows()) {
@@ -1140,6 +1234,7 @@ impl OptimizedModel {
         }
     }
 
+    /// Predict from named columns keyed by feature name.
     pub fn predict_named_columns(
         &self,
         columns: BTreeMap<String, Vec<f64>>,
@@ -1154,6 +1249,7 @@ impl OptimizedModel {
         }
     }
 
+    /// Return class probabilities for classification models.
     pub fn predict_proba_table(
         &self,
         table: &dyn TableAccess,
@@ -1161,11 +1257,13 @@ impl OptimizedModel {
         self.runtime.predict_proba_table(table, &self.executor)
     }
 
+    /// Return class probabilities from raw row-major inputs.
     pub fn predict_proba_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, PredictError> {
         let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
         self.predict_proba_table(&table)
     }
 
+    /// Return class probabilities from named columns keyed by feature name.
     pub fn predict_proba_named_columns(
         &self,
         columns: BTreeMap<String, Vec<f64>>,
@@ -1175,6 +1273,7 @@ impl OptimizedModel {
         self.predict_proba_table(&table)
     }
 
+    /// Return class probabilities from sparse binary column storage.
     pub fn predict_proba_sparse_binary_columns(
         &self,
         n_rows: usize,
@@ -1190,6 +1289,7 @@ impl OptimizedModel {
         self.predict_proba_table(&table)
     }
 
+    /// Predict from sparse binary column storage.
     pub fn predict_sparse_binary_columns(
         &self,
         n_rows: usize,
@@ -1238,6 +1338,7 @@ impl OptimizedModel {
         Ok(predictions)
     }
 
+    /// The semantic algorithm remains the one from the source model.
     pub fn algorithm(&self) -> TrainAlgorithm {
         self.source_model.algorithm()
     }
@@ -1314,6 +1415,8 @@ impl OptimizedModel {
         self.source_model.tree_count()
     }
 
+    /// Introspection is delegated to the source model so lowering never changes
+    /// the observable semantic tree structure.
     pub fn tree_structure(
         &self,
         tree_index: usize,
@@ -2575,6 +2678,7 @@ fn resolve_inference_thread_count(physical_cores: Option<usize>) -> Result<usize
 }
 
 impl Model {
+    /// Predict directly from a preprocessed table.
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         match self {
             Model::DecisionTreeClassifier(model) => model.predict_table(table),
@@ -2584,11 +2688,13 @@ impl Model {
         }
     }
 
+    /// Predict from raw row-major input.
     pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
         let table = InferenceTable::from_rows(rows, self.feature_preprocessing())?;
         Ok(self.predict_table(&table))
     }
 
+    /// Return class probabilities for classification models.
     pub fn predict_proba_table(
         &self,
         table: &dyn TableAccess,
@@ -2603,11 +2709,13 @@ impl Model {
         }
     }
 
+    /// Return class probabilities from raw row-major input.
     pub fn predict_proba_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, PredictError> {
         let table = InferenceTable::from_rows(rows, self.feature_preprocessing())?;
         self.predict_proba_table(&table)
     }
 
+    /// Predict from named columns keyed by feature name.
     pub fn predict_named_columns(
         &self,
         columns: BTreeMap<String, Vec<f64>>,
@@ -2616,6 +2724,7 @@ impl Model {
         Ok(self.predict_table(&table))
     }
 
+    /// Return class probabilities from named columns keyed by feature name.
     pub fn predict_proba_named_columns(
         &self,
         columns: BTreeMap<String, Vec<f64>>,
@@ -2624,6 +2733,7 @@ impl Model {
         self.predict_proba_table(&table)
     }
 
+    /// Predict from sparse binary column storage.
     pub fn predict_sparse_binary_columns(
         &self,
         n_rows: usize,
@@ -2639,6 +2749,7 @@ impl Model {
         Ok(self.predict_table(&table))
     }
 
+    /// Return class probabilities from sparse binary column storage.
     pub fn predict_proba_sparse_binary_columns(
         &self,
         n_rows: usize,
@@ -2682,6 +2793,7 @@ impl Model {
         Ok(predictions)
     }
 
+    /// Report the semantic algorithm family used to train the model.
     pub fn algorithm(&self) -> TrainAlgorithm {
         match self {
             Model::DecisionTreeClassifier(_) | Model::DecisionTreeRegressor(_) => {
@@ -2790,10 +2902,13 @@ impl Model {
         self.training_metadata().other_gradient_fraction
     }
 
+    /// Count trees after normalizing both single-tree and ensemble models to
+    /// the shared IR introspection view.
     pub fn tree_count(&self) -> usize {
         self.to_ir().model.trees.len()
     }
 
+    /// Summarize the structure of one tree inside the model.
     pub fn tree_structure(
         &self,
         tree_index: usize,
@@ -2801,6 +2916,7 @@ impl Model {
         tree_structure_summary(self.tree_definition(tree_index)?)
     }
 
+    /// Summarize the values stored in one tree's leaves.
     pub fn tree_prediction_stats(
         &self,
         tree_index: usize,
@@ -2808,6 +2924,7 @@ impl Model {
         prediction_value_stats(self.tree_definition(tree_index)?)
     }
 
+    /// Inspect a node-tree node by index.
     pub fn tree_node(
         &self,
         tree_index: usize,
@@ -2828,6 +2945,7 @@ impl Model {
         }
     }
 
+    /// Inspect an oblivious-tree level by index.
     pub fn tree_level(
         &self,
         tree_index: usize,
@@ -2847,6 +2965,7 @@ impl Model {
         }
     }
 
+    /// Inspect a leaf by index regardless of the underlying tree representation.
     pub fn tree_leaf(
         &self,
         tree_index: usize,
@@ -2898,6 +3017,8 @@ impl Model {
         }
     }
 
+    /// Convert the model to the stable IR used for serialization and
+    /// binding-independent introspection.
     pub fn to_ir(&self) -> ModelPackageIr {
         ir::model_to_ir(self)
     }
@@ -2918,6 +3039,8 @@ impl Model {
         self.to_ir_json_pretty()
     }
 
+    /// Lower the model into a runtime-oriented representation while preserving
+    /// the original semantic model for serialization and inspection.
     pub fn optimize_inference(
         &self,
         physical_cores: Option<usize>,

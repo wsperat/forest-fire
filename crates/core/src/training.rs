@@ -1,3 +1,10 @@
+//! Training dispatch layer.
+//!
+//! This module is intentionally thin: it resolves defaults and validation once,
+//! then forwards into the specialized tree/forest/boosting trainers. Keeping the
+//! dispatch layer small makes it easier to reason about which behavior belongs
+//! to "shared configuration policy" versus "algorithm-specific learning logic".
+
 use crate::{
     Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest, Task, TrainAlgorithm,
     TrainConfig, TrainError, TreeType, tree,
@@ -6,6 +13,8 @@ use forestfire_data::TableAccess;
 use rayon::ThreadPoolBuilder;
 
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
+    // Criterion resolution happens once here so the downstream trainers can
+    // operate on explicit semantics instead of carrying `Auto` branches.
     let criterion = resolve_criterion(
         config.algorithm,
         config.task,
@@ -26,6 +35,8 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
         return Err(TrainError::InvalidMinSamplesLeaf(min_samples_leaf));
     }
 
+    // Parallelism is installed around the whole training call so nested trainers
+    // can use rayon consistently without rebuilding pools at every split.
     run_with_parallelism(parallelism, || match config.algorithm {
         TrainAlgorithm::Dt => train_single_model(
             train_set,
@@ -76,6 +87,11 @@ pub(crate) struct SingleModelConfig {
     pub(crate) min_samples_leaf: usize,
 }
 
+/// Internal single-tree config with optional per-node feature subsampling.
+///
+/// The public API exposes `max_features` at the algorithm level, but random
+/// forests and boosting need to reuse the same tree trainers with additional
+/// feature-subset control.
 pub(crate) struct SingleModelFeatureSubsetConfig {
     pub(crate) base: SingleModelConfig,
     pub(crate) max_features: Option<usize>,

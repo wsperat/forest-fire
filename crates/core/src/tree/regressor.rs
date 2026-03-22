@@ -1,3 +1,10 @@
+//! First-order regression tree learners.
+//!
+//! This module is the regression analogue of `classifier`, but the split logic
+//! differs in one important way: regression quality depends on leaf value
+//! statistics rather than class counts. The implementation therefore leans on
+//! cached count/sum/sum-of-squares histograms in the mean-criterion hot path.
+
 use crate::ir::{
     BinaryChildren, BinarySplit, IndexedLeaf, LeafIndexing, LeafPayload, NodeStats, NodeTreeNode,
     ObliviousLevel, ObliviousSplit as IrObliviousSplit, TrainingMetadata, TreeDefinition,
@@ -20,6 +27,7 @@ pub enum RegressionTreeAlgorithm {
     Oblivious,
 }
 
+/// Shared training controls for regression tree learners.
 #[derive(Debug, Clone, Copy)]
 pub struct RegressionTreeOptions {
     pub max_depth: usize,
@@ -64,6 +72,7 @@ impl Display for RegressionTreeError {
 
 impl Error for RegressionTreeError {}
 
+/// Concrete trained regression tree.
 #[derive(Debug, Clone)]
 pub struct DecisionTreeRegressor {
     algorithm: RegressionTreeAlgorithm,
@@ -331,6 +340,9 @@ fn train_regressor(
                 options,
                 algorithm,
             };
+            // CART and randomized regression reuse a single mutable row-index
+            // buffer so child partitions are formed in place instead of by
+            // allocating fresh row vectors for every split.
             let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
             RegressionTreeStructure::Standard { nodes, root }
         }
@@ -349,6 +361,8 @@ fn train_regressor(
             RegressionTreeStructure::Standard { nodes, root }
         }
         RegressionTreeAlgorithm::Oblivious => {
+            // Oblivious trees are built level by level because every node at a
+            // given depth must share the same split.
             train_oblivious_structure(train_set, &targets, criterion, parallelism, options)
         }
     };
@@ -365,14 +379,17 @@ fn train_regressor(
 }
 
 impl DecisionTreeRegressor {
+    /// Which learner family produced this tree.
     pub fn algorithm(&self) -> RegressionTreeAlgorithm {
         self.algorithm
     }
 
+    /// Split criterion used during training.
     pub fn criterion(&self) -> Criterion {
         self.criterion
     }
 
+    /// Predict one numeric value per row from a preprocessed table.
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
         (0..table.n_rows())
             .map(|row_idx| self.predict_row(table, row_idx))
