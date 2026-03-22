@@ -85,6 +85,8 @@ The rationale behind these controls is straightforward:
 
 ForestFire uses canary features to stop growth during training.
 
+For the full rationale and algorithm-specific behavior, see [Canary Strategy](canaries.md).
+
 Behavior:
 
 - standard trees stop at the current node

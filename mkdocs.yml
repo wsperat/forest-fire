@@ -28,6 +28,7 @@ nav:
   - Getting Started: getting-started.md
   - Design:
       - Architecture: design.md
+      - Canary Strategy: canaries.md
       - Runtime And IR: runtime.md
       - Intermediate Representation: ir.md
   - Python API: python-api.md

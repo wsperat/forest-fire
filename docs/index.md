@@ -36,6 +36,7 @@ ForestFire is intentionally opinionated in a few places:
 
 - [Getting Started](getting-started.md): install and first training runs
 - [Design And Architecture](design.md): the core abstractions and why they exist
+- [Canary Strategy](canaries.md): why canaries exist, what they replace, and how they differ across DT, RF, and GBM
 - [Runtime And IR](runtime.md): inference lowering, serialization, and execution design
 - [Intermediate Representation](ir.md): the semantic model package, schema, and portability story
 - [Python API](python-api.md): Python surface and input handling
