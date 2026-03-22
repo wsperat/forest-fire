@@ -4,149 +4,192 @@ import argparse
 from pathlib import Path
 
 from common import (
-    BACKEND_FITTERS,
+    DEFAULT_FEATURE_GRID,
+    DEFAULT_ROW_GRID,
+    TRAIN_BACKEND_FITTERS,
     BenchmarkConfig,
     BenchmarkResult,
     average_runtime,
+    cleanup_large_objects,
+    combo_seed,
     dump_results,
     ensure_output_dir,
+    forestfire_reference_fit,
     format_result_line,
     generate_dataset,
     log,
-    plot_library_comparison,
+    plot_grid_comparison,
+    with_reference_max_leaves,
+    write_summary_markdown,
 )
 
 
-def parse_args() -> BenchmarkConfig:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark training time against ForestFire, sklearn, LightGBM, and XGBoost."
+        description=(
+            "Benchmark random-forest or gradient-boosting training across a "
+            "row/column grid with learnable synthetic data."
+        )
     )
     parser.add_argument("--output-dir", type=Path, default=Path("docs/benchmarks"))
     parser.add_argument(
         "--family",
-        choices=("random_forest", "extra_trees", "gradient_boosting"),
+        choices=("random_forest", "gradient_boosting"),
         default="random_forest",
     )
     parser.add_argument(
-        "--problem",
+        "--problems",
+        nargs="+",
         choices=("classification", "regression"),
-        default="classification",
+        default=("classification", "regression"),
     )
-    parser.add_argument("--train-rows", type=int, default=10_000)
-    parser.add_argument("--predict-rows", type=int, default=5_000)
-    parser.add_argument("--n-features", type=int, default=32)
+    parser.add_argument("--rows-grid", nargs="+", type=int, default=DEFAULT_ROW_GRID)
+    parser.add_argument(
+        "--feature-grid", nargs="+", type=int, default=DEFAULT_FEATURE_GRID
+    )
     parser.add_argument("--n-estimators", type=int, default=100)
-    parser.add_argument("--max-depth", type=int, default=8)
-    parser.add_argument("--min-samples-split", type=int, default=2)
-    parser.add_argument("--min-samples-leaf", type=int, default=1)
     parser.add_argument("--max-features", type=str, default="sqrt")
     parser.add_argument("--physical-cores", type=int, default=1)
     parser.add_argument("--warmup-runs", type=int, default=0)
     parser.add_argument("--measurement-runs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
-    raw = parser.parse_args()
+    return parser.parse_args()
+
+
+def build_config(
+    args: argparse.Namespace, problem: str, rows: int, n_features: int
+) -> BenchmarkConfig:
     return BenchmarkConfig(
-        output_dir=raw.output_dir,
-        family=raw.family,
-        problem=raw.problem,
-        train_rows=raw.train_rows,
-        predict_rows=raw.predict_rows,
-        n_features=raw.n_features,
-        n_estimators=raw.n_estimators,
-        max_depth=raw.max_depth,
-        min_samples_split=raw.min_samples_split,
-        min_samples_leaf=raw.min_samples_leaf,
-        max_features=raw.max_features,
-        physical_cores=raw.physical_cores,
-        warmup_runs=raw.warmup_runs,
-        measurement_runs=raw.measurement_runs,
-        seed=raw.seed,
+        output_dir=args.output_dir,
+        family=args.family,
+        problem=problem,
+        rows=rows,
+        n_features=n_features,
+        n_estimators=args.n_estimators,
+        max_depth=None,
+        min_samples_split=None,
+        min_samples_leaf=None,
+        max_features=args.max_features,
+        physical_cores=args.physical_cores,
+        warmup_runs=args.warmup_runs,
+        measurement_runs=args.measurement_runs,
+        seed=combo_seed(args.seed, problem, rows, n_features),
     )
 
 
 def main() -> None:
-    config = parse_args()
-    ensure_output_dir(config.output_dir)
+    args = parse_args()
+    ensure_output_dir(args.output_dir)
     log(
-        "training benchmark start | "
-        f"family={config.family} | problem={config.problem} | "
-        f"train_rows={config.train_rows} | features={config.n_features} | "
-        f"estimators={config.n_estimators}"
+        "training benchmark grid start | "
+        f"family={args.family} | problems={list(args.problems)} | "
+        f"rows={list(args.rows_grid)} | features={list(args.feature_grid)} | "
+        f"estimators={args.n_estimators}"
     )
-    X_train, y_train, _ = generate_dataset(
-        config.problem,
-        config.train_rows,
-        config.predict_rows,
-        config.n_features,
-        config.seed,
-    )
-    log("dataset generated")
 
     results: list[BenchmarkResult] = []
-    for backend, fitter in BACKEND_FITTERS.items():
-        log(f"fitting backend={backend}")
-        try:
-            fit_seconds = average_runtime(
-                lambda: fitter(config, X_train, y_train),
-                config.warmup_runs,
-                config.measurement_runs,
-            )
-            result = BenchmarkResult(
-                benchmark="training",
-                backend=backend,
-                family=config.family,
-                problem=config.problem,
-                n_estimators=config.n_estimators,
-                train_rows=config.train_rows,
-                predict_rows=config.predict_rows,
-                n_features=config.n_features,
-                max_depth=config.max_depth,
-                min_samples_split=config.min_samples_split,
-                min_samples_leaf=config.min_samples_leaf,
-                max_features=config.max_features,
-                fit_seconds=fit_seconds,
-            )
-        except Exception as exc:  # benchmark script should keep going across backends
-            result = BenchmarkResult(
-                benchmark="training",
-                backend=backend,
-                family=config.family,
-                problem=config.problem,
-                n_estimators=config.n_estimators,
-                train_rows=config.train_rows,
-                predict_rows=config.predict_rows,
-                n_features=config.n_features,
-                max_depth=config.max_depth,
-                min_samples_split=config.min_samples_split,
-                min_samples_leaf=config.min_samples_leaf,
-                max_features=config.max_features,
-                status="error",
-                note=str(exc),
-            )
-        print(format_result_line(result))
-        results.append(result)
+    for problem in args.problems:
+        for rows in args.rows_grid:
+            for n_features in args.feature_grid:
+                config = build_config(args, problem, rows, n_features)
+                log(
+                    "dataset generation | "
+                    f"family={config.family} | problem={problem} | "
+                    f"rows={rows} | features={n_features}"
+                )
+                X, y = generate_dataset(problem, rows, n_features, config.seed)
+                log(
+                    "reference fit | "
+                    f"backend=forestfire | problem={problem} | "
+                    f"rows={rows} | features={n_features}"
+                )
+                _, reference_max_leaves = forestfire_reference_fit(config, X, y)
+                log(
+                    "reference complexity | "
+                    f"problem={problem} | rows={rows} | "
+                    f"features={n_features} | max_leaves={reference_max_leaves}"
+                )
+                benchmark_config = with_reference_max_leaves(
+                    config, reference_max_leaves
+                )
 
-    log("writing training benchmark json")
-    dump_results(
-        config.output_dir
-        / f"training_benchmark_results_{config.family}_{config.problem}.json",
-        results,
-    )
-    log("writing training comparison plot")
-    plot_library_comparison(
-        results,
-        metric="fit_seconds",
-        title=(
-            f"Training benchmark | {config.family} | {config.problem} | "
-            f"{config.train_rows:,} rows | {config.n_estimators} estimators"
-        ),
-        ylabel="fit time (seconds)",
-        output_path=(
-            config.output_dir
-            / f"training_library_comparison_{config.family}_{config.problem}.png"
-        ),
-    )
-    log("training benchmark complete")
+                for backend, fitter in TRAIN_BACKEND_FITTERS.items():
+                    log(
+                        "fit | "
+                        f"backend={backend} | problem={problem} | "
+                        f"rows={rows} | features={n_features}"
+                    )
+                    try:
+                        fit_seconds = average_runtime(
+                            lambda: fitter(benchmark_config, X, y),
+                            benchmark_config.warmup_runs,
+                            benchmark_config.measurement_runs,
+                        )
+                        result = BenchmarkResult(
+                            benchmark="training",
+                            backend=backend,
+                            family=benchmark_config.family,
+                            problem=benchmark_config.problem,
+                            n_estimators=benchmark_config.n_estimators,
+                            rows=benchmark_config.rows,
+                            n_features=benchmark_config.n_features,
+                            max_depth=benchmark_config.max_depth,
+                            min_samples_split=benchmark_config.min_samples_split,
+                            min_samples_leaf=benchmark_config.min_samples_leaf,
+                            max_features=benchmark_config.max_features,
+                            reference_max_leaves=reference_max_leaves,
+                            fit_seconds=fit_seconds,
+                        )
+                    except Exception as exc:
+                        result = BenchmarkResult(
+                            benchmark="training",
+                            backend=backend,
+                            family=benchmark_config.family,
+                            problem=benchmark_config.problem,
+                            n_estimators=benchmark_config.n_estimators,
+                            rows=benchmark_config.rows,
+                            n_features=benchmark_config.n_features,
+                            max_depth=benchmark_config.max_depth,
+                            min_samples_split=benchmark_config.min_samples_split,
+                            min_samples_leaf=benchmark_config.min_samples_leaf,
+                            max_features=benchmark_config.max_features,
+                            reference_max_leaves=reference_max_leaves,
+                            status="error",
+                            note=str(exc),
+                        )
+                    print(format_result_line(result))
+                    results.append(result)
+
+                cleanup_large_objects(X, y)
+
+        family_problem_results = [
+            result
+            for result in results
+            if result.family == args.family and result.problem == problem
+        ]
+        result_prefix = f"{args.family}_{problem}"
+        log(f"writing training artifacts | problem={problem}")
+        dump_results(
+            args.output_dir / f"training_grid_results_{result_prefix}.json",
+            family_problem_results,
+        )
+        plot_grid_comparison(
+            family_problem_results,
+            metric="fit_seconds",
+            row_grid=args.rows_grid,
+            feature_grid=args.feature_grid,
+            title_prefix=f"Training time | {args.family} | {problem}",
+            ylabel="fit time (seconds)",
+            output_path=args.output_dir / f"training_grid_{result_prefix}.png",
+        )
+        write_summary_markdown(
+            family_problem_results,
+            metric="fit_seconds",
+            title=f"Training summary | {args.family} | {problem}",
+            output_path=args.output_dir / f"training_summary_{result_prefix}.md",
+        )
+
+    log("training benchmark grid complete")
 
 
 if __name__ == "__main__":
