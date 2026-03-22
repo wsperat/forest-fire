@@ -9,6 +9,12 @@ ForestFire is a tree-learning library with a Rust core and a Python API. The cur
 - one unified training `Table` abstraction that chooses the right internal layout automatically
 - one explicit JSON IR for serialization, portability, and future runtime/export work
 
+Full documentation lives in the docs site:
+
+- local: `task docs-serve`
+- build: `task docs-build`
+- published: [https://wsperat.github.io/forest-fire/](https://wsperat.github.io/forest-fire/)
+
 ## What exists today
 
 - Unified `train` API in Rust and Python

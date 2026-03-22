@@ -12,6 +12,9 @@ tasks:
   install:
     desc: Install dependencies
     cmds: [uv sync --group dev --group benchmark]
+  install-docs:
+    desc: Install documentation dependencies
+    cmds: [uv sync --group dev --group benchmark --group docs]
   lint-check-only:
     desc: Check linting and formatting (no fixes)
     cmds:
@@ -188,6 +191,14 @@ tasks:
     desc: Upload built distributions to PyPI with twine
     deps: [python-package-check]
     cmds: ["uv run --group release twine upload \\\n  dist/*\n"]
+  docs-serve:
+    desc: Serve the MkDocs documentation site locally
+    deps: [install-docs]
+    cmds: [uv run --group docs mkdocs serve]
+  docs-build:
+    desc: Build the MkDocs documentation site
+    deps: [install-docs]
+    cmds: [uv run --group docs mkdocs build --strict]
   python-test-ext:
     desc: Run Python tests with the Rust extension built
     cmds: [task test]
