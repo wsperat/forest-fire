@@ -7,6 +7,10 @@ The benchmark suite is now focused on the two ensemble families that matter most
 
 It intentionally no longer centers extra-trees-specific comparisons or the older one-off inference plots.
 
+All active benchmark families use `1000` trees or boosting stages by default.
+That tree-count budget is held equal across libraries, while the per-cell leaf
+budget is still matched from the realized ForestFire model.
+
 ## What is benchmarked
 
 The suite currently measures:
@@ -60,12 +64,12 @@ That matters because the point of these benchmarks is not just to stress parsers
 
 The benchmark scripts run over:
 
-- rows: `10_000`, `100_000`, `1_000_000`
+- rows: `2^13`, `2^15`, `2^17`, `2^19`
 - columns: `8`, `16`, `32`, `64`, `128`, `256`
 
 These are logarithmic grids:
 
-- rows on powers of 10
+- rows on powers of 2 with exponent steps of 2
 - columns on powers of 2
 
 The purpose of the grid is to separate two different scaling questions:
@@ -147,6 +151,8 @@ The summary markdown files are generated from the measured results and call out:
 - median measured time by backend
 - scaling from the smallest to the largest row count
 - optimized-vs-base ForestFire speedups where applicable
+
+Artifacts are updated incrementally as the grid runs, so long benchmark executions still leave behind partial plots, JSON, and summaries instead of producing only all-or-nothing output.
 
 ## How to read the plots
 
