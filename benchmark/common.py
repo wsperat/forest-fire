@@ -18,8 +18,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 
-DEFAULT_ROW_GRID = (10_000, 100_000, 1_000_000)
+DEFAULT_ROW_GRID = tuple(2**exponent for exponent in range(13, 20, 2))
 DEFAULT_FEATURE_GRID = (8, 16, 32, 64, 128, 256)
+
+
+def default_parallelism() -> int:
+    # Benchmarks should use the full machine by default; callers can still
+    # override this from the CLI when they want to pin comparisons to fewer
+    # cores.
+    return max(1, os.cpu_count() or 1)
 
 
 @dataclass(frozen=True)
@@ -106,40 +113,33 @@ def generate_dataset(
     seed: int,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     rng = np.random.default_rng(seed)
-    X = rng.normal(size=(rows, n_features)).astype(np.float64)
-
-    x0 = informative_view(X, 0)
-    x1 = informative_view(X, 1)
-    x2 = informative_view(X, 2)
-    x3 = informative_view(X, 3)
-    x4 = informative_view(X, 4)
-    x5 = informative_view(X, 5)
-    x6 = informative_view(X, 6)
-    x7 = informative_view(X, 7)
 
     if problem == "classification":
-        logit = (
-            2.4 * (x0 > 0.2)
-            - 2.0 * (x1 > 0.0)
-            + 1.7 * ((x2 > -0.5) & (x3 < 0.8))
-            + 1.1 * (x4 * x5 > 0.0)
-            + 0.9 * x6
-            - 0.7 * np.sin(x7)
-            + 0.35 * rng.normal(size=rows)
-        )
-        logit = np.clip(logit, -20.0, 20.0)
-        p = 1.0 / (1.0 + np.exp(-logit))
-        y = rng.binomial(1, p).astype(np.float64)
-    elif problem == "regression":
-        y = (
-            2.8 * x0
-            - 1.9 * x1
-            + 1.4 * (x2 > 0.0)
-            - 1.8 * ((x3 > 0.0) & (x4 < 0.0))
-            + 1.2 * (x5 * x6)
-            + 0.8 * np.sin(x7)
-            + 0.15 * rng.normal(size=rows)
+        # Build a genuinely clusterable classification task: five Gaussian
+        # components in n dimensions, with the component-to-class assignment
+        # randomized per benchmark cell while still ensuring both classes
+        # appear.
+        cluster_count = 5
+        centers = rng.normal(loc=0.0, scale=3.0, size=(cluster_count, n_features))
+        class_assignment = np.array([0, 0, 0, 1, 1], dtype=np.float64)
+        rng.shuffle(class_assignment)
+        component_ids = rng.integers(0, cluster_count, size=rows)
+        X = (
+            centers[component_ids]
+            + rng.normal(loc=0.0, scale=1.0, size=(rows, n_features))
         ).astype(np.float64)
+        y = class_assignment[component_ids].astype(np.float64)
+    elif problem == "regression":
+        # Use a separable n-dimensional square wave so the target remains
+        # strongly non-linear but still structured enough for tree ensembles to
+        # learn.
+        X = rng.uniform(-np.pi, np.pi, size=(rows, n_features)).astype(np.float64)
+        frequencies = 1.0 + (np.arange(n_features, dtype=np.float64) % 4.0)
+        phases = np.linspace(0.0, np.pi, num=n_features, endpoint=False)
+        square_wave = np.where(np.sin(X * frequencies + phases) >= 0.0, 1.0, -1.0)
+        weights = np.linspace(1.0, 2.0, num=n_features, dtype=np.float64)
+        weights /= np.linalg.norm(weights)
+        y = (square_wave @ weights + 0.05 * rng.normal(size=rows)).astype(np.float64)
     else:
         raise ValueError(f"Unsupported problem: {problem}")
 
@@ -154,6 +154,18 @@ def sklearn_max_features(problem: str, max_features: str) -> str | float | int |
     if max_features == "third":
         return 1.0 / 3.0
     return int(max_features)
+
+
+def sklearn_hist_max_features(n_features: int, max_features: str) -> float | None:
+    if max_features == "all":
+        return 1.0
+    if max_features == "sqrt":
+        return float(min(1.0, np.sqrt(n_features) / n_features))
+    if max_features == "log2":
+        return float(min(1.0, np.log2(n_features) / n_features))
+    if max_features == "third":
+        return float(min(1.0, max(1, n_features // 3) / n_features))
+    return float(min(1.0, int(max_features) / n_features))
 
 
 def forestfire_max_features(max_features: str) -> str | int | None:
@@ -178,8 +190,14 @@ def xgboost_colsample(n_features: int, max_features: str) -> float:
     return lightgbm_feature_fraction(n_features, max_features)
 
 
-def with_reference_max_leaves(
-    config: BenchmarkConfig, reference_max_leaves: int | None
+def catboost_rsm(n_features: int, max_features: str) -> float:
+    return lightgbm_feature_fraction(n_features, max_features)
+
+
+def with_reference_complexity(
+    config: BenchmarkConfig,
+    reference_max_leaves: int | None,
+    reference_n_estimators: int | None,
 ) -> BenchmarkConfig:
     return BenchmarkConfig(
         output_dir=config.output_dir,
@@ -187,7 +205,12 @@ def with_reference_max_leaves(
         problem=config.problem,
         rows=config.rows,
         n_features=config.n_features,
-        n_estimators=config.n_estimators,
+        n_estimators=(
+            reference_n_estimators
+            if config.family == "gradient_boosting"
+            and reference_n_estimators is not None
+            else config.n_estimators
+        ),
         max_depth=config.max_depth,
         min_samples_split=config.min_samples_split,
         min_samples_leaf=config.min_samples_leaf,
@@ -198,6 +221,16 @@ def with_reference_max_leaves(
         seed=config.seed,
         reference_max_leaves=reference_max_leaves,
     )
+
+
+def backend_reference_max_leaves(config: BenchmarkConfig) -> int:
+    reference_max_leaves = config.reference_max_leaves or 1
+    if config.family == "gradient_boosting":
+        # Histogram GBM backends such as LightGBM require at least two leaves,
+        # so a ForestFire stump becomes the minimal valid non-trivial leaf
+        # budget for cross-library comparison.
+        return max(2, reference_max_leaves)
+    return reference_max_leaves
 
 
 def forestfire_non_binding_max_depth() -> int:
@@ -239,19 +272,44 @@ def forestfire_fit(
 
 def reference_leaf_budget(model: Any) -> int:
     tree_count = int(model.tree_count)
+    if tree_count == 0:
+        # Canary-driven GBM can legitimately stop before adding the first tree.
+        # Treat that as a one-leaf ensemble so the comparison backends still get
+        # a valid, minimal complexity budget.
+        return 1
     return max(
         int(model.tree_structure(tree_index=tree_index)["leaf_count"])
         for tree_index in range(tree_count)
     )
 
 
+def reference_tree_count(model: Any) -> int:
+    return int(model.tree_count)
+
+
 def forestfire_reference_fit(
     config: BenchmarkConfig,
     X: NDArray[np.float64],
     y: NDArray[np.float64],
-) -> tuple[Any, int]:
+) -> tuple[Any, int, int]:
     model = forestfire_fit(config, X, y)
-    return model, reference_leaf_budget(model)
+    return model, reference_leaf_budget(model), reference_tree_count(model)
+
+
+def forestfire_reference_fit_timed(
+    config: BenchmarkConfig,
+    X: NDArray[np.float64],
+    y: NDArray[np.float64],
+) -> tuple[Any, int, int, float]:
+    start = perf_counter()
+    model = forestfire_fit(config, X, y)
+    fit_seconds = perf_counter() - start
+    return (
+        model,
+        reference_leaf_budget(model),
+        reference_tree_count(model),
+        fit_seconds,
+    )
 
 
 def forestfire_optimized_fit(
@@ -275,6 +333,9 @@ def sklearn_fit(
 
     max_features = sklearn_max_features(config.problem, config.max_features)
     if config.family == "gradient_boosting":
+        hist_max_features = sklearn_hist_max_features(
+            config.n_features, config.max_features
+        )
         estimator_cls = (
             sklearn_ensemble.HistGradientBoostingClassifier
             if config.problem == "classification"
@@ -284,9 +345,9 @@ def sklearn_fit(
             max_iter=config.n_estimators,
             learning_rate=0.1,
             max_depth=None,
-            max_leaf_nodes=config.reference_max_leaves,
+            max_leaf_nodes=backend_reference_max_leaves(config),
             min_samples_leaf=1,
-            max_features=max_features,
+            max_features=hist_max_features,
             random_state=config.seed,
         )
         return estimator.fit(X, y)
@@ -326,12 +387,14 @@ def lightgbm_fit(
     kwargs: dict[str, Any] = {
         "n_estimators": config.n_estimators,
         "max_depth": -1,
-        "num_leaves": config.reference_max_leaves,
+        "num_leaves": backend_reference_max_leaves(config),
         "min_child_samples": 1,
-        "feature_fraction": lightgbm_feature_fraction(
+        "feature_fraction": 1.0,
+        "feature_fraction_bynode": lightgbm_feature_fraction(
             config.n_features, config.max_features
         ),
         "n_jobs": config.physical_cores,
+        "num_threads": config.physical_cores,
         "random_state": config.seed,
         "verbosity": -1,
     }
@@ -368,7 +431,7 @@ def xgboost_fit(
         "max_depth": forestfire_non_binding_max_depth(),
         "tree_method": "hist",
         "grow_policy": "lossguide",
-        "max_leaves": config.reference_max_leaves,
+        "max_leaves": backend_reference_max_leaves(config),
         "min_child_weight": 0.0,
         "gamma": 0.0,
         "colsample_bynode": xgboost_colsample(config.n_features, config.max_features),
@@ -413,9 +476,10 @@ def catboost_fit(
         # the benchmark uses a large non-binding depth together with max_leaves.
         depth=16,
         grow_policy="Lossguide",
-        max_leaves=config.reference_max_leaves,
+        max_leaves=backend_reference_max_leaves(config),
         min_data_in_leaf=1,
         learning_rate=0.1,
+        rsm=catboost_rsm(config.n_features, config.max_features),
         random_seed=config.seed,
         thread_count=config.physical_cores,
         verbose=False,
@@ -550,9 +614,15 @@ def plot_grid_comparison(
 
     handles, labels = axes[0][0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(3, len(labels)))
+        fig.legend(
+            handles,
+            labels,
+            loc="upper right",
+            bbox_to_anchor=(0.985, 0.985),
+            ncol=1,
+        )
     fig.suptitle(title_prefix)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
 
