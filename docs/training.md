@@ -81,6 +81,25 @@ The rationale behind these controls is straightforward:
 - `max_features` controls correlation and search width, which matters much more in ensembles than in a single tree
 - `seed` is there because the library deliberately uses randomness in several places: bootstrapping, feature subsampling, randomized splits, and boosting row sampling
 
+The intended semantics of `seed` are:
+
+- fixed seed -> repeatable training for the same dataset and configuration
+- different seed -> legitimately different stochastic choices
+
+That randomness is not left ad hoc inside each learner. ForestFire now uses a
+shared seed-mixing path for:
+
+- forest tree seeds
+- boosting stage seeds
+- node-local feature-subset sampling
+- randomized threshold selection
+
+One practical detail matters here: node-local randomization is derived from the
+rows owned by the node, but not from the incidental order of the mutable
+row-index buffer. That makes the stochastic behavior more stable under internal
+partitioning details while remaining sensitive to the actual training data seen
+at each node.
+
 ## Canaries
 
 ForestFire uses canary features to stop growth during training.
@@ -159,12 +178,18 @@ ForestFire training is optimized around a compact binned core and shared row-ind
 - oblivious split scoring reuses cached per-leaf counts or `sum`/`sum_sq`
 - random forests parallelize across trees while limiting intra-tree parallelism
 - binary sparse inputs stay sparse through training and inference
+- classifier, regressor, and second-order tree builders now share the same core
+  histogram/partitioning/randomization helpers instead of carrying separate
+  implementations of the same mechanics
 
 Why these optimizations matter:
 
 - binning turns repeated threshold search into a bounded discrete problem, which makes both scoring and runtime lowering much cheaper
 - shared row-index buffers avoid per-node row-vector allocation, which is one of the main hidden costs in naive tree builders
 - histogram subtraction matters because sibling statistics are not independent work; once one child is known, the other is often derivable from the parent
+- shared tree internals matter because performance-sensitive fixes to histogram
+  handling, partitioning, and stochastic split selection now land once and
+  propagate across first-order and second-order learners together
 - keeping sparse binary inputs sparse avoids paying a dense-memory penalty for data that is structurally sparse
 
 Impact in practice:

@@ -10,11 +10,13 @@ use crate::ir::{
     ObliviousLevel, ObliviousSplit as IrObliviousSplit, TrainingMetadata, TreeDefinition,
     criterion_name, feature_name, threshold_upper_bound,
 };
-use crate::sampling::sample_feature_subset;
+use crate::tree::shared::{
+    FeatureHistogram, HistogramBin, build_feature_histograms, candidate_feature_indices,
+    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    subtract_feature_histograms,
+};
 use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -164,22 +166,27 @@ struct BinarySplitChoice {
 }
 
 #[derive(Debug, Clone)]
-enum RegressionFeatureHistogram {
-    Binary {
-        false_count: usize,
-        false_sum: f64,
-        false_sum_sq: f64,
-        true_count: usize,
-        true_sum: f64,
-        true_sum_sq: f64,
-    },
-    Numeric {
-        bin_count: Vec<usize>,
-        bin_sum: Vec<f64>,
-        bin_sum_sq: Vec<f64>,
-        observed_bins: Vec<usize>,
-    },
+struct RegressionHistogramBin {
+    count: usize,
+    sum: f64,
+    sum_sq: f64,
 }
+
+impl HistogramBin for RegressionHistogramBin {
+    fn subtract(parent: &Self, child: &Self) -> Self {
+        Self {
+            count: parent.count - child.count,
+            sum: parent.sum - child.sum,
+            sum_sq: parent.sum_sq - child.sum_sq,
+        }
+    }
+
+    fn is_observed(&self) -> bool {
+        self.count > 0
+    }
+}
+
+type RegressionFeatureHistogram = FeatureHistogram<RegressionHistogramBin>;
 
 pub fn train_cart_regressor(
     train_set: &dyn TableAccess,
@@ -702,146 +709,28 @@ fn build_regression_node_histograms(
     targets: &[f64],
     rows: &[usize],
 ) -> Vec<RegressionFeatureHistogram> {
-    (0..table.binned_feature_count())
-        .map(|feature_index| {
-            if table.is_binary_binned_feature(feature_index) {
-                let mut false_count = 0usize;
-                let mut false_sum = 0.0;
-                let mut false_sum_sq = 0.0;
-                let mut true_count = 0usize;
-                let mut true_sum = 0.0;
-                let mut true_sum_sq = 0.0;
-                for row_idx in rows {
-                    let value = targets[*row_idx];
-                    if !table
-                        .binned_boolean_value(feature_index, *row_idx)
-                        .expect("binary feature must expose boolean values")
-                    {
-                        false_count += 1;
-                        false_sum += value;
-                        false_sum_sq += value * value;
-                    } else {
-                        true_count += 1;
-                        true_sum += value;
-                        true_sum_sq += value * value;
-                    }
-                }
-                RegressionFeatureHistogram::Binary {
-                    false_count,
-                    false_sum,
-                    false_sum_sq,
-                    true_count,
-                    true_sum,
-                    true_sum_sq,
-                }
-            } else {
-                let bin_cap = table.numeric_bin_cap();
-                let mut bin_count = vec![0usize; bin_cap];
-                let mut bin_sum = vec![0.0; bin_cap];
-                let mut bin_sum_sq = vec![0.0; bin_cap];
-                let mut observed_bins = vec![false; bin_cap];
-                for row_idx in rows {
-                    let bin = table.binned_value(feature_index, *row_idx) as usize;
-                    let value = targets[*row_idx];
-                    bin_count[bin] += 1;
-                    bin_sum[bin] += value;
-                    bin_sum_sq[bin] += value * value;
-                    observed_bins[bin] = true;
-                }
-                RegressionFeatureHistogram::Numeric {
-                    bin_count,
-                    bin_sum,
-                    bin_sum_sq,
-                    observed_bins: observed_bins
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(bin, seen)| seen.then_some(bin))
-                        .collect(),
-                }
-            }
-        })
-        .collect()
+    build_feature_histograms(
+        table,
+        rows,
+        |_| RegressionHistogramBin {
+            count: 0,
+            sum: 0.0,
+            sum_sq: 0.0,
+        },
+        |_feature_index, payload, row_idx| {
+            let value = targets[row_idx];
+            payload.count += 1;
+            payload.sum += value;
+            payload.sum_sq += value * value;
+        },
+    )
 }
 
 fn subtract_regression_node_histograms(
     parent: &[RegressionFeatureHistogram],
     child: &[RegressionFeatureHistogram],
 ) -> Vec<RegressionFeatureHistogram> {
-    parent
-        .iter()
-        .zip(child.iter())
-        .map(
-            |(parent_hist, child_hist)| match (parent_hist, child_hist) {
-                (
-                    RegressionFeatureHistogram::Binary {
-                        false_count: parent_false_count,
-                        false_sum: parent_false_sum,
-                        false_sum_sq: parent_false_sum_sq,
-                        true_count: parent_true_count,
-                        true_sum: parent_true_sum,
-                        true_sum_sq: parent_true_sum_sq,
-                    },
-                    RegressionFeatureHistogram::Binary {
-                        false_count: child_false_count,
-                        false_sum: child_false_sum,
-                        false_sum_sq: child_false_sum_sq,
-                        true_count: child_true_count,
-                        true_sum: child_true_sum,
-                        true_sum_sq: child_true_sum_sq,
-                    },
-                ) => RegressionFeatureHistogram::Binary {
-                    false_count: parent_false_count - child_false_count,
-                    false_sum: parent_false_sum - child_false_sum,
-                    false_sum_sq: parent_false_sum_sq - child_false_sum_sq,
-                    true_count: parent_true_count - child_true_count,
-                    true_sum: parent_true_sum - child_true_sum,
-                    true_sum_sq: parent_true_sum_sq - child_true_sum_sq,
-                },
-                (
-                    RegressionFeatureHistogram::Numeric {
-                        bin_count: parent_bin_count,
-                        bin_sum: parent_bin_sum,
-                        bin_sum_sq: parent_bin_sum_sq,
-                        ..
-                    },
-                    RegressionFeatureHistogram::Numeric {
-                        bin_count: child_bin_count,
-                        bin_sum: child_bin_sum,
-                        bin_sum_sq: child_bin_sum_sq,
-                        ..
-                    },
-                ) => {
-                    let bin_count = parent_bin_count
-                        .iter()
-                        .zip(child_bin_count.iter())
-                        .map(|(parent, child)| parent - child)
-                        .collect::<Vec<_>>();
-                    let bin_sum = parent_bin_sum
-                        .iter()
-                        .zip(child_bin_sum.iter())
-                        .map(|(parent, child)| parent - child)
-                        .collect::<Vec<_>>();
-                    let bin_sum_sq = parent_bin_sum_sq
-                        .iter()
-                        .zip(child_bin_sum_sq.iter())
-                        .map(|(parent, child)| parent - child)
-                        .collect::<Vec<_>>();
-                    let observed_bins = bin_count
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(bin, count)| (*count > 0).then_some(bin))
-                        .collect::<Vec<_>>();
-                    RegressionFeatureHistogram::Numeric {
-                        bin_count,
-                        bin_sum,
-                        bin_sum_sq,
-                        observed_bins,
-                    }
-                }
-                _ => unreachable!("histogram shapes must match"),
-            },
-        )
-        .collect()
+    subtract_feature_histograms(parent, child)
 }
 
 fn finite_targets(train_set: &dyn TableAccess) -> Result<Vec<f64>, RegressionTreeError> {
@@ -1522,44 +1411,34 @@ fn score_binary_split_choice_from_hist(
 
     match histogram {
         RegressionFeatureHistogram::Binary {
-            false_count,
-            false_sum,
-            false_sum_sq,
-            true_count,
-            true_sum,
-            true_sum_sq,
+            false_bin,
+            true_bin,
         } => score_binary_split_choice_mean_from_stats(
             context,
             feature_index,
-            *false_count,
-            *false_sum,
-            *false_sum_sq,
-            *true_count,
-            *true_sum,
-            *true_sum_sq,
+            false_bin.count,
+            false_bin.sum,
+            false_bin.sum_sq,
+            true_bin.count,
+            true_bin.sum,
+            true_bin.sum_sq,
         ),
         RegressionFeatureHistogram::Numeric {
-            bin_count,
-            bin_sum,
-            bin_sum_sq,
+            bins,
             observed_bins,
         } => match context.algorithm {
             RegressionTreeAlgorithm::Cart => score_numeric_split_choice_mean_from_hist(
                 context,
                 feature_index,
                 rows.len(),
-                bin_count,
-                bin_sum,
-                bin_sum_sq,
+                bins,
                 observed_bins,
             ),
             RegressionTreeAlgorithm::Randomized => score_randomized_split_choice_mean_from_hist(
                 context,
                 feature_index,
                 rows,
-                bin_count,
-                bin_sum,
-                bin_sum_sq,
+                bins,
                 observed_bins,
             ),
             RegressionTreeAlgorithm::Oblivious => None,
@@ -1600,16 +1479,14 @@ fn score_numeric_split_choice_mean_from_hist(
     context: &BuildContext<'_>,
     feature_index: usize,
     row_count: usize,
-    bin_count: &[usize],
-    bin_sum: &[f64],
-    bin_sum_sq: &[f64],
+    bins: &[RegressionHistogramBin],
     observed_bins: &[usize],
 ) -> Option<BinarySplitChoice> {
     if observed_bins.len() <= 1 {
         return None;
     }
-    let total_sum = bin_sum.iter().sum::<f64>();
-    let total_sum_sq = bin_sum_sq.iter().sum::<f64>();
+    let total_sum = bins.iter().map(|bin| bin.sum).sum::<f64>();
+    let total_sum_sq = bins.iter().map(|bin| bin.sum_sq).sum::<f64>();
     let parent_loss = total_sum_sq - (total_sum * total_sum) / row_count as f64;
     let mut left_count = 0usize;
     let mut left_sum = 0.0;
@@ -1618,9 +1495,9 @@ fn score_numeric_split_choice_mean_from_hist(
     let mut best_score = f64::NEG_INFINITY;
 
     for &bin in observed_bins {
-        left_count += bin_count[bin];
-        left_sum += bin_sum[bin];
-        left_sum_sq += bin_sum_sq[bin];
+        left_count += bins[bin].count;
+        left_sum += bins[bin].sum;
+        left_sum_sq += bins[bin].sum_sq;
         let right_count = row_count - left_count;
         if left_count < context.options.min_samples_leaf
             || right_count < context.options.min_samples_leaf
@@ -1649,9 +1526,7 @@ fn score_randomized_split_choice_mean_from_hist(
     context: &BuildContext<'_>,
     feature_index: usize,
     rows: &[usize],
-    bin_count: &[usize],
-    bin_sum: &[f64],
-    bin_sum_sq: &[f64],
+    bins: &[RegressionHistogramBin],
     observed_bins: &[usize],
 ) -> Option<BinarySplitChoice> {
     let candidate_thresholds = observed_bins
@@ -1661,18 +1536,18 @@ fn score_randomized_split_choice_mean_from_hist(
         .collect::<Vec<_>>();
     let threshold_bin =
         choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
-    let total_sum = bin_sum.iter().sum::<f64>();
-    let total_sum_sq = bin_sum_sq.iter().sum::<f64>();
+    let total_sum = bins.iter().map(|bin| bin.sum).sum::<f64>();
+    let total_sum_sq = bins.iter().map(|bin| bin.sum_sq).sum::<f64>();
     let mut left_count = 0usize;
     let mut left_sum = 0.0;
     let mut left_sum_sq = 0.0;
     for bin in 0..=threshold_bin as usize {
-        if bin >= bin_count.len() {
+        if bin >= bins.len() {
             break;
         }
-        left_count += bin_count[bin];
-        left_sum += bin_sum[bin];
-        left_sum_sq += bin_sum_sq[bin];
+        left_count += bins[bin].count;
+        left_sum += bins[bin].sum;
+        left_sum_sq += bins[bin].sum_sq;
     }
     let right_count = rows.len() - left_count;
     if left_count < context.options.min_samples_leaf
@@ -1996,75 +1871,6 @@ fn score_numeric_oblivious_split_mean_fast(
         })
 }
 
-fn choose_random_threshold(
-    candidate_thresholds: &[u16],
-    feature_index: usize,
-    rows: &[usize],
-    salt: u64,
-) -> Option<u16> {
-    if candidate_thresholds.is_empty() {
-        return None;
-    }
-
-    let mut seed = salt ^ ((feature_index as u64) << 32) ^ (rows.len() as u64);
-    for row_idx in rows {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add((*row_idx as u64) + 1);
-    }
-    let mut rng = StdRng::seed_from_u64(seed);
-    let selected = rng.gen_range(0..candidate_thresholds.len());
-    candidate_thresholds.get(selected).copied()
-}
-
-fn partition_rows_for_binary_split(
-    table: &dyn TableAccess,
-    feature_index: usize,
-    threshold_bin: u16,
-    rows: &mut [usize],
-) -> usize {
-    let mut left = 0usize;
-    for index in 0..rows.len() {
-        let go_left = if table.is_binary_binned_feature(feature_index) {
-            !table
-                .binned_boolean_value(feature_index, rows[index])
-                .expect("binary feature must expose boolean values")
-        } else {
-            table.binned_value(feature_index, rows[index]) <= threshold_bin
-        };
-        if go_left {
-            rows.swap(left, index);
-            left += 1;
-        }
-    }
-    left
-}
-
-fn candidate_feature_indices(
-    feature_count: usize,
-    max_features: Option<usize>,
-    seed: u64,
-) -> Vec<usize> {
-    match max_features {
-        Some(count) => sample_feature_subset(feature_count, count, seed),
-        None => (0..feature_count).collect(),
-    }
-}
-
-fn node_seed(base_seed: u64, depth: usize, rows: &[usize], salt: u64) -> u64 {
-    rows.iter().fold(
-        base_seed
-            ^ salt
-            ^ (depth as u64)
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .rotate_left(11),
-        |seed, row_index| {
-            seed.wrapping_mul(0xA076_1D64_78BD_642F)
-                ^ (*row_index as u64).wrapping_add(0xE703_7ED1_A0B4_28DB)
-        },
-    )
-}
-
 fn score_binary_oblivious_split(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -2243,6 +2049,29 @@ mod tests {
         DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
     }
 
+    fn randomized_permutation_table() -> DenseTable {
+        DenseTable::with_options(
+            vec![
+                vec![0.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0],
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 1.0, 1.0],
+                vec![1.0, 0.0, 0.0],
+                vec![1.0, 0.0, 1.0],
+                vec![1.0, 1.0, 0.0],
+                vec![1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 2.0],
+                vec![0.0, 1.0, 2.0],
+                vec![1.0, 0.0, 2.0],
+                vec![1.0, 1.0, 2.0],
+            ],
+            vec![0.0, 1.0, 2.5, 3.5, 4.0, 5.0, 6.5, 7.5, 2.0, 4.5, 6.0, 8.5],
+            0,
+            NumericBins::Fixed(8),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn cart_regressor_fits_basic_numeric_pattern() {
         let table = quadratic_table();
@@ -2280,6 +2109,57 @@ mod tests {
         assert_eq!(model.algorithm(), RegressionTreeAlgorithm::Randomized);
         assert_eq!(model.criterion(), Criterion::Mean);
         assert!(model_sse < baseline_sse);
+    }
+
+    #[test]
+    fn randomized_regressor_is_repeatable_for_fixed_seed_and_varies_across_seeds() {
+        let table = randomized_permutation_table();
+        let make_options = |random_seed| RegressionTreeOptions {
+            max_depth: 4,
+            max_features: Some(2),
+            random_seed,
+            ..RegressionTreeOptions::default()
+        };
+
+        let base_model = train_randomized_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            make_options(91),
+        )
+        .unwrap();
+        let repeated_model = train_randomized_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            make_options(91),
+        )
+        .unwrap();
+        let unique_serializations = (0..32u64)
+            .map(|seed| {
+                Model::DecisionTreeRegressor(
+                    train_randomized_regressor_with_criterion_parallelism_and_options(
+                        &table,
+                        Criterion::Mean,
+                        Parallelism::sequential(),
+                        make_options(seed),
+                    )
+                    .unwrap(),
+                )
+                .serialize()
+                .unwrap()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            Model::DecisionTreeRegressor(base_model.clone())
+                .serialize()
+                .unwrap(),
+            Model::DecisionTreeRegressor(repeated_model)
+                .serialize()
+                .unwrap()
+        );
+        assert!(unique_serializations.len() >= 4);
     }
 
     #[test]

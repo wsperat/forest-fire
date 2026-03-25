@@ -7,6 +7,7 @@
 
 use crate::bootstrap::BootstrapSampler;
 use crate::ir::TrainingMetadata;
+use crate::tree::shared::mix_seed;
 use crate::{
     Criterion, FeaturePreprocessing, MaxFeatures, Model, Parallelism, PredictError, Task,
     TrainConfig, TrainError, TreeType, capture_feature_preprocessing, training,
@@ -287,10 +288,6 @@ impl RandomForest {
             })
             .collect()
     }
-}
-
-fn mix_seed(base_seed: u64, value: u64) -> u64 {
-    base_seed ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17)
 }
 
 fn compute_oob_score(

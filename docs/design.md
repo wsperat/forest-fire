@@ -48,6 +48,37 @@ Impact:
 
 The table abstraction is one of the project’s highest-leverage design decisions because it keeps “what the data means” separate from “which learner is using it”.
 
+## Shared tree internals
+
+The project also deliberately shares as much tree-building machinery as it can
+across classification, regression, and second-order boosting trees.
+
+That shared layer now covers the nontrivial mechanics that are easy to let drift
+apart if every learner owns them independently:
+
+- histogram construction and subtraction
+- in-place binary row partitioning
+- feature-subset sampling
+- seed derivation for node-local randomization
+- randomized threshold selection
+
+Why that matters:
+
+- classification, regression, and GBM trees are different at the level of split
+  objective and leaf payload
+- they are not different at the level of “how do we build a histogram over the
+  binned table?” or “how do we derive a sibling histogram from the parent?”
+
+Keeping those mechanics shared reduces maintenance risk in two directions:
+
+- performance fixes land once instead of being copied across three code paths
+- randomization semantics stay aligned across ordinary trees, forests, and
+  second-order stage learners
+
+This is one of the cases where architectural cleanliness is also a correctness
+and performance win. Shared internals make it much harder for one learner family
+to accidentally diverge in subtle ways from the others.
+
 ## Why binning is central
 
 ForestFire is built around bounded numeric bins rather than exact threshold handling everywhere.
@@ -79,6 +110,24 @@ This is a strong design opinion:
 
 - ForestFire prefers in-training noise competition
 - it does not treat pruning as the primary answer to overgrowth
+
+The other important design choice around stochastic training is that
+randomization is deterministic but explicitly derived from stable training
+context:
+
+- ensemble-level seeds are mixed per tree or boosting stage
+- node-local seeds are derived from the base seed, depth, salt, and the row set
+  currently owned by the node
+- randomized threshold selection uses the same deterministic context
+
+That gives the library two properties at once:
+
+- repeated runs with the same seed are reproducible
+- different stages, trees, and nodes do not accidentally collapse onto the same
+  pseudo-random choices
+
+The implementation also now avoids depending on incidental row-buffer order
+inside a node. The row set matters; the temporary ordering of that set does not.
 
 That is also why canary behavior differs by algorithm:
 

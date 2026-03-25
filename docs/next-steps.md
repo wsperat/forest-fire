@@ -6,6 +6,15 @@ Some next steps are about training, some about runtime work, some about docs,
 and some about benchmarking. The goal is to keep forward-looking notes in one
 place instead of scattering them across otherwise stable reference pages.
 
+Recent cleanup work already completed and therefore intentionally not listed as
+open items here includes:
+
+- splitting `crates/core/src/lib.rs` by responsibility
+- splitting `classifier.rs` by concern
+- consolidating shared histogram / partitioning / randomization internals across
+  classifier, regressor, and second-order tree builders
+- hardening and stress-testing seed mixing and randomized selection behavior
+
 ## Gradient boosting parallelism
 
 One of the clearest remaining training gaps is gradient-boosting parallelism.
@@ -79,71 +88,6 @@ useful breakdown to collect on wide RF workloads is:
 The likely root issue is not lack of outer parallelism. It is that per-node
 per-feature work is still too expensive once the width of the table grows.
 
-## Split `crates/core/src/lib.rs` by responsibility
-
-`crates/core/src/lib.rs` is getting large enough that it is starting to act as
-a gravity well.
-
-The abstractions are still understandable, but the file is carrying too many
-jobs at once:
-
-- model APIs
-- inference-table construction
-- optimized runtime definitions
-- compiled artifact serialization
-- batch inference logic
-- SIMD helpers
-- introspection glue
-
-That is usually the point where future changes get harder than they need to be.
-
-A good cleanup pass would split it into submodules along responsibility
-boundaries, for example:
-
-- `inference_input.rs`
-- `optimized_runtime.rs`
-- `compiled_artifact.rs`
-- `introspection.rs`
-- `model_api.rs`
-
-The goal is not to change semantics. It is to reduce the amount of unrelated
-context a contributor has to hold in their head before making routine changes.
-
-## Consolidate tree-code duplication
-
-The tree code is clearly in the transition zone between active optimization work
-and needing a cleanup pass.
-
-In particular, `classifier.rs` contains multiple layers of "fast" and
-"fallback" split scoring, plus some older dead-code-marked paths that have not
-yet been fully removed. That is not a correctness problem by itself, but it is
-exactly the kind of layering that becomes hard to reason about once the codebase
-grows further.
-
-A worthwhile next step is a consolidation pass that:
-
-- removes obsolete paths
-- tightens the split-scoring hierarchy
-- makes the fast path and fallback path boundaries explicit
-- reduces the amount of near-duplicate scoring logic
-
-## Stress-test randomization and seed mixing
-
-The feature-subset and node-randomization seeding strategy deserves especially
-careful validation.
-
-Custom seed mixing is often necessary in ensemble code, but it is also one of
-the easiest places for subtle bias or accidental correlation to creep in. Even
-when the code is logically correct, weak seed derivation can reduce the
-effective randomness of forests or randomized split search.
-
-This area would benefit from more than ordinary unit tests:
-
-- determinism checks across repeated runs
-- property tests for seed stability and reproducibility
-- tests that look for accidental correlations in feature-subset choices
-- broader ensemble-behavior checks under many seeds
-
 ## Document semantic edge-case invariants
 
 There are several API and semantics choices that appear intentional but are
@@ -183,23 +127,3 @@ High-value coverage here includes:
 - optimized runtime vs compiled artifact parity
 - serialization and reload round-trips
 - introspection parity across semantic and optimized forms
-
-## Split `classifier.rs` by concern
-
-The classifier module is strong, but it is dense enough that more internal
-decomposition would pay for itself.
-
-Right now there are enough responsibilities in that file to justify splitting
-it into smaller units such as:
-
-- training orchestration
-- split scoring
-- histogram construction
-- partitioning
-- oblivious-specific logic
-- IR conversion
-
-This is partly a readability improvement, but it also helps make future
-optimization work safer. Smaller files with clearer responsibility boundaries
-make it easier to reason about which changes should affect behavior, which
-should affect only performance, and which should be pure refactors.

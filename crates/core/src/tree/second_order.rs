@@ -7,15 +7,17 @@
 //! split gain and leaf values are computed: boosting provides per-row gradients
 //! and Hessians, and this learner turns them into Newton-style trees.
 
-use crate::sampling::sample_feature_subset;
 use crate::tree::regressor::{
     DecisionTreeRegressor, ObliviousSplit, RegressionNode, RegressionTreeAlgorithm,
     RegressionTreeOptions, RegressionTreeStructure,
 };
+use crate::tree::shared::{
+    FeatureHistogram, HistogramBin, build_feature_histograms, candidate_feature_indices,
+    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    subtract_feature_histograms,
+};
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -135,22 +137,27 @@ struct SplitChoice {
 }
 
 #[derive(Debug, Clone)]
-enum FeatureHistogram {
-    Binary {
-        false_count: usize,
-        false_gradient_sum: f64,
-        false_hessian_sum: f64,
-        true_count: usize,
-        true_gradient_sum: f64,
-        true_hessian_sum: f64,
-    },
-    Numeric {
-        bin_count: Vec<usize>,
-        bin_gradient_sum: Vec<f64>,
-        bin_hessian_sum: Vec<f64>,
-        observed_bins: Vec<usize>,
-    },
+struct SecondOrderHistogramBin {
+    count: usize,
+    gradient_sum: f64,
+    hessian_sum: f64,
 }
+
+impl HistogramBin for SecondOrderHistogramBin {
+    fn subtract(parent: &Self, child: &Self) -> Self {
+        Self {
+            count: parent.count - child.count,
+            gradient_sum: parent.gradient_sum - child.gradient_sum,
+            hessian_sum: parent.hessian_sum - child.hessian_sum,
+        }
+    }
+
+    fn is_observed(&self) -> bool {
+        self.count > 0
+    }
+}
+
+type SecondOrderFeatureHistogram = FeatureHistogram<SecondOrderHistogramBin>;
 
 #[derive(Debug, Clone, Copy)]
 struct ObliviousLeafState {
@@ -512,7 +519,7 @@ fn build_standard_node(
     nodes: &mut Vec<RegressionNode>,
     rows: &mut [usize],
     depth: usize,
-    histograms: Option<Vec<FeatureHistogram>>,
+    histograms: Option<Vec<SecondOrderFeatureHistogram>>,
     root_canary_selected: &mut bool,
 ) -> usize {
     let stats = node_stats(rows, context.gradients, context.hessians);
@@ -531,7 +538,12 @@ fn build_standard_node(
     }
 
     let histograms = histograms.unwrap_or_else(|| {
-        build_feature_histograms(context.table, context.gradients, context.hessians, rows)
+        build_second_order_feature_histograms(
+            context.table,
+            context.gradients,
+            context.hessians,
+            rows,
+        )
     });
     let feature_indices = candidate_feature_indices(
         context.table.binned_feature_count(),
@@ -573,7 +585,7 @@ fn build_standard_node(
             );
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
             let (left_child, right_child) = if left_rows.len() <= right_rows.len() {
-                let left_histograms = build_feature_histograms(
+                let left_histograms = build_second_order_feature_histograms(
                     context.table,
                     context.gradients,
                     context.hessians,
@@ -599,7 +611,7 @@ fn build_standard_node(
                     ),
                 )
             } else {
-                let right_histograms = build_feature_histograms(
+                let right_histograms = build_second_order_feature_histograms(
                     context.table,
                     context.gradients,
                     context.hessians,
@@ -707,200 +719,62 @@ fn split_gain(
         - node_objective_strength(parent_gradient_sum, parent_hessian_sum, l2_regularization)
 }
 
-fn build_feature_histograms(
+fn build_second_order_feature_histograms(
     table: &dyn TableAccess,
     gradients: &[f64],
     hessians: &[f64],
     rows: &[usize],
-) -> Vec<FeatureHistogram> {
-    (0..table.binned_feature_count())
-        .map(|feature_index| {
-            if table.is_binary_binned_feature(feature_index) {
-                let mut false_count = 0usize;
-                let mut false_gradient_sum = 0.0;
-                let mut false_hessian_sum = 0.0;
-                let mut true_count = 0usize;
-                let mut true_gradient_sum = 0.0;
-                let mut true_hessian_sum = 0.0;
-                for row_idx in rows {
-                    if !table
-                        .binned_boolean_value(feature_index, *row_idx)
-                        .expect("binary feature must expose boolean values")
-                    {
-                        false_count += 1;
-                        false_gradient_sum += gradients[*row_idx];
-                        false_hessian_sum += hessians[*row_idx];
-                    } else {
-                        true_count += 1;
-                        true_gradient_sum += gradients[*row_idx];
-                        true_hessian_sum += hessians[*row_idx];
-                    }
-                }
-                FeatureHistogram::Binary {
-                    false_count,
-                    false_gradient_sum,
-                    false_hessian_sum,
-                    true_count,
-                    true_gradient_sum,
-                    true_hessian_sum,
-                }
-            } else {
-                let bin_cap = table.numeric_bin_cap();
-                let mut bin_count = vec![0usize; bin_cap];
-                let mut bin_gradient_sum = vec![0.0; bin_cap];
-                let mut bin_hessian_sum = vec![0.0; bin_cap];
-                let mut observed_bins = vec![false; bin_cap];
-                for row_idx in rows {
-                    let bin = table.binned_value(feature_index, *row_idx) as usize;
-                    bin_count[bin] += 1;
-                    bin_gradient_sum[bin] += gradients[*row_idx];
-                    bin_hessian_sum[bin] += hessians[*row_idx];
-                    observed_bins[bin] = true;
-                }
-                FeatureHistogram::Numeric {
-                    bin_count,
-                    bin_gradient_sum,
-                    bin_hessian_sum,
-                    observed_bins: observed_bins
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(bin, seen)| seen.then_some(bin))
-                        .collect(),
-                }
-            }
-        })
-        .collect()
-}
-
-fn subtract_feature_histograms(
-    parent: &[FeatureHistogram],
-    child: &[FeatureHistogram],
-) -> Vec<FeatureHistogram> {
-    parent
-        .iter()
-        .zip(child.iter())
-        .map(
-            |(parent_hist, child_hist)| match (parent_hist, child_hist) {
-                (
-                    FeatureHistogram::Binary {
-                        false_count: parent_false_count,
-                        false_gradient_sum: parent_false_gradient_sum,
-                        false_hessian_sum: parent_false_hessian_sum,
-                        true_count: parent_true_count,
-                        true_gradient_sum: parent_true_gradient_sum,
-                        true_hessian_sum: parent_true_hessian_sum,
-                    },
-                    FeatureHistogram::Binary {
-                        false_count: child_false_count,
-                        false_gradient_sum: child_false_gradient_sum,
-                        false_hessian_sum: child_false_hessian_sum,
-                        true_count: child_true_count,
-                        true_gradient_sum: child_true_gradient_sum,
-                        true_hessian_sum: child_true_hessian_sum,
-                    },
-                ) => FeatureHistogram::Binary {
-                    false_count: parent_false_count - child_false_count,
-                    false_gradient_sum: parent_false_gradient_sum - child_false_gradient_sum,
-                    false_hessian_sum: parent_false_hessian_sum - child_false_hessian_sum,
-                    true_count: parent_true_count - child_true_count,
-                    true_gradient_sum: parent_true_gradient_sum - child_true_gradient_sum,
-                    true_hessian_sum: parent_true_hessian_sum - child_true_hessian_sum,
-                },
-                (
-                    FeatureHistogram::Numeric {
-                        bin_count: parent_bin_count,
-                        bin_gradient_sum: parent_bin_gradient_sum,
-                        bin_hessian_sum: parent_bin_hessian_sum,
-                        ..
-                    },
-                    FeatureHistogram::Numeric {
-                        bin_count: child_bin_count,
-                        bin_gradient_sum: child_bin_gradient_sum,
-                        bin_hessian_sum: child_bin_hessian_sum,
-                        ..
-                    },
-                ) => {
-                    let bin_count = parent_bin_count
-                        .iter()
-                        .zip(child_bin_count.iter())
-                        .map(|(parent, child)| parent - child)
-                        .collect::<Vec<_>>();
-                    let bin_gradient_sum = parent_bin_gradient_sum
-                        .iter()
-                        .zip(child_bin_gradient_sum.iter())
-                        .map(|(parent, child)| parent - child)
-                        .collect::<Vec<_>>();
-                    let bin_hessian_sum = parent_bin_hessian_sum
-                        .iter()
-                        .zip(child_bin_hessian_sum.iter())
-                        .map(|(parent, child)| parent - child)
-                        .collect::<Vec<_>>();
-                    let observed_bins = bin_count
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(bin, count)| (*count > 0).then_some(bin))
-                        .collect::<Vec<_>>();
-                    FeatureHistogram::Numeric {
-                        bin_count,
-                        bin_gradient_sum,
-                        bin_hessian_sum,
-                        observed_bins,
-                    }
-                }
-                _ => unreachable!("histogram shapes must match"),
-            },
-        )
-        .collect()
+) -> Vec<SecondOrderFeatureHistogram> {
+    build_feature_histograms(
+        table,
+        rows,
+        |_| SecondOrderHistogramBin {
+            count: 0,
+            gradient_sum: 0.0,
+            hessian_sum: 0.0,
+        },
+        |_feature_index, payload, row_idx| {
+            payload.count += 1;
+            payload.gradient_sum += gradients[row_idx];
+            payload.hessian_sum += hessians[row_idx];
+        },
+    )
 }
 
 fn score_feature_from_hist(
     context: &BuildContext<'_>,
-    histogram: &FeatureHistogram,
+    histogram: &SecondOrderFeatureHistogram,
     feature_index: usize,
     rows: &[usize],
 ) -> Option<SplitChoice> {
     match histogram {
         FeatureHistogram::Binary {
-            false_count,
-            false_gradient_sum,
-            false_hessian_sum,
-            true_count,
-            true_gradient_sum,
-            true_hessian_sum,
+            false_bin,
+            true_bin,
         } => score_binary_split_from_stats(
             context,
             feature_index,
-            *false_count,
-            *false_gradient_sum,
-            *false_hessian_sum,
-            *true_count,
-            *true_gradient_sum,
-            *true_hessian_sum,
+            false_bin.count,
+            false_bin.gradient_sum,
+            false_bin.hessian_sum,
+            true_bin.count,
+            true_bin.gradient_sum,
+            true_bin.hessian_sum,
         ),
         FeatureHistogram::Numeric {
-            bin_count,
-            bin_gradient_sum,
-            bin_hessian_sum,
+            bins,
             observed_bins,
         } => match context.algorithm {
             RegressionTreeAlgorithm::Cart => score_numeric_split_from_hist(
                 context,
                 feature_index,
                 rows.len(),
-                bin_count,
-                bin_gradient_sum,
-                bin_hessian_sum,
+                bins,
                 observed_bins,
             ),
-            RegressionTreeAlgorithm::Randomized => score_randomized_split_from_hist(
-                context,
-                feature_index,
-                rows,
-                bin_count,
-                bin_gradient_sum,
-                bin_hessian_sum,
-                observed_bins,
-            ),
+            RegressionTreeAlgorithm::Randomized => {
+                score_randomized_split_from_hist(context, feature_index, rows, bins, observed_bins)
+            }
             RegressionTreeAlgorithm::Oblivious => None,
         },
     }
@@ -946,17 +820,15 @@ fn score_numeric_split_from_hist(
     context: &BuildContext<'_>,
     feature_index: usize,
     row_count: usize,
-    bin_count: &[usize],
-    bin_gradient_sum: &[f64],
-    bin_hessian_sum: &[f64],
+    bins: &[SecondOrderHistogramBin],
     observed_bins: &[usize],
 ) -> Option<SplitChoice> {
     if observed_bins.len() <= 1 {
         return None;
     }
 
-    let total_gradient_sum = bin_gradient_sum.iter().sum::<f64>();
-    let total_hessian_sum = bin_hessian_sum.iter().sum::<f64>();
+    let total_gradient_sum = bins.iter().map(|bin| bin.gradient_sum).sum::<f64>();
+    let total_hessian_sum = bins.iter().map(|bin| bin.hessian_sum).sum::<f64>();
     let mut left_count = 0usize;
     let mut left_gradient_sum = 0.0;
     let mut left_hessian_sum = 0.0;
@@ -964,9 +836,9 @@ fn score_numeric_split_from_hist(
     let mut best_gain = f64::NEG_INFINITY;
 
     for &bin in observed_bins {
-        left_count += bin_count[bin];
-        left_gradient_sum += bin_gradient_sum[bin];
-        left_hessian_sum += bin_hessian_sum[bin];
+        left_count += bins[bin].count;
+        left_gradient_sum += bins[bin].gradient_sum;
+        left_hessian_sum += bins[bin].hessian_sum;
 
         let right_count = row_count - left_count;
         let right_gradient_sum = total_gradient_sum - left_gradient_sum;
@@ -1008,9 +880,7 @@ fn score_randomized_split_from_hist(
     context: &BuildContext<'_>,
     feature_index: usize,
     rows: &[usize],
-    bin_count: &[usize],
-    bin_gradient_sum: &[f64],
-    bin_hessian_sum: &[f64],
+    bins: &[SecondOrderHistogramBin],
     observed_bins: &[usize],
 ) -> Option<SplitChoice> {
     let candidate_thresholds = observed_bins
@@ -1021,18 +891,18 @@ fn score_randomized_split_from_hist(
     let threshold_bin =
         choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11C_E551u64)?;
 
-    let total_gradient_sum = bin_gradient_sum.iter().sum::<f64>();
-    let total_hessian_sum = bin_hessian_sum.iter().sum::<f64>();
+    let total_gradient_sum = bins.iter().map(|bin| bin.gradient_sum).sum::<f64>();
+    let total_hessian_sum = bins.iter().map(|bin| bin.hessian_sum).sum::<f64>();
     let mut left_count = 0usize;
     let mut left_gradient_sum = 0.0;
     let mut left_hessian_sum = 0.0;
     for bin in 0..=threshold_bin as usize {
-        if bin >= bin_count.len() {
+        if bin >= bins.len() {
             break;
         }
-        left_count += bin_count[bin];
-        left_gradient_sum += bin_gradient_sum[bin];
-        left_hessian_sum += bin_hessian_sum[bin];
+        left_count += bins[bin].count;
+        left_gradient_sum += bins[bin].gradient_sum;
+        left_hessian_sum += bins[bin].hessian_sum;
     }
     let right_count = rows.len() - left_count;
     let right_gradient_sum = total_gradient_sum - left_gradient_sum;
@@ -1287,74 +1157,6 @@ fn push_node(nodes: &mut Vec<RegressionNode>, node: RegressionNode) -> usize {
     nodes.len() - 1
 }
 
-fn partition_rows_for_binary_split(
-    table: &dyn TableAccess,
-    feature_index: usize,
-    threshold_bin: u16,
-    rows: &mut [usize],
-) -> usize {
-    let mut left = 0usize;
-    for index in 0..rows.len() {
-        let go_left = if table.is_binary_binned_feature(feature_index) {
-            !table
-                .binned_boolean_value(feature_index, rows[index])
-                .expect("binary feature must expose boolean values")
-        } else {
-            table.binned_value(feature_index, rows[index]) <= threshold_bin
-        };
-        if go_left {
-            rows.swap(left, index);
-            left += 1;
-        }
-    }
-    left
-}
-
-fn candidate_feature_indices(
-    feature_count: usize,
-    max_features: Option<usize>,
-    seed: u64,
-) -> Vec<usize> {
-    match max_features {
-        Some(count) => sample_feature_subset(feature_count, count, seed),
-        None => (0..feature_count).collect(),
-    }
-}
-
-fn node_seed(base_seed: u64, depth: usize, rows: &[usize], salt: u64) -> u64 {
-    rows.iter().fold(
-        base_seed
-            ^ salt
-            ^ (depth as u64)
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .rotate_left(11),
-        |seed, row_index| {
-            seed.wrapping_mul(0xA076_1D64_78BD_642F)
-                ^ (*row_index as u64).wrapping_add(0xE703_7ED1_A0B4_28DB)
-        },
-    )
-}
-
-fn choose_random_threshold(
-    candidate_thresholds: &[u16],
-    feature_index: usize,
-    rows: &[usize],
-    salt: u64,
-) -> Option<u16> {
-    if candidate_thresholds.is_empty() {
-        return None;
-    }
-    let mut seed = salt ^ ((feature_index as u64) << 32) ^ (rows.len() as u64);
-    for row_idx in rows {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add((*row_idx as u64) + 1);
-    }
-    let mut rng = StdRng::seed_from_u64(seed);
-    let selected = rng.gen_range(0..candidate_thresholds.len());
-    candidate_thresholds.get(selected).copied()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1367,6 +1169,29 @@ mod tests {
             vec![0.0, 0.0, 0.0, 0.0],
             0,
             NumericBins::fixed(8).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn randomized_permutation_table() -> DenseTable {
+        DenseTable::with_options(
+            vec![
+                vec![0.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0],
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 1.0, 1.0],
+                vec![1.0, 0.0, 0.0],
+                vec![1.0, 0.0, 1.0],
+                vec![1.0, 1.0, 0.0],
+                vec![1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 2.0],
+                vec![0.0, 1.0, 2.0],
+                vec![1.0, 0.0, 2.0],
+                vec![1.0, 1.0, 2.0],
+            ],
+            vec![0.0; 12],
+            0,
+            NumericBins::Fixed(8),
         )
         .unwrap()
     }
@@ -1421,6 +1246,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(model.predict_table(&table), vec![-1.5, -1.5, 1.5, 1.5]);
+    }
+
+    #[test]
+    fn randomized_second_order_tree_is_repeatable_for_fixed_seed_and_varies_across_seeds() {
+        let table = randomized_permutation_table();
+        let gradients = vec![
+            3.0, 2.0, 1.5, 0.5, -0.5, -1.0, -2.0, -3.0, 2.5, 1.0, -1.5, -2.5,
+        ];
+        let hessians = vec![1.0; 12];
+        let make_options = |random_seed| SecondOrderRegressionTreeOptions {
+            tree_options: RegressionTreeOptions {
+                max_depth: 4,
+                max_features: Some(2),
+                random_seed,
+                ..RegressionTreeOptions::default()
+            },
+            l2_regularization: 1.0,
+            min_sum_hessian_in_leaf: 0.1,
+            min_gain_to_split: 0.0,
+        };
+
+        let base_model = train_randomized_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::sequential(),
+            make_options(123),
+        )
+        .unwrap();
+        let repeated_model = train_randomized_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::sequential(),
+            make_options(123),
+        )
+        .unwrap();
+        let unique_prediction_signatures = (0..32u64)
+            .map(|seed| {
+                format!(
+                    "{:?}",
+                    train_randomized_regressor_from_gradients_and_hessians(
+                        &table,
+                        &gradients,
+                        &hessians,
+                        Parallelism::sequential(),
+                        make_options(seed),
+                    )
+                    .unwrap()
+                    .predict_table(&table)
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            base_model.predict_table(&table),
+            repeated_model.predict_table(&table)
+        );
+        assert!(unique_prediction_signatures.len() >= 4);
     }
 
     #[test]
