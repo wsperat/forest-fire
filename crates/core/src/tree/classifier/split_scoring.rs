@@ -214,8 +214,11 @@ fn score_numeric_cart_split_choice_from_hist(
     let mut best_score = f64::NEG_INFINITY;
 
     for &bin in observed_bins {
-        for class_index in 0..context.num_classes {
-            left_counts[class_index] += bin_class_counts[bin].counts[class_index];
+        for (left_count, bin_count) in left_counts
+            .iter_mut()
+            .zip(bin_class_counts[bin].counts.iter())
+        {
+            *left_count += *bin_count;
         }
         left_size += bin_class_counts[bin].size();
         let right_size = row_count - left_size;
@@ -269,8 +272,8 @@ fn score_numeric_randomized_split_choice_from_hist(
         if bin >= bins.len() {
             break;
         }
-        for class_index in 0..context.num_classes {
-            left_counts[class_index] += bins[bin].counts[class_index];
+        for (left_count, bin_count) in left_counts.iter_mut().zip(bins[bin].counts.iter()) {
+            *left_count += *bin_count;
         }
         left_size += bins[bin].size();
     }
