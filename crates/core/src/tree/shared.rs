@@ -3,6 +3,10 @@ use forestfire_data::TableAccess;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
+const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+const MIX_MULTIPLIER_A: u64 = 0xBF58_476D_1CE4_E5B9;
+const MIX_MULTIPLIER_B: u64 = 0x94D0_49BB_1331_11EB;
+
 #[derive(Debug, Clone)]
 pub(crate) enum FeatureHistogram<T> {
     Binary {
@@ -132,12 +136,11 @@ pub(crate) fn choose_random_threshold(
         return None;
     }
 
-    let mut seed = salt ^ ((feature_index as u64) << 32) ^ (rows.len() as u64);
-    for row_idx in rows {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add((*row_idx as u64) + 1);
-    }
+    let seed = avalanche64(
+        salt ^ mix_seed(feature_index as u64, candidate_thresholds.len() as u64)
+            ^ fingerprint_rows(rows)
+            ^ fingerprint_thresholds(candidate_thresholds),
+    );
     let mut rng = StdRng::seed_from_u64(seed);
     let selected = rng.gen_range(0..candidate_thresholds.len());
     candidate_thresholds.get(selected).copied()
@@ -177,16 +180,154 @@ pub(crate) fn candidate_feature_indices(
     }
 }
 
+pub(crate) fn mix_seed(base_seed: u64, value: u64) -> u64 {
+    base_seed ^ value.wrapping_mul(GOLDEN_GAMMA).rotate_left(17)
+}
+
 pub(crate) fn node_seed(base_seed: u64, depth: usize, rows: &[usize], salt: u64) -> u64 {
-    rows.iter().fold(
-        base_seed
-            ^ salt
-            ^ (depth as u64)
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .rotate_left(11),
-        |seed, row_index| {
-            seed.wrapping_mul(0xA076_1D64_78BD_642F)
-                ^ (*row_index as u64).wrapping_add(0xE703_7ED1_A0B4_28DB)
-        },
+    avalanche64(mix_seed(base_seed ^ salt, depth as u64) ^ fingerprint_rows(rows))
+}
+
+fn avalanche64(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(MIX_MULTIPLIER_A);
+    value ^= value >> 27;
+    value = value.wrapping_mul(MIX_MULTIPLIER_B);
+    value ^ (value >> 31)
+}
+
+fn fingerprint_rows(rows: &[usize]) -> u64 {
+    let mut xor = 0u64;
+    let mut sum = 0u64;
+    let mut rotated_sum = 0u64;
+
+    for &row in rows {
+        let mixed = avalanche64((row as u64).wrapping_add(GOLDEN_GAMMA));
+        xor ^= mixed;
+        sum = sum.wrapping_add(mixed);
+        rotated_sum = rotated_sum.wrapping_add(mixed.rotate_left((row as u32) & 63));
+    }
+
+    avalanche64(
+        xor ^ sum.rotate_left(7)
+            ^ rotated_sum.rotate_left(19)
+            ^ (rows.len() as u64).wrapping_mul(MIX_MULTIPLIER_A),
     )
+}
+
+fn fingerprint_thresholds(candidate_thresholds: &[u16]) -> u64 {
+    let mut xor = 0u64;
+    let mut sum = 0u64;
+
+    for (index, threshold) in candidate_thresholds.iter().copied().enumerate() {
+        let mixed = avalanche64((threshold as u64).wrapping_add((index as u64) << 16));
+        xor ^= mixed;
+        sum = sum.wrapping_add(mixed.rotate_left((index as u32) & 63));
+    }
+
+    avalanche64(
+        xor ^ sum.rotate_left(13)
+            ^ (candidate_thresholds.len() as u64).wrapping_mul(MIX_MULTIPLIER_B),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn mix_seed_is_deterministic_and_unique_across_many_values() {
+        let mixed = (0..4096u64)
+            .map(|value| mix_seed(17, value))
+            .collect::<Vec<_>>();
+        let unique = mixed.iter().copied().collect::<BTreeSet<_>>();
+
+        assert_eq!(mixed.len(), unique.len());
+        assert_eq!(mixed[123], mix_seed(17, 123));
+    }
+
+    #[test]
+    fn node_seed_is_order_invariant_for_same_row_set() {
+        let rows = vec![9usize, 3, 1, 7, 11, 5];
+        let mut reversed = rows.clone();
+        reversed.reverse();
+
+        assert_eq!(node_seed(41, 2, &rows, 99), node_seed(41, 2, &reversed, 99));
+    }
+
+    #[test]
+    fn node_seed_changes_when_depth_salt_or_row_membership_changes() {
+        let rows = vec![1usize, 2, 3, 4];
+        let with_extra = vec![1usize, 2, 3, 4, 5];
+        let base = node_seed(41, 2, &rows, 99);
+
+        assert_ne!(base, node_seed(41, 3, &rows, 99));
+        assert_ne!(base, node_seed(41, 2, &rows, 100));
+        assert_ne!(base, node_seed(41, 2, &with_extra, 99));
+    }
+
+    #[test]
+    fn choose_random_threshold_is_order_invariant_for_same_row_set() {
+        let thresholds = vec![1u16, 3, 7, 9, 11];
+        let rows = vec![8usize, 2, 6, 4, 10];
+        let mut permuted = rows.clone();
+        permuted.rotate_left(2);
+
+        assert_eq!(
+            choose_random_threshold(&thresholds, 5, &rows, 1234),
+            choose_random_threshold(&thresholds, 5, &permuted, 1234)
+        );
+    }
+
+    #[test]
+    fn feature_subset_sampling_stays_well_formed_under_many_seeds() {
+        let feature_count = 32usize;
+        let sample_size = 6usize;
+        let mut counts = vec![0usize; feature_count];
+
+        for seed in 0..4096u64 {
+            let sample = candidate_feature_indices(feature_count, Some(sample_size), seed);
+            let unique = sample.iter().copied().collect::<BTreeSet<_>>();
+
+            assert_eq!(sample.len(), sample_size);
+            assert_eq!(unique.len(), sample_size);
+            assert!(sample.iter().all(|feature| *feature < feature_count));
+
+            for feature in sample {
+                counts[feature] += 1;
+            }
+        }
+
+        let expected = (4096 * sample_size / feature_count) as isize;
+        let min = *counts.iter().min().unwrap() as isize;
+        let max = *counts.iter().max().unwrap() as isize;
+
+        assert!(
+            min >= expected - 280,
+            "min count {min} too far below {expected}"
+        );
+        assert!(
+            max <= expected + 280,
+            "max count {max} too far above {expected}"
+        );
+    }
+
+    #[test]
+    fn randomized_threshold_selection_covers_candidates_without_extreme_bias() {
+        let thresholds = (0u16..8).collect::<Vec<_>>();
+        let mut counts = vec![0usize; thresholds.len()];
+
+        for context in 0..4096usize {
+            let rows = (0..17usize)
+                .map(|offset| (context * 37 + offset * 13) % 257)
+                .collect::<Vec<_>>();
+            let selected =
+                choose_random_threshold(&thresholds, context % 11, &rows, 0xC1A5_5EED).unwrap();
+            counts[selected as usize] += 1;
+        }
+
+        assert!(counts.iter().all(|count| *count > 300));
+        assert!(counts.iter().all(|count| *count < 800));
+    }
 }

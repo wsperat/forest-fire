@@ -13,6 +13,7 @@ use crate::tree::second_order::{
     train_oblivious_regressor_from_gradients_and_hessians_with_status,
     train_randomized_regressor_from_gradients_and_hessians_with_status,
 };
+use crate::tree::shared::mix_seed;
 use crate::{
     Criterion, FeaturePreprocessing, Model, Parallelism, PredictError, Task, TrainConfig, TreeType,
     capture_feature_preprocessing,
@@ -677,10 +678,6 @@ fn gradient_focus_sample(
         gradients: sampled_gradients,
         hessians: sampled_hessians,
     }
-}
-
-fn mix_seed(base_seed: u64, value: u64) -> u64 {
-    base_seed ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17)
 }
 
 #[cfg(test)]

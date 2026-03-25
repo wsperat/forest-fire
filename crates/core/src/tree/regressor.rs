@@ -2049,6 +2049,29 @@ mod tests {
         DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
     }
 
+    fn randomized_permutation_table() -> DenseTable {
+        DenseTable::with_options(
+            vec![
+                vec![0.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0],
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 1.0, 1.0],
+                vec![1.0, 0.0, 0.0],
+                vec![1.0, 0.0, 1.0],
+                vec![1.0, 1.0, 0.0],
+                vec![1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 2.0],
+                vec![0.0, 1.0, 2.0],
+                vec![1.0, 0.0, 2.0],
+                vec![1.0, 1.0, 2.0],
+            ],
+            vec![0.0, 1.0, 2.5, 3.5, 4.0, 5.0, 6.5, 7.5, 2.0, 4.5, 6.0, 8.5],
+            0,
+            NumericBins::Fixed(8),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn cart_regressor_fits_basic_numeric_pattern() {
         let table = quadratic_table();
@@ -2086,6 +2109,57 @@ mod tests {
         assert_eq!(model.algorithm(), RegressionTreeAlgorithm::Randomized);
         assert_eq!(model.criterion(), Criterion::Mean);
         assert!(model_sse < baseline_sse);
+    }
+
+    #[test]
+    fn randomized_regressor_is_repeatable_for_fixed_seed_and_varies_across_seeds() {
+        let table = randomized_permutation_table();
+        let make_options = |random_seed| RegressionTreeOptions {
+            max_depth: 4,
+            max_features: Some(2),
+            random_seed,
+            ..RegressionTreeOptions::default()
+        };
+
+        let base_model = train_randomized_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            make_options(91),
+        )
+        .unwrap();
+        let repeated_model = train_randomized_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            make_options(91),
+        )
+        .unwrap();
+        let unique_serializations = (0..32u64)
+            .map(|seed| {
+                Model::DecisionTreeRegressor(
+                    train_randomized_regressor_with_criterion_parallelism_and_options(
+                        &table,
+                        Criterion::Mean,
+                        Parallelism::sequential(),
+                        make_options(seed),
+                    )
+                    .unwrap(),
+                )
+                .serialize()
+                .unwrap()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            Model::DecisionTreeRegressor(base_model.clone())
+                .serialize()
+                .unwrap(),
+            Model::DecisionTreeRegressor(repeated_model)
+                .serialize()
+                .unwrap()
+        );
+        assert!(unique_serializations.len() >= 4);
     }
 
     #[test]

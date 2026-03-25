@@ -1173,6 +1173,29 @@ mod tests {
         .unwrap()
     }
 
+    fn randomized_permutation_table() -> DenseTable {
+        DenseTable::with_options(
+            vec![
+                vec![0.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0],
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 1.0, 1.0],
+                vec![1.0, 0.0, 0.0],
+                vec![1.0, 0.0, 1.0],
+                vec![1.0, 1.0, 0.0],
+                vec![1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 2.0],
+                vec![0.0, 1.0, 2.0],
+                vec![1.0, 0.0, 2.0],
+                vec![1.0, 1.0, 2.0],
+            ],
+            vec![0.0; 12],
+            0,
+            NumericBins::Fixed(8),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn cart_second_order_tree_learns_newton_leaf_values() {
         let table = simple_table();
@@ -1223,6 +1246,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(model.predict_table(&table), vec![-1.5, -1.5, 1.5, 1.5]);
+    }
+
+    #[test]
+    fn randomized_second_order_tree_is_repeatable_for_fixed_seed_and_varies_across_seeds() {
+        let table = randomized_permutation_table();
+        let gradients = vec![
+            3.0, 2.0, 1.5, 0.5, -0.5, -1.0, -2.0, -3.0, 2.5, 1.0, -1.5, -2.5,
+        ];
+        let hessians = vec![1.0; 12];
+        let make_options = |random_seed| SecondOrderRegressionTreeOptions {
+            tree_options: RegressionTreeOptions {
+                max_depth: 4,
+                max_features: Some(2),
+                random_seed,
+                ..RegressionTreeOptions::default()
+            },
+            l2_regularization: 1.0,
+            min_sum_hessian_in_leaf: 0.1,
+            min_gain_to_split: 0.0,
+        };
+
+        let base_model = train_randomized_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::sequential(),
+            make_options(123),
+        )
+        .unwrap();
+        let repeated_model = train_randomized_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::sequential(),
+            make_options(123),
+        )
+        .unwrap();
+        let unique_prediction_signatures = (0..32u64)
+            .map(|seed| {
+                format!(
+                    "{:?}",
+                    train_randomized_regressor_from_gradients_and_hessians(
+                        &table,
+                        &gradients,
+                        &hessians,
+                        Parallelism::sequential(),
+                        make_options(seed),
+                    )
+                    .unwrap()
+                    .predict_table(&table)
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            base_model.predict_table(&table),
+            repeated_model.predict_table(&table)
+        );
+        assert!(unique_prediction_signatures.len() >= 4);
     }
 
     #[test]

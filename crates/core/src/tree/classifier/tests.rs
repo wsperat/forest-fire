@@ -60,6 +60,29 @@ fn canary_target_table() -> DenseTable {
     DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
 }
 
+fn randomized_permutation_table() -> DenseTable {
+    DenseTable::with_options(
+        vec![
+            vec![0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 1.0, 1.0],
+            vec![1.0, 0.0, 0.0],
+            vec![1.0, 0.0, 1.0],
+            vec![1.0, 1.0, 0.0],
+            vec![1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 2.0],
+            vec![0.0, 1.0, 2.0],
+            vec![1.0, 0.0, 2.0],
+            vec![1.0, 1.0, 2.0],
+        ],
+        vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0],
+        0,
+        NumericBins::Fixed(8),
+    )
+    .unwrap()
+}
+
 #[test]
 fn id3_fits_basic_boolean_pattern() {
     let table = and_table();
@@ -98,6 +121,57 @@ fn randomized_fits_basic_boolean_pattern() {
     assert_eq!(model.algorithm(), DecisionTreeAlgorithm::Randomized);
     assert_eq!(model.criterion(), Criterion::Gini);
     assert_eq!(model.predict_table(&table), table_targets(&table));
+}
+
+#[test]
+fn randomized_classifier_is_repeatable_for_fixed_seed_and_varies_across_seeds() {
+    let table = randomized_permutation_table();
+    let make_options = |random_seed| DecisionTreeOptions {
+        max_depth: 4,
+        max_features: Some(2),
+        random_seed,
+        ..DecisionTreeOptions::default()
+    };
+
+    let base_model = train_randomized_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        make_options(77),
+    )
+    .unwrap();
+    let repeated_model = train_randomized_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        make_options(77),
+    )
+    .unwrap();
+    let unique_serializations = (0..32u64)
+        .map(|seed| {
+            Model::DecisionTreeClassifier(
+                train_randomized_with_criterion_parallelism_and_options(
+                    &table,
+                    Criterion::Gini,
+                    Parallelism::sequential(),
+                    make_options(seed),
+                )
+                .unwrap(),
+            )
+            .serialize()
+            .unwrap()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(
+        Model::DecisionTreeClassifier(base_model.clone())
+            .serialize()
+            .unwrap(),
+        Model::DecisionTreeClassifier(repeated_model)
+            .serialize()
+            .unwrap()
+    );
+    assert!(unique_serializations.len() >= 4);
 }
 
 #[test]
