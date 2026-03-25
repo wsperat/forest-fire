@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiled_artifact::COMPILED_ARTIFACT_MAGIC;
 use forestfire_data::DenseTable;
 #[cfg(feature = "polars")]
 use polars::prelude::{DataFrame, IntoLazy, NamedFrom, Series};
