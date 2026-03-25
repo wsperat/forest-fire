@@ -71,8 +71,14 @@ import forestfire
 task setup-local-env
 task python-ext-develop
 task test
+task verify
 task rust-verify
 ```
+
+Notes:
+
+- `task verify` runs the full repository checks, including Python extension rebuilds.
+- if the local environment does not already have the required Python wheels cached, the `python-ext-develop` step may need network access because `maturin develop` can trigger package installation for build/runtime dependencies such as `numpy`
 
 Repository:
 

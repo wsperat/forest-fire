@@ -59,9 +59,15 @@ task python-ext-develop
 Useful tasks:
 
 - `task test`
+- `task verify`
 - `task rust-verify`
 - `task docs-serve`
 - `task docs-build`
+
+Verification note:
+
+- `task verify` includes the Python extension build path, not just Rust checks
+- if your environment is offline and the needed Python wheels are not already cached, `task verify` can fail during `task python-ext-develop` because `maturin develop` may need to install dependencies such as `numpy`
 
 ## How to think about the API
 
