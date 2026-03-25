@@ -46,7 +46,7 @@ use oblivious::train_oblivious_structure;
 use partitioning::{partition_rows_for_binary_split, partition_rows_for_multiway_split};
 use split_scoring::{
     MultiwayMetric, SplitScoringContext, score_binary_split_choice_from_hist,
-    score_multiway_split_choice, score_split, split_score,
+    score_multiway_split_choice,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,23 +166,6 @@ pub(crate) enum TreeNode {
         impurity: f64,
         gain: f64,
         class_counts: Vec<usize>,
-    },
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-enum SplitCandidate {
-    Multiway {
-        feature_index: usize,
-        score: f64,
-        branches: Vec<(u16, Vec<usize>)>,
-    },
-    Binary {
-        feature_index: usize,
-        score: f64,
-        threshold_bin: u16,
-        left_rows: Vec<usize>,
-        right_rows: Vec<usize>,
     },
 }
 
@@ -1097,134 +1080,6 @@ fn build_multiway_node_in_place(
     }
 }
 
-#[allow(dead_code)]
-fn build_node(
-    context: &BuildContext<'_>,
-    nodes: &mut Vec<TreeNode>,
-    rows: &[usize],
-    depth: usize,
-) -> usize {
-    let majority_class_index =
-        majority_class(rows, context.class_indices, context.class_labels.len());
-    let current_class_counts =
-        class_counts(rows, context.class_indices, context.class_labels.len());
-
-    if rows.is_empty()
-        || depth >= context.options.max_depth
-        || rows.len() < context.options.min_samples_split
-        || is_pure(rows, context.class_indices)
-    {
-        return push_leaf(
-            nodes,
-            majority_class_index,
-            rows.len(),
-            current_class_counts,
-        );
-    }
-
-    let scoring = SplitScoringContext {
-        table: context.table,
-        class_indices: context.class_indices,
-        num_classes: context.class_labels.len(),
-        criterion: context.criterion,
-        min_samples_leaf: context.options.min_samples_leaf,
-    };
-    let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
-        context.options.max_features,
-        node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
-    );
-    let best_split = if context.parallelism.enabled() {
-        feature_indices
-            .into_par_iter()
-            .filter_map(|feature_index| {
-                score_split(&scoring, feature_index, rows, context.algorithm)
-            })
-            .max_by(|left, right| split_score(left).total_cmp(&split_score(right)))
-    } else {
-        feature_indices
-            .into_iter()
-            .filter_map(|feature_index| {
-                score_split(&scoring, feature_index, rows, context.algorithm)
-            })
-            .max_by(|left, right| split_score(left).total_cmp(&split_score(right)))
-    };
-
-    match best_split {
-        Some(best_split)
-            if context
-                .table
-                .is_canary_binned_feature(split_feature_index(&best_split)) =>
-        {
-            push_leaf(
-                nodes,
-                majority_class_index,
-                rows.len(),
-                current_class_counts,
-            )
-        }
-        Some(SplitCandidate::Multiway {
-            feature_index,
-            score,
-            branches,
-        }) if score > 0.0 => {
-            let impurity =
-                classification_impurity(&current_class_counts, rows.len(), context.criterion);
-            let branch_nodes = branches
-                .into_iter()
-                .map(|(bin, branch_rows)| {
-                    (bin, build_node(context, nodes, &branch_rows, depth + 1))
-                })
-                .collect();
-
-            push_node(
-                nodes,
-                TreeNode::MultiwaySplit {
-                    feature_index,
-                    fallback_class_index: majority_class_index,
-                    branches: branch_nodes,
-                    sample_count: rows.len(),
-                    impurity,
-                    gain: score,
-                    class_counts: current_class_counts,
-                },
-            )
-        }
-        Some(SplitCandidate::Binary {
-            feature_index,
-            score,
-            threshold_bin,
-            left_rows,
-            right_rows,
-        }) if score > 0.0 => {
-            let impurity =
-                classification_impurity(&current_class_counts, rows.len(), context.criterion);
-            let left_child = build_node(context, nodes, &left_rows, depth + 1);
-            let right_child = build_node(context, nodes, &right_rows, depth + 1);
-
-            push_node(
-                nodes,
-                TreeNode::BinarySplit {
-                    feature_index,
-                    threshold_bin,
-                    left_child,
-                    right_child,
-                    sample_count: rows.len(),
-                    impurity,
-                    gain: score,
-                    class_counts: current_class_counts,
-                },
-            )
-        }
-        _ => push_leaf(
-            nodes,
-            majority_class_index,
-            rows.len(),
-            current_class_counts,
-        ),
-    }
-}
-
 struct BuildContext<'a> {
     table: &'a dyn TableAccess,
     class_indices: &'a [usize],
@@ -1382,14 +1237,6 @@ fn node_seed(base_seed: u64, depth: usize, rows: &[usize], salt: u64) -> u64 {
                 ^ (*row_index as u64).wrapping_add(0xE703_7ED1_A0B4_28DB)
         },
     )
-}
-
-#[allow(dead_code)]
-fn split_feature_index(candidate: &SplitCandidate) -> usize {
-    match candidate {
-        SplitCandidate::Multiway { feature_index, .. }
-        | SplitCandidate::Binary { feature_index, .. } => *feature_index,
-    }
 }
 
 fn push_leaf(
