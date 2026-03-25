@@ -13,6 +13,9 @@ Thumbs.db
 # Compiled Python files
 *.pyc
 
+# Catboost logs
+catboost_info/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

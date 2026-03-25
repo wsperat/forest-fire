@@ -41,9 +41,11 @@ ForestFire is intentionally opinionated in a few places:
 - [Intermediate Representation](ir.md): the semantic model package, schema, and portability story
 - [Python API](python-api.md): Python surface and input handling
 - [Rust API](rust-api.md): Rust crates and training entrypoints
+- [Examples](examples.md): end-to-end workflows from training through reload and batch scoring
 - [Training](training.md): algorithms, parameters, and stopping behavior
 - [Models And Introspection](models.md): prediction, optimization, serialization, and tree inspection
 - [Benchmarks](benchmarks.md): benchmark tasks and artifact locations
+- [Next Steps](next-steps.md): forward-looking implementation and optimization notes
 - [Releasing](pypi-release.md): Python and Cargo release flows
 
 ## Project links
@@ -51,4 +53,3 @@ ForestFire is intentionally opinionated in a few places:
 - Repository: [wsperat/forest-fire](https://github.com/wsperat/forest-fire)
 - Python package: `forestfire-ml`
 - Python import name: `forestfire`
-- Docs site: [https://wsperat.github.io/forest-fire/](https://wsperat.github.io/forest-fire/)

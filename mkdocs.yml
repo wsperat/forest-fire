@@ -29,13 +29,15 @@ nav:
   - Design:
       - Architecture: design.md
       - Canary Strategy: canaries.md
-      - Runtime And IR: runtime.md
+      - Runtime And Serialization: runtime.md
       - Intermediate Representation: ir.md
   - Python API: python-api.md
   - Rust API: rust-api.md
+  - Examples: examples.md
   - Training: training.md
   - Models And Introspection: models.md
   - Benchmarks: benchmarks.md
+  - Next Steps: next-steps.md
   - Releasing:
       - PyPI: pypi-release.md
       - crates.io: cargo-release.md

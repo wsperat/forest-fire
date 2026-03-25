@@ -202,25 +202,8 @@ tasks:
   python-test-ext:
     desc: Run Python tests with the Rust extension built
     cmds: [task test]
-  benchmark-inference:
-    desc: Benchmark baseline vs optimized inference and write plots
-    deps: [python-ext-develop-release]
-    cmds:
-      - >-
-        uv run python scripts/benchmark_inference.py
-        --output-dir docs/benchmarks
   benchmark-training:
-    desc: Benchmark training speed against sklearn, LightGBM, and XGBoost
-    deps: [python-ext-develop-release]
-    cmds:
-      - >-
-        uv run --group benchmark
-        python benchmark/train_benchmark.py
-        --output-dir docs/benchmarks
-  benchmark-training-rf:
-    desc: >-
-      Benchmark random forest training speed against sklearn, LightGBM,
-      and XGBoost
+    desc: Benchmark random-forest training over the default grid
     deps: [python-ext-develop-release]
     cmds:
       - >-
@@ -228,29 +211,18 @@ tasks:
         python benchmark/train_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
-        --train-rows 10000
-        --predict-rows 5000
-        --n-estimators 100
-        --warmup-runs 0
-        --measurement-runs 1
-  benchmark-training-extra-trees:
-    desc: Benchmark extra trees training speed against sklearn and LightGBM
+  benchmark-training-rf:
+    desc: Benchmark random-forest training over the default grid
     deps: [python-ext-develop-release]
     cmds:
       - >-
         uv run --group benchmark
         python benchmark/train_benchmark.py
         --output-dir docs/benchmarks
-        --family extra_trees
-        --train-rows 10000
-        --predict-rows 5000
-        --n-estimators 100
-        --warmup-runs 0
-        --measurement-runs 1
+        --family random_forest
   benchmark-training-gbm:
     desc: >-
-      Benchmark gradient boosting training speed against sklearn, LightGBM,
-      and XGBoost
+      Benchmark gradient-boosting training over the default grid
     deps: [python-ext-develop-release]
     cmds:
       - >-
@@ -258,23 +230,8 @@ tasks:
         python benchmark/train_benchmark.py
         --output-dir docs/benchmarks
         --family gradient_boosting
-        --train-rows 10000
-        --predict-rows 5000
-        --n-estimators 100
-        --warmup-runs 0
-        --measurement-runs 1
   benchmark-prediction:
-    desc: Benchmark prediction speed against sklearn, LightGBM, and XGBoost
-    deps: [python-ext-develop-release]
-    cmds:
-      - >-
-        uv run --group benchmark
-        python benchmark/predict_benchmark.py
-        --output-dir docs/benchmarks
-  benchmark-prediction-rf:
-    desc: >-
-      Benchmark random forest prediction speed against sklearn, LightGBM,
-      and XGBoost
+    desc: Benchmark random-forest prediction over the default grid
     deps: [python-ext-develop-release]
     cmds:
       - >-
@@ -282,29 +239,19 @@ tasks:
         python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
-        --train-rows 10000
-        --predict-rows 10000
-        --n-estimators 100
-        --warmup-runs 1
-        --measurement-runs 3
-  benchmark-prediction-extra-trees:
-    desc: Benchmark extra trees prediction speed against sklearn and LightGBM
+  benchmark-prediction-rf:
+    desc: >-
+      Benchmark random-forest prediction over the default grid
     deps: [python-ext-develop-release]
     cmds:
       - >-
         uv run --group benchmark
         python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
-        --family extra_trees
-        --train-rows 10000
-        --predict-rows 10000
-        --n-estimators 100
-        --warmup-runs 1
-        --measurement-runs 3
+        --family random_forest
   benchmark-prediction-gbm:
     desc: >-
-      Benchmark gradient boosting prediction speed against sklearn, LightGBM,
-      and XGBoost
+      Benchmark gradient-boosting prediction over the default grid
     deps: [python-ext-develop-release]
     cmds:
       - >-
@@ -312,20 +259,12 @@ tasks:
         python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
         --family gradient_boosting
-        --train-rows 10000
-        --predict-rows 10000
-        --n-estimators 100
-        --warmup-runs 1
-        --measurement-runs 3
   benchmark:
-    desc: Run inference, training, and prediction benchmarks
+    desc: Run random-forest and gradient-boosting train/predict benchmarks
     cmds:
-      - task benchmark-inference
       - task benchmark-training-rf
-      - task benchmark-training-extra-trees
       - task benchmark-training-gbm
       - task benchmark-prediction-rf
-      - task benchmark-prediction-extra-trees
       - task benchmark-prediction-gbm
   verify:
     desc: Run Python and Rust checks and tests
