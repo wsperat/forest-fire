@@ -695,7 +695,9 @@ def write_summary_markdown(
     lines.append("")
 
     optimized_pairs: list[float] = []
-    grouped = defaultdict(dict)
+    grouped: defaultdict[tuple[int, int], dict[str, BenchmarkResult]] = defaultdict(
+        dict
+    )
     for result in filtered:
         grouped[(result.rows, result.n_features)][result.backend] = result
     for cell in grouped.values():
