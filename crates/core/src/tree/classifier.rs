@@ -19,13 +19,13 @@ use crate::ir::{
     TrainingMetadata, TreeDefinition, criterion_name, feature_name, threshold_upper_bound,
     tree_type_name,
 };
-use crate::sampling::sample_feature_subset;
+use crate::tree::shared::{
+    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
+};
 use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -43,7 +43,7 @@ use ir_support::{
     binary_split_ir, normalized_class_probabilities, oblivious_split_ir, standard_node_depths,
 };
 use oblivious::train_oblivious_structure;
-use partitioning::{partition_rows_for_binary_split, partition_rows_for_multiway_split};
+use partitioning::partition_rows_for_multiway_split;
 use split_scoring::{
     MultiwayMetric, SplitScoringContext, score_binary_split_choice_from_hist,
     score_multiway_split_choice,
@@ -1191,52 +1191,6 @@ fn classification_impurity(counts: &[usize], total: usize, criterion: Criterion)
         Criterion::Gini => gini(counts, total),
         _ => unreachable!("classification impurity only supports gini or entropy"),
     }
-}
-
-fn choose_random_threshold(
-    candidate_thresholds: &[u16],
-    feature_index: usize,
-    rows: &[usize],
-    salt: u64,
-) -> Option<u16> {
-    if candidate_thresholds.is_empty() {
-        return None;
-    }
-
-    let mut seed = salt ^ ((feature_index as u64) << 32) ^ (rows.len() as u64);
-    for row_idx in rows {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add((*row_idx as u64) + 1);
-    }
-    let mut rng = StdRng::seed_from_u64(seed);
-    let selected = rng.gen_range(0..candidate_thresholds.len());
-    candidate_thresholds.get(selected).copied()
-}
-
-fn candidate_feature_indices(
-    feature_count: usize,
-    max_features: Option<usize>,
-    seed: u64,
-) -> Vec<usize> {
-    match max_features {
-        Some(count) => sample_feature_subset(feature_count, count, seed),
-        None => (0..feature_count).collect(),
-    }
-}
-
-fn node_seed(base_seed: u64, depth: usize, rows: &[usize], salt: u64) -> u64 {
-    rows.iter().fold(
-        base_seed
-            ^ salt
-            ^ (depth as u64)
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .rotate_left(11),
-        |seed, row_index| {
-            seed.wrapping_mul(0xA076_1D64_78BD_642F)
-                ^ (*row_index as u64).wrapping_add(0xE703_7ED1_A0B4_28DB)
-        },
-    )
 }
 
 fn push_leaf(

@@ -1,28 +1,5 @@
 use super::*;
 
-pub(super) fn partition_rows_for_binary_split(
-    table: &dyn TableAccess,
-    feature_index: usize,
-    threshold_bin: u16,
-    rows: &mut [usize],
-) -> usize {
-    let mut left = 0usize;
-    for index in 0..rows.len() {
-        let go_left = if table.is_binary_binned_feature(feature_index) {
-            !table
-                .binned_boolean_value(feature_index, rows[index])
-                .expect("binary feature must expose boolean values")
-        } else {
-            table.binned_value(feature_index, rows[index]) <= threshold_bin
-        };
-        if go_left {
-            rows.swap(left, index);
-            left += 1;
-        }
-    }
-    left
-}
-
 pub(super) fn partition_rows_for_multiway_split(
     table: &dyn TableAccess,
     feature_index: usize,

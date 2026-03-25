@@ -1,3 +1,4 @@
+use super::histogram::ClassificationHistogramBin;
 use super::*;
 
 pub(super) struct SplitScoringContext<'a> {
@@ -114,24 +115,22 @@ pub(super) fn score_binary_split_choice_from_hist(
         (
             DecisionTreeAlgorithm::Cart,
             ClassificationFeatureHistogram::Binary {
-                false_counts,
-                true_counts,
-                false_size,
-                true_size,
+                false_bin,
+                true_bin,
             },
         ) => score_binary_cart_split_choice_from_counts(
             context,
             feature_index,
             parent_counts,
-            false_counts,
-            *false_size,
-            true_counts,
-            *true_size,
+            &false_bin.counts,
+            false_bin.size(),
+            &true_bin.counts,
+            true_bin.size(),
         ),
         (
             DecisionTreeAlgorithm::Cart,
             ClassificationFeatureHistogram::Numeric {
-                bin_class_counts,
+                bins,
                 observed_bins,
             },
         ) => score_numeric_cart_split_choice_from_hist(
@@ -139,25 +138,23 @@ pub(super) fn score_binary_split_choice_from_hist(
             feature_index,
             parent_counts,
             rows.len(),
-            bin_class_counts,
+            bins,
             observed_bins,
         ),
         (
             DecisionTreeAlgorithm::Randomized,
             ClassificationFeatureHistogram::Binary {
-                false_counts,
-                true_counts,
-                false_size,
-                true_size,
+                false_bin,
+                true_bin,
             },
         ) => score_binary_cart_split_choice_from_counts(
             context,
             feature_index,
             parent_counts,
-            false_counts,
-            *false_size,
-            true_counts,
-            *true_size,
+            &false_bin.counts,
+            false_bin.size(),
+            &true_bin.counts,
+            true_bin.size(),
         ),
         (
             DecisionTreeAlgorithm::Randomized,
@@ -204,7 +201,7 @@ fn score_numeric_cart_split_choice_from_hist(
     feature_index: usize,
     parent_counts: &[usize],
     row_count: usize,
-    bin_class_counts: &[Vec<usize>],
+    bin_class_counts: &[ClassificationHistogramBin],
     observed_bins: &[usize],
 ) -> Option<BinarySplitChoice> {
     if observed_bins.len() <= 1 {
@@ -218,9 +215,9 @@ fn score_numeric_cart_split_choice_from_hist(
 
     for &bin in observed_bins {
         for class_index in 0..context.num_classes {
-            left_counts[class_index] += bin_class_counts[bin][class_index];
+            left_counts[class_index] += bin_class_counts[bin].counts[class_index];
         }
-        left_size += bin_class_counts[bin].iter().sum::<usize>();
+        left_size += bin_class_counts[bin].size();
         let right_size = row_count - left_size;
         if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
             continue;
@@ -263,22 +260,19 @@ fn score_numeric_randomized_split_choice_from_hist(
         .collect::<Vec<_>>();
     let threshold_bin =
         choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xC1A551F1u64)?;
-    let ClassificationFeatureHistogram::Numeric {
-        bin_class_counts, ..
-    } = histogram
-    else {
+    let ClassificationFeatureHistogram::Numeric { bins, .. } = histogram else {
         unreachable!("randomized numeric histogram must be numeric");
     };
     let mut left_counts = vec![0usize; context.num_classes];
     let mut left_size = 0usize;
     for bin in 0..=threshold_bin as usize {
-        if bin >= bin_class_counts.len() {
+        if bin >= bins.len() {
             break;
         }
         for class_index in 0..context.num_classes {
-            left_counts[class_index] += bin_class_counts[bin][class_index];
+            left_counts[class_index] += bins[bin].counts[class_index];
         }
-        left_size += bin_class_counts[bin].iter().sum::<usize>();
+        left_size += bins[bin].size();
     }
     let row_count = rows.len();
     let right_size = row_count - left_size;
