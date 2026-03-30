@@ -504,6 +504,13 @@ impl Parallelism {
         Self { thread_count: 1 }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_threads(thread_count: usize) -> Self {
+        Self {
+            thread_count: thread_count.max(1),
+        }
+    }
+
     pub(crate) fn enabled(self) -> bool {
         self.thread_count > 1
     }

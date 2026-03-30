@@ -2,6 +2,7 @@ use crate::sampling::sample_feature_subset;
 use forestfire_data::TableAccess;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 
 const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 const MIX_MULTIPLIER_A: u64 = 0xBF58_476D_1CE4_E5B9;
@@ -24,53 +25,87 @@ pub(crate) trait HistogramBin: Clone {
     fn is_observed(&self) -> bool;
 }
 
+fn build_feature_histogram_for_feature<T, MakeBin, AddRow>(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    feature_index: usize,
+    make_bin: &MakeBin,
+    add_row: &AddRow,
+) -> FeatureHistogram<T>
+where
+    T: HistogramBin,
+    MakeBin: Fn(usize) -> T,
+    AddRow: Fn(usize, &mut T, usize),
+{
+    if table.is_binary_binned_feature(feature_index) {
+        let mut false_bin = make_bin(feature_index);
+        let mut true_bin = make_bin(feature_index);
+        for &row_idx in rows {
+            if !table
+                .binned_boolean_value(feature_index, row_idx)
+                .expect("binary feature must expose boolean values")
+            {
+                add_row(feature_index, &mut false_bin, row_idx);
+            } else {
+                add_row(feature_index, &mut true_bin, row_idx);
+            }
+        }
+        FeatureHistogram::Binary {
+            false_bin,
+            true_bin,
+        }
+    } else {
+        let bin_cap = table.numeric_bin_cap();
+        let mut bins = vec![make_bin(feature_index); bin_cap];
+        for &row_idx in rows {
+            let bin = table.binned_value(feature_index, row_idx) as usize;
+            add_row(feature_index, &mut bins[bin], row_idx);
+        }
+        let observed_bins = bins
+            .iter()
+            .enumerate()
+            .filter_map(|(bin, payload)| payload.is_observed().then_some(bin))
+            .collect();
+        FeatureHistogram::Numeric {
+            bins,
+            observed_bins,
+        }
+    }
+}
+
 pub(crate) fn build_feature_histograms<T, MakeBin, AddRow>(
     table: &dyn TableAccess,
     rows: &[usize],
-    mut make_bin: MakeBin,
-    mut add_row: AddRow,
+    make_bin: MakeBin,
+    add_row: AddRow,
 ) -> Vec<FeatureHistogram<T>>
 where
     T: HistogramBin,
-    MakeBin: FnMut(usize) -> T,
-    AddRow: FnMut(usize, &mut T, usize),
+    MakeBin: Fn(usize) -> T,
+    AddRow: Fn(usize, &mut T, usize),
 {
     (0..table.binned_feature_count())
         .map(|feature_index| {
-            if table.is_binary_binned_feature(feature_index) {
-                let mut false_bin = make_bin(feature_index);
-                let mut true_bin = make_bin(feature_index);
-                for &row_idx in rows {
-                    if !table
-                        .binned_boolean_value(feature_index, row_idx)
-                        .expect("binary feature must expose boolean values")
-                    {
-                        add_row(feature_index, &mut false_bin, row_idx);
-                    } else {
-                        add_row(feature_index, &mut true_bin, row_idx);
-                    }
-                }
-                FeatureHistogram::Binary {
-                    false_bin,
-                    true_bin,
-                }
-            } else {
-                let bin_cap = table.numeric_bin_cap();
-                let mut bins = vec![make_bin(feature_index); bin_cap];
-                for &row_idx in rows {
-                    let bin = table.binned_value(feature_index, row_idx) as usize;
-                    add_row(feature_index, &mut bins[bin], row_idx);
-                }
-                let observed_bins = bins
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(bin, payload)| payload.is_observed().then_some(bin))
-                    .collect();
-                FeatureHistogram::Numeric {
-                    bins,
-                    observed_bins,
-                }
-            }
+            build_feature_histogram_for_feature(table, rows, feature_index, &make_bin, &add_row)
+        })
+        .collect()
+}
+
+pub(crate) fn build_feature_histograms_parallel<T, MakeBin, AddRow>(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    make_bin: MakeBin,
+    add_row: AddRow,
+) -> Vec<FeatureHistogram<T>>
+where
+    T: HistogramBin + Send,
+    MakeBin: Fn(usize) -> T + Sync,
+    AddRow: Fn(usize, &mut T, usize) + Sync,
+{
+    (0..table.binned_feature_count())
+        .into_par_iter()
+        .map(|feature_index| {
+            build_feature_histogram_for_feature(table, rows, feature_index, &make_bin, &add_row)
         })
         .collect()
 }
