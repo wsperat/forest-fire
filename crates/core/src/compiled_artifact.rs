@@ -52,6 +52,8 @@ impl Error for CompiledArtifactError {}
 pub(crate) struct CompiledArtifactPayload {
     pub(crate) semantic_ir: ModelPackageIr,
     pub(crate) runtime: OptimizedRuntime,
+    #[serde(default)]
+    pub(crate) feature_projection: Option<Vec<usize>>,
 }
 
 impl OptimizedModel {
@@ -59,6 +61,7 @@ impl OptimizedModel {
         let payload = CompiledArtifactPayload {
             semantic_ir: self.source_model.to_ir(),
             runtime: self.runtime.clone(),
+            feature_projection: Some(self.feature_projection.clone()),
         };
         let mut payload_bytes = Vec::new();
         ciborium::into_writer(&payload, &mut payload_bytes)
@@ -103,6 +106,9 @@ impl OptimizedModel {
         .map_err(|err| CompiledArtifactError::Decode(err.to_string()))?;
         let source_model = ir::model_from_ir(payload.semantic_ir)
             .map_err(CompiledArtifactError::InvalidSemanticModel)?;
+        let feature_projection = payload
+            .feature_projection
+            .unwrap_or_else(|| (0..source_model.num_features()).collect());
         let thread_count = resolve_inference_thread_count(physical_cores)
             .map_err(CompiledArtifactError::InvalidRuntime)?;
         let executor =
@@ -112,6 +118,7 @@ impl OptimizedModel {
             source_model,
             runtime: payload.runtime,
             executor,
+            feature_projection,
         })
     }
 }

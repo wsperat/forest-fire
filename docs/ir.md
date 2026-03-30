@@ -11,6 +11,16 @@ The IR is the stable semantic layer between:
 - Python and Rust bindings
 - serialized artifacts on disk
 
+The important word there is semantic.
+
+The IR is not trying to be the fastest possible execution format. It is trying to be the clearest possible statement of:
+
+- what inputs the model expects
+- what each split means
+- what each leaf payload means
+- how outputs should be interpreted
+- which preprocessing assumptions must be preserved for inference to remain correct
+
 ## Why the IR exists
 
 Many libraries effectively serialize whatever their internal training structs happen to look like.
@@ -25,6 +35,16 @@ That is easy at first, but it creates problems quickly:
 ForestFire avoids that by making the IR explicit.
 
 The IR describes what a model *means*, not how a particular Rust struct happens to store it in memory.
+
+That is why:
+
+- `Model`
+- `OptimizedModel`
+- JSON serialization
+- tree introspection
+- dataframe export
+
+can all agree with one another even though they do not store or consume the model in the same way internally.
 
 ## What the IR contains
 
@@ -51,6 +71,19 @@ In practical terms, the IR answers questions like:
 - how should outputs be interpreted?
 - what assumptions does an inference runtime need to preserve?
 
+It also answers a subtler but equally important question:
+
+- what parts of the system are allowed to change without changing model meaning?
+
+For ForestFire, that includes:
+
+- optimized runtime layout
+- feature projection used by optimized inference
+- ensemble runtime ordering
+- compiled artifact structure
+
+None of those are part of the canonical IR because none of them change the semantic function the model computes.
+
 ## Why this matters for users
 
 The IR is not just an implementation detail.
@@ -66,6 +99,8 @@ It is what makes these features line up with one another:
 Without a stable semantic representation, those would each need their own partially overlapping view of the model.
 
 With the IR, they all derive from the same source of truth.
+
+This is also why optimized and non-optimized models export the same IR. If they exported different semantic artifacts, optimization would become a semantic transformation instead of an execution transformation, which is exactly what the design is trying to avoid.
 
 ## Tree representations in the IR
 
@@ -94,6 +129,12 @@ The IR stores:
 
 This representation is natural for trees whose structure is irregular and branch-specific.
 
+That includes:
+
+- ordinary CART-like binary trees
+- randomized trees, which are structurally like CART but differ in how candidate splits are chosen
+- `id3` and `c45`, whose learned structure may include multiway branches
+
 ### `oblivious_levels`
 
 This is used for oblivious trees.
@@ -111,6 +152,11 @@ This matches the semantics of oblivious trees directly:
 - leaf selection can be described as bit accumulation
 
 That is both more compact and more faithful than pretending an oblivious tree is just an ordinary node graph.
+
+It also makes the runtime/lowering boundary cleaner:
+
+- the IR expresses the native semantics of an oblivious tree
+- the optimized runtime can then choose scalar, SIMD, or batch-oriented execution without first having to reverse-engineer a generic node graph back into a level-wise form
 
 ## Leaf payloads
 
@@ -142,6 +188,14 @@ That means the IR stores:
 This matters because ForestFire models do not consume arbitrary floating-point inputs directly on the hot path. They consume the binned representation implied by training-time preprocessing.
 
 If that preprocessing were not described explicitly, a deserialized model would not be self-sufficient.
+
+That point is especially important now that:
+
+- training uses adaptive power-of-two numeric binning
+- optimized runtimes project to the subset of used features
+- compact runtime batches store bin ids as `u8` or `u16`
+
+All of those runtime optimizations depend on the semantic preprocessing contract being explicit and reconstructible.
 
 ## Output schema and postprocessing
 
@@ -205,10 +259,40 @@ The optimized runtime is designed for:
 
 The runtime is lowered *from* the semantic model and IR-compatible structure. It is not the canonical serialized form.
 
+In practice, that means:
+
+- the IR contains the full semantic feature space
+- the optimized runtime may use a projected feature space internally
+- the IR contains semantic tree ordering
+- the optimized runtime may reorder ensemble members for locality
+- the IR contains semantic node/leaf meaning
+- the optimized runtime may use fallthrough layouts, lookup tables, and compact batch representations
+
 That separation keeps the project flexible:
 
 - runtime layouts can improve without breaking serialized artifacts
 - introspection can stay stable even if the runtime gets more specialized
+
+## IR vs compiled optimized artifacts
+
+The compiled optimized artifact is a separate layer on top of the IR.
+
+It exists because optimized lowering itself is real work. A compiled artifact can cache:
+
+- the semantic IR
+- the lowered runtime layout
+- optimized-runtime metadata such as feature projection
+
+Why not make that compiled artifact the main model format:
+
+- it is backend-oriented rather than semantics-oriented
+- it is harder to diff, inspect, and validate manually
+- runtime layouts are more likely to evolve than semantic model meaning
+
+So the project keeps a clean separation:
+
+- IR for semantic truth
+- compiled artifacts for faster reload of one particular optimized runtime
 
 ## Schema generation
 
@@ -224,6 +308,8 @@ That gives the project two useful guarantees:
 - changes to the IR surface are visible and testable
 
 The schema test exists precisely so accidental IR drift does not go unnoticed.
+
+That matters more as the runtime grows more sophisticated. The more execution-side optimization ForestFire adds, the more important it becomes that the semantic layer stay explicit and regression-tested.
 
 ## Why the IR is a design feature, not just a file format
 

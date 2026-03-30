@@ -17,6 +17,7 @@ Current capabilities:
 - gradient boosting
 - classification and regression
 - optimized inference runtimes
+- compiled optimized runtime artifacts
 - model introspection and dataframe export
 
 ## Documentation
@@ -34,6 +35,7 @@ Main sections:
 - [Rust API](docs/rust-api.md)
 - [Training](docs/training.md)
 - [Models And Introspection](docs/models.md)
+- [Runtime And Optimization](docs/runtime.md)
 - [Benchmarks](docs/benchmarks.md)
 - [PyPI Release](docs/pypi-release.md)
 - [crates.io Release](docs/cargo-release.md)

@@ -52,6 +52,40 @@ pub(crate) struct InferenceTable {
 }
 
 impl InferenceTable {
+    pub(crate) fn from_rows_projected(
+        rows: Vec<Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+        projection: &[usize],
+    ) -> Result<Self, PredictError> {
+        let expected = preprocessing.len();
+        if let Some((row_index, actual)) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(row_index, row)| (row.len() != expected).then_some((row_index, row.len())))
+        {
+            return Err(PredictError::RaggedRows {
+                row: row_index,
+                expected,
+                actual,
+            });
+        }
+
+        let columns = projection
+            .iter()
+            .map(|feature_index| {
+                rows.iter()
+                    .map(|row| row[*feature_index])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let projected_preprocessing = projection
+            .iter()
+            .map(|feature_index| preprocessing[*feature_index].clone())
+            .collect::<Vec<_>>();
+
+        Self::from_columns(columns, &projected_preprocessing, Some(rows.len()))
+    }
+
     pub(crate) fn from_rows(
         rows: Vec<Vec<f64>>,
         preprocessing: &[FeaturePreprocessing],
@@ -77,7 +111,7 @@ impl InferenceTable {
             })
             .collect::<Vec<_>>();
 
-        Self::from_columns(columns, preprocessing)
+        Self::from_columns(columns, preprocessing, Some(rows.len()))
     }
 
     pub(crate) fn from_named_columns(
@@ -119,7 +153,55 @@ impl InferenceTable {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Self::from_columns(ordered, preprocessing)
+        Self::from_columns(ordered, preprocessing, Some(n_rows))
+    }
+
+    pub(crate) fn from_named_columns_projected(
+        columns: BTreeMap<String, Vec<f64>>,
+        preprocessing: &[FeaturePreprocessing],
+        projection: &[usize],
+    ) -> Result<Self, PredictError> {
+        let expected = preprocessing.len();
+        if columns.len() != expected {
+            for feature_index in 0..expected {
+                let name = format!("f{}", feature_index);
+                if !columns.contains_key(&name) {
+                    return Err(PredictError::MissingFeature(name));
+                }
+            }
+            if let Some(unexpected) = columns.keys().find(|name| {
+                name.strip_prefix('f')
+                    .and_then(|idx| idx.parse::<usize>().ok())
+                    .is_none_or(|idx| idx >= expected)
+            }) {
+                return Err(PredictError::UnexpectedFeature(unexpected.clone()));
+            }
+        }
+
+        let n_rows = columns.values().next().map_or(0, Vec::len);
+        let ordered = projection
+            .iter()
+            .map(|feature_index| {
+                let feature_name = format!("f{}", feature_index);
+                let values = columns
+                    .get(&feature_name)
+                    .ok_or_else(|| PredictError::MissingFeature(feature_name.clone()))?;
+                if values.len() != n_rows {
+                    return Err(PredictError::ColumnLengthMismatch {
+                        feature: feature_name,
+                        expected: n_rows,
+                        actual: values.len(),
+                    });
+                }
+                Ok(values.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let projected_preprocessing = projection
+            .iter()
+            .map(|feature_index| preprocessing[*feature_index].clone())
+            .collect::<Vec<_>>();
+
+        Self::from_columns(ordered, &projected_preprocessing, Some(n_rows))
     }
 
     pub(crate) fn from_sparse_binary_columns(
@@ -163,12 +245,62 @@ impl InferenceTable {
             }
         }
 
-        Self::from_columns(dense_columns, preprocessing)
+        Self::from_columns(dense_columns, preprocessing, Some(n_rows))
+    }
+
+    pub(crate) fn from_sparse_binary_columns_projected(
+        n_rows: usize,
+        n_features: usize,
+        columns: Vec<Vec<usize>>,
+        preprocessing: &[FeaturePreprocessing],
+        projection: &[usize],
+    ) -> Result<Self, PredictError> {
+        if n_features != preprocessing.len() {
+            return Err(PredictError::FeatureCountMismatch {
+                expected: preprocessing.len(),
+                actual: n_features,
+            });
+        }
+
+        let projected_preprocessing = projection
+            .iter()
+            .map(|feature_index| preprocessing[*feature_index].clone())
+            .collect::<Vec<_>>();
+        let mut dense_columns = Vec::with_capacity(projection.len());
+        for (local_index, feature_index) in projection.iter().copied().enumerate() {
+            match preprocessing.get(feature_index) {
+                Some(FeaturePreprocessing::Binary) => {
+                    let mut values = vec![false; n_rows];
+                    for row_index in columns.get(feature_index).cloned().unwrap_or_default() {
+                        if row_index >= n_rows {
+                            return Err(PredictError::ColumnLengthMismatch {
+                                feature: format!("f{}", feature_index),
+                                expected: n_rows,
+                                actual: row_index + 1,
+                            });
+                        }
+                        values[row_index] = true;
+                    }
+                    dense_columns.push(values.into_iter().map(f64::from).collect());
+                }
+                Some(FeaturePreprocessing::Numeric { .. }) => {
+                    return Err(PredictError::InvalidBinaryValue {
+                        feature_index: local_index,
+                        row_index: 0,
+                        value: 1.0,
+                    });
+                }
+                None => unreachable!("validated feature count"),
+            }
+        }
+
+        Self::from_columns(dense_columns, &projected_preprocessing, Some(n_rows))
     }
 
     fn from_columns(
         columns: Vec<Vec<f64>>,
         preprocessing: &[FeaturePreprocessing],
+        n_rows_hint: Option<usize>,
     ) -> Result<Self, PredictError> {
         if columns.len() != preprocessing.len() {
             return Err(PredictError::FeatureCountMismatch {
@@ -177,7 +309,9 @@ impl InferenceTable {
             });
         }
 
-        let n_rows = columns.first().map_or(0, Vec::len);
+        let n_rows = columns
+            .first()
+            .map_or_else(|| n_rows_hint.unwrap_or(0), Vec::len);
         let mut feature_columns = Vec::with_capacity(columns.len());
         let mut binned_feature_columns = Vec::with_capacity(columns.len());
 
@@ -254,6 +388,41 @@ pub(crate) struct ColumnMajorBinnedMatrix {
 }
 
 impl ColumnMajorBinnedMatrix {
+    pub(crate) fn from_table_access_projected(
+        table: &dyn TableAccess,
+        projection: &[usize],
+    ) -> Self {
+        let columns = projection
+            .iter()
+            .map(|feature_index| {
+                if table.is_binary_binned_feature(*feature_index) {
+                    CompactBinnedColumn::U8(
+                        (0..table.n_rows())
+                            .map(|row_index| {
+                                u8::from(
+                                    table
+                                        .binned_boolean_value(*feature_index, row_index)
+                                        .unwrap_or(false),
+                                )
+                            })
+                            .collect(),
+                    )
+                } else {
+                    compact_binned_column(
+                        &(0..table.n_rows())
+                            .map(|row_index| table.binned_value(*feature_index, row_index))
+                            .collect::<Vec<_>>(),
+                    )
+                }
+            })
+            .collect();
+
+        Self {
+            n_rows: table.n_rows(),
+            columns,
+        }
+    }
+
     pub(crate) fn from_table_access(table: &dyn TableAccess) -> Self {
         let columns = (0..table.n_features())
             .map(|feature_index| {
@@ -288,6 +457,72 @@ impl ColumnMajorBinnedMatrix {
     #[inline(always)]
     pub(crate) fn column(&self, feature_index: usize) -> &CompactBinnedColumn {
         &self.columns[feature_index]
+    }
+}
+
+pub(crate) struct ProjectedTableView<'a> {
+    base: &'a dyn TableAccess,
+    projection: &'a [usize],
+}
+
+impl<'a> ProjectedTableView<'a> {
+    pub(crate) fn new(base: &'a dyn TableAccess, projection: &'a [usize]) -> Self {
+        Self { base, projection }
+    }
+}
+
+impl TableAccess for ProjectedTableView<'_> {
+    fn n_rows(&self) -> usize {
+        self.base.n_rows()
+    }
+
+    fn n_features(&self) -> usize {
+        self.projection.len()
+    }
+
+    fn canaries(&self) -> usize {
+        0
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        self.base.numeric_bin_cap()
+    }
+
+    fn binned_feature_count(&self) -> usize {
+        self.projection.len()
+    }
+
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        self.base
+            .feature_value(self.projection[feature_index], row_index)
+    }
+
+    fn is_binary_feature(&self, index: usize) -> bool {
+        self.base.is_binary_feature(self.projection[index])
+    }
+
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        self.base
+            .binned_value(self.projection[feature_index], row_index)
+    }
+
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        self.base
+            .binned_boolean_value(self.projection[feature_index], row_index)
+    }
+
+    fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        BinnedColumnKind::Real {
+            source_index: self.projection[index],
+        }
+    }
+
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        self.base.is_binary_binned_feature(self.projection[index])
+    }
+
+    fn target_value(&self, row_index: usize) -> f64 {
+        self.base.target_value(row_index)
     }
 }
 

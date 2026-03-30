@@ -59,6 +59,8 @@ class OptimizedModel:
     top_gradient_fraction: float | None
     other_gradient_fraction: float | None
     tree_count: int
+    used_feature_count: int
+    used_feature_indices: list[int]
 
     @classmethod
     def deserialize_compiled(
@@ -97,6 +99,8 @@ class Model:
     top_gradient_fraction: float | None
     other_gradient_fraction: float | None
     tree_count: int
+    used_feature_count: int
+    used_feature_indices: list[int]
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model": ...

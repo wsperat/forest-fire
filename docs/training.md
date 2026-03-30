@@ -168,7 +168,8 @@ That choice reflects the project’s general design preference: use explicit tra
 
 ForestFire training is optimized around a compact binned core and shared row-index buffers rather than row copies.
 
-- numeric features are pre-binned into compact integer ranks, capped at `128` bins
+- numeric features are pre-binned into compact integer ranks, capped at `512` bins
+- `bins="auto"` chooses the highest populated power-of-two count per feature while keeping at least two rows in every realized bin
 - long-running training and prediction release the Python GIL before entering the Rust hot path
 - CART and randomized trees use histogram-based numeric split search
 - standard binary trees partition row indices in place
@@ -181,6 +182,385 @@ ForestFire training is optimized around a compact binned core and shared row-ind
 - classifier, regressor, and second-order tree builders now share the same core
   histogram/partitioning/randomization helpers instead of carrying separate
   implementations of the same mechanics
+
+### Reading the snippets below
+
+As in the runtime page, the snippets here are representative shapes rather than exact copies of every production function.
+
+They are meant to show:
+
+- the straightforward naïve way to structure the work
+- the shape ForestFire actually optimizes for
+- why the optimized shape is cheaper in memory traffic, allocation, or repeated computation
+
+The real implementations live across `crates/data/src` and `crates/core/src/tree`, but these snippets are the shortest path to understanding the architecture.
+
+### 1. Binning once instead of rescanning raw floats at every node
+
+#### Naïve approach
+
+```rust
+fn best_threshold_naive(values: &[f64], rows: &[usize]) -> Option<f64> {
+    let mut best = None;
+    for &candidate_row in rows {
+        let threshold = values[candidate_row];
+        let (left, right): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .copied()
+            .partition(|&row| values[row] <= threshold);
+        let score = score_split_from_raw_values(values, &left, &right);
+        best = pick_better(best, (threshold, score));
+    }
+    best.map(|(threshold, _)| threshold)
+}
+```
+
+This rescans raw floating-point values and repartitions rows for every candidate threshold.
+
+#### ForestFire approach
+
+```rust
+fn best_threshold_binned(
+    binned_values: &[u16],
+    histogram: &[HistogramBin],
+) -> Option<u16> {
+    let mut best = None;
+    let mut left = HistogramBin::default();
+    let total = histogram_total(histogram);
+
+    for (bin, bucket) in histogram.iter().enumerate() {
+        left = left + bucket;
+        let right = total - left;
+        let score = score_split_from_histograms(&left, &right);
+        best = pick_better(best, (bin as u16, score));
+    }
+
+    best.map(|(bin, _)| bin)
+}
+```
+
+Why this helps:
+
+- candidate space is bounded by the realized bins
+- split scoring works from aggregated counts or sums rather than rescanning rows
+- the same binned representation is reused by every learner family and later by optimized inference
+
+### 2. In-place row partitioning instead of copying child row vectors
+
+#### Naïve approach
+
+```rust
+fn split_rows_naive(rows: &[usize], feature: usize, threshold: u16, table: &dyn TableAccess) -> (Vec<usize>, Vec<usize>) {
+    rows.iter()
+        .copied()
+        .partition(|row| table.binned_value(feature, *row) <= threshold)
+}
+```
+
+This allocates new child vectors at every split.
+
+#### ForestFire approach
+
+```rust
+fn split_rows_in_place(
+    rows: &mut [usize],
+    feature: usize,
+    threshold: u16,
+    table: &dyn TableAccess,
+) -> usize {
+    let mut boundary = 0usize;
+    for idx in 0..rows.len() {
+        if table.binned_value(feature, rows[idx]) <= threshold {
+            rows.swap(boundary, idx);
+            boundary += 1;
+        }
+    }
+    boundary
+}
+```
+
+Now one mutable row-index buffer is reused throughout growth:
+
+- `rows[..boundary]` is the left child
+- `rows[boundary..]` is the right child
+
+Why this helps:
+
+- far fewer allocations
+- better cache locality on the row-index buffer
+- easier reuse of the same data structure across CART, randomized, and second-order trees
+
+### 3. Histogram subtraction instead of rebuilding sibling statistics
+
+#### Naïve approach
+
+```rust
+fn child_histograms_naive(
+    left_rows: &[usize],
+    right_rows: &[usize],
+    table: &dyn TableAccess,
+) -> (Vec<HistogramBin>, Vec<HistogramBin>) {
+    (
+        build_histograms_from_rows(left_rows, table),
+        build_histograms_from_rows(right_rows, table),
+    )
+}
+```
+
+This does full work for both children even though the parent histogram is already known.
+
+#### ForestFire approach
+
+```rust
+fn child_histograms_subtractive(
+    parent: &[HistogramBin],
+    left: &[HistogramBin],
+) -> (Vec<HistogramBin>, Vec<HistogramBin>) {
+    let right = parent
+        .iter()
+        .zip(left.iter())
+        .map(|(parent_bin, left_bin)| parent_bin.subtract(left_bin))
+        .collect::<Vec<_>>();
+    (left.to_vec(), right)
+}
+```
+
+Why this helps:
+
+- one child histogram can be built directly
+- the sibling becomes derived work instead of independent work
+- the savings compound at every internal node in binary tree growth
+
+### 4. Shared row buffers for oblivious training
+
+#### Naïve approach
+
+```rust
+fn grow_oblivious_naive(leaves: &[Vec<usize>], split: Split, table: &dyn TableAccess) -> Vec<Vec<usize>> {
+    let mut next = Vec::new();
+    for leaf_rows in leaves {
+        let (left, right) = leaf_rows
+            .iter()
+            .copied()
+            .partition(|row| table.binned_value(split.feature_index, *row) <= split.threshold_bin);
+        next.push(left);
+        next.push(right);
+    }
+    next
+}
+```
+
+This keeps allocating fresh vectors per leaf at every depth.
+
+#### ForestFire approach
+
+```rust
+struct LeafRange {
+    start: usize,
+    end: usize,
+}
+
+fn grow_oblivious_in_place(
+    rows: &mut [usize],
+    leaves: &[LeafRange],
+    split: Split,
+    table: &dyn TableAccess,
+) -> Vec<LeafRange> {
+    let mut next = Vec::with_capacity(leaves.len() * 2);
+    for leaf in leaves {
+        let boundary = split_rows_in_place(
+            &mut rows[leaf.start..leaf.end],
+            split.feature_index,
+            split.threshold_bin,
+            table,
+        );
+        next.push(LeafRange {
+            start: leaf.start,
+            end: leaf.start + boundary,
+        });
+        next.push(LeafRange {
+            start: leaf.start + boundary,
+            end: leaf.end,
+        });
+    }
+    next
+}
+```
+
+Why this helps:
+
+- one row buffer is reused for the whole tree
+- leaves are tracked by ranges instead of fresh row vectors
+- this matches the symmetric structure of oblivious trees and keeps the implementation regular
+
+### 5. Deterministic randomization through shared seed mixing
+
+#### Naïve approach
+
+```rust
+let mut rng = StdRng::seed_from_u64(user_seed);
+let threshold = candidates[rng.gen_range(0..candidates.len())];
+```
+
+This makes results depend on the accidental order in which random draws happen across nodes, trees, or stages.
+
+#### ForestFire approach
+
+```rust
+let tree_seed = mix_seed(base_seed, tree_index as u64);
+let node_seed = node_seed(tree_seed, depth, salt, rows);
+let threshold = choose_random_threshold(&candidates, feature_index, rows, node_seed)?;
+```
+
+Why this helps:
+
+- fixed seed means repeatable training
+- different trees, stages, and nodes still get different random contexts
+- node-local choices depend on the row set, not on incidental temporary ordering
+
+That is important for randomized trees, forests, and gradient boosting stages alike.
+
+### 6. Parallelize across trees where independence is real
+
+#### Naïve approach
+
+```rust
+let trees = (0..n_trees)
+    .map(|tree_index| train_one_tree(sample_for(tree_index)))
+    .collect::<Result<Vec<_>, _>>()?;
+```
+
+This is correct, but it leaves independent bootstrap trees serialized.
+
+#### ForestFire approach
+
+```rust
+let trees = (0..n_trees)
+    .into_par_iter()
+    .map(|tree_index| train_one_tree(sample_for(tree_index)))
+    .collect::<Result<Vec<_>, _>>()?;
+```
+
+Why this helps:
+
+- forest trees are naturally independent training jobs
+- the speedup lands at the algorithm level without changing single-tree semantics
+- intra-tree work can stay conservative while inter-tree work scales out
+
+ForestFire deliberately prefers this shape for forests because the independence is obvious and the coordination cost is low.
+
+### 7. Stage-wise boosting on shared preprocessed data
+
+#### Naïve approach
+
+```rust
+for stage in 0..n_trees {
+    let residual_table = rebuild_table_from_current_residuals(x, residuals);
+    let tree = train_tree(&residual_table)?;
+    update_predictions(&mut predictions, &tree);
+}
+```
+
+This rebuilds too much state per stage.
+
+#### ForestFire approach
+
+```rust
+for stage in 0..n_trees {
+    let (gradients, hessians) = compute_gradients_and_hessians(&predictions, targets);
+    let sampled_rows = gradient_focus_sample(base_rows, &gradients, &hessians, ...);
+    let sampled_table = SampledTable::new(train_set, sampled_rows.row_indices);
+    let tree = train_second_order_tree(&sampled_table, &sampled_rows.gradients, &sampled_rows.hessians)?;
+    update_predictions(&mut predictions, &tree, learning_rate);
+}
+```
+
+Why this helps:
+
+- the same preprocessed base table is reused
+- only gradients, Hessians, and sampled row views change per stage
+- stage computation stays focused on residual structure instead of rebuilding the whole world
+
+### 8. Keep sparse binary inputs sparse
+
+#### Naïve approach
+
+```rust
+fn sparse_to_dense(x: SparseInput) -> Vec<Vec<f64>> {
+    let mut dense = vec![vec![0.0; x.n_features]; x.n_rows];
+    for (feature, rows) in x.nonzero_rows {
+        for row in rows {
+            dense[row][feature] = 1.0;
+        }
+    }
+    dense
+}
+```
+
+This pays the full dense memory cost before training even starts.
+
+#### ForestFire approach
+
+```rust
+struct SparseBinaryColumn {
+    row_indices: Vec<usize>,
+}
+
+struct SparseTable {
+    columns: Vec<SparseBinaryColumn>,
+    n_rows: usize,
+}
+```
+
+Why this helps:
+
+- storage scales with positive entries, not full shape
+- binary-feature semantics stay explicit
+- the same sparse structure can feed both training and inference paths
+
+### 9. Share core mechanics across learner families
+
+#### Naïve approach
+
+```rust
+mod classifier_training {
+    fn build_histograms(...) { ... }
+    fn partition_rows(...) { ... }
+}
+
+mod regressor_training {
+    fn build_histograms(...) { ... }
+    fn partition_rows(...) { ... }
+}
+
+mod second_order_training {
+    fn build_histograms(...) { ... }
+    fn partition_rows(...) { ... }
+}
+```
+
+This invites drift:
+
+- one path gets faster
+- another keeps the old bug or old allocation pattern
+- randomization semantics stop lining up
+
+#### ForestFire approach
+
+```rust
+mod tree::shared {
+    fn candidate_feature_indices(...) { ... }
+    fn partition_rows_for_binary_split(...) { ... }
+    fn choose_random_threshold(...) { ... }
+    fn mix_seed(...) { ... }
+}
+```
+
+Why this helps:
+
+- performance-sensitive fixes land once
+- first-order and second-order trees stay behaviorally aligned
+- the codebase can evolve without silently splitting into several incompatible training engines
 
 Why these optimizations matter:
 

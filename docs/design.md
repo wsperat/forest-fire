@@ -79,6 +79,12 @@ This is one of the cases where architectural cleanliness is also a correctness
 and performance win. Shared internals make it much harder for one learner family
 to accidentally diverge in subtle ways from the others.
 
+The same pattern now shows up on the inference side as well:
+
+- semantic feature usage is computed once from the model
+- optimized runtimes reuse one projection-aware preprocessing path
+- compiled artifacts snapshot that lowered runtime instead of inventing a second execution semantics
+
 ## Why binning is central
 
 ForestFire is built around bounded numeric bins rather than exact threshold handling everywhere.
@@ -95,6 +101,18 @@ Tradeoff:
 - the binning strategy becomes part of model semantics
 
 That is acceptable because the project values regularity and portability more than preserving every raw numeric distinction internally.
+
+The newer adaptive binning rules reinforce that design:
+
+- bin counts stay powers of two
+- they are capped
+- auto binning keeps at least two rows in each realized bin
+
+That choice is not only about training. It is also about the rest of the system:
+
+- the IR can describe the preprocessing compactly
+- optimized runtimes can use narrow integer storage
+- runtime lookup tables become easier to size tightly
 
 ## Why canaries exist
 
@@ -157,6 +175,15 @@ This separation keeps two important properties at once:
 - introspection still sees the full trained structure
 - prediction can use a layout that is much closer to what CPUs want
 
+That runtime lowering now includes several distinct transformations:
+
+- removing training-only node payload from hot-path layouts
+- remapping features into a compact projected space
+- reordering ensemble members for better locality
+- choosing specialized execution formats such as fallthrough binary layouts or oblivious level arrays
+
+The important architectural point is that all of those are execution choices, not semantic changes.
+
 ## Why the IR is first-class
 
 The IR is not an export afterthought. It is the semantic bridge between:
@@ -180,6 +207,14 @@ The IR forces the project to answer explicitly:
 - which runtime transformations preserve semantics
 
 That discipline is one of the reasons ForestFire can expose runtime lowering, dataframe export, and serialization without each feature inventing its own hidden interpretation of the model.
+
+It also explains why optimized and non-optimized models intentionally share the same IR export:
+
+- both are views of the same learned object
+- optimization is allowed to change layout, not meaning
+- the IR must therefore stay above runtime-specific details like projected local feature indices or ensemble execution order
+
+That same reasoning is why the compiled optimized artifact is layered on top of the semantic model instead of replacing it.
 
 ## Why multiple tree families remain exposed
 
@@ -205,5 +240,14 @@ Across the codebase, the same preference keeps showing up:
 - separate meaning from execution strategy
 - prefer regular internal representations when they unlock system-wide gains
 - let training-time design choices feed directly into runtime, export, and introspection
+
+The new optimized-runtime work is a good example of that principle in practice:
+
+- training determines which features and bins actually matter
+- the semantic model records that meaning
+- the optimized runtime exploits it through projection, compact batch storage, and locality-aware lowering
+- the compiled artifact snapshots that result for fast reload
+
+The throughline is still the same: meaning first, execution second, but execution is taken seriously enough to deserve its own explicit design.
 
 That is the architectural throughline of the project.

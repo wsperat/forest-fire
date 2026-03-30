@@ -31,7 +31,19 @@ stage depends on the current ensemble state, so the outer training loop is
 inherently sequential. The practical way to improve GBM CPU, and eventually GPU,
 utilization is to make each individual tree fit much more parallel internally.
 
-The highest-value strategy is:
+The implementation plan should be staged rather than treated as one large
+rewrite:
+
+1. Keep the boosting stage loop serial, but make one second-order tree fit more
+   parallel internally.
+2. Separate node evaluation from row-buffer mutation so active nodes can be
+   evaluated in batches at one depth.
+3. Make histogram construction and split scoring parallel across features and
+   then across batches of active nodes.
+4. Only after those pieces are stable, parallelize row partitioning and add
+   more aggressive SIMD work in the histogram hot path.
+
+The highest-value technical milestones are:
 
 - parallel histogram building with thread-local `count` / gradient / Hessian
   accumulators and a reduction step
@@ -52,6 +64,18 @@ from node-level parallelism:
 That is the basic strategy used by systems like XGBoost, LightGBM, and
 CatBoost. In practice, the first two steps above, histogram building and
 feature-parallel split scoring, are likely to deliver the biggest visible gain.
+
+Some groundwork for that plan is now in place:
+
+- the second-order tree path has an explicit “evaluate one node” step separate
+  from the recursive child-building step, which is the structural prerequisite
+  for level-wise active-node batching
+- second-order histogram construction now has a parallel-capable shared helper
+  instead of forcing the GBM path through a purely sequential per-feature build
+
+The next concrete implementation step should be introducing an active-node
+frontier for standard second-order trees so a whole level can be scored before
+any node at that level mutates the shared row-index buffer.
 
 ## Random-forest training on wide data
 

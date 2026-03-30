@@ -949,10 +949,10 @@ fn serialized_model_round_trips_through_deserialize() {
 fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
     let table = DenseTable::with_canaries(
         vec![
-            vec![0.0, 0.0],
-            vec![0.0, 1.0],
-            vec![1.0, 0.0],
-            vec![1.0, 1.0],
+            vec![0.0, 0.0, 10.0, 20.0],
+            vec![0.0, 1.0, 10.0, 20.0],
+            vec![1.0, 0.0, 10.0, 20.0],
+            vec![1.0, 1.0, 10.0, 20.0],
         ],
         vec![0.0, 0.0, 0.0, 1.0],
         0,
@@ -986,15 +986,18 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
 
     assert_eq!(model.to_ir_json().unwrap(), optimized.to_ir_json().unwrap());
     assert_eq!(model.serialize().unwrap(), optimized.serialize().unwrap());
+    assert_eq!(model.used_feature_indices(), vec![0, 1]);
+    assert_eq!(optimized.used_feature_indices(), vec![0, 1]);
+    assert_eq!(optimized.used_feature_count(), 2);
     assert_predictions_close(
         &model.predict_table(&table),
         &optimized.predict_table(&table),
     );
     let model_preds = model
-        .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+        .predict_rows(vec![vec![0.0, 1.0, 10.0, 20.0], vec![1.0, 1.0, 10.0, 20.0]])
         .unwrap();
     let optimized_preds = optimized
-        .predict_rows(vec![vec![0.0, 1.0], vec![1.0, 1.0]])
+        .predict_rows(vec![vec![0.0, 1.0, 10.0, 20.0], vec![1.0, 1.0, 10.0, 20.0]])
         .unwrap();
     assert_predictions_close(model_preds.as_slice(), optimized_preds.as_slice());
 }
@@ -1197,10 +1200,10 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
 fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
     let table = DenseTable::with_canaries(
         vec![
-            vec![0.0, 0.0],
-            vec![0.0, 1.0],
-            vec![1.0, 0.0],
-            vec![1.0, 1.0],
+            vec![0.0, 0.0, 10.0, 20.0],
+            vec![0.0, 1.0, 10.0, 20.0],
+            vec![1.0, 0.0, 10.0, 20.0],
+            vec![1.0, 1.0, 10.0, 20.0],
         ],
         vec![0.0, 0.0, 0.0, 1.0],
         0,
@@ -1234,10 +1237,10 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
     let compiled = optimized.serialize_compiled().unwrap();
     let restored = OptimizedModel::deserialize_compiled(&compiled, Some(1)).unwrap();
     let rows = vec![
-        vec![0.0, 0.0],
-        vec![0.0, 1.0],
-        vec![1.0, 0.0],
-        vec![1.0, 1.0],
+        vec![0.0, 0.0, 10.0, 20.0],
+        vec![0.0, 1.0, 10.0, 20.0],
+        vec![1.0, 0.0, 10.0, 20.0],
+        vec![1.0, 1.0, 10.0, 20.0],
     ];
 
     assert_eq!(&compiled[..4], &COMPILED_ARTIFACT_MAGIC);
@@ -1249,9 +1252,54 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
         optimized.to_ir_json().unwrap(),
         restored.to_ir_json().unwrap()
     );
+    assert_eq!(optimized.used_feature_indices(), vec![0, 1]);
+    assert_eq!(restored.used_feature_indices(), vec![0, 1]);
     assert_predictions_close(
         &optimized.predict_rows(rows.clone()).unwrap(),
         &restored.predict_rows(rows).unwrap(),
+    );
+}
+
+#[test]
+fn optimized_model_projects_ensemble_inputs_to_used_features() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0, 0.0, 5.0, 9.0],
+            vec![0.0, 1.0, 5.0, 9.0],
+            vec![1.0, 0.0, 5.0, 9.0],
+            vec![1.0, 1.0, 5.0, 9.0],
+        ],
+        vec![0.0, 0.0, 0.0, 1.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Rf,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Gini,
+            n_trees: Some(8),
+            max_features: MaxFeatures::Count(2),
+            seed: Some(7),
+            physical_cores: Some(1),
+            ..TrainConfig::default()
+        },
+    )
+    .unwrap();
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+
+    assert_eq!(model.used_feature_indices(), vec![0, 1]);
+    assert_eq!(optimized.used_feature_indices(), vec![0, 1]);
+    assert_eq!(optimized.used_feature_count(), 2);
+    assert_predictions_close(
+        &model
+            .predict_rows(vec![vec![0.0, 0.0, 5.0, 9.0], vec![1.0, 1.0, 5.0, 9.0]])
+            .unwrap(),
+        &optimized
+            .predict_rows(vec![vec![0.0, 0.0, 5.0, 9.0], vec![1.0, 1.0, 5.0, 9.0]])
+            .unwrap(),
     );
 }
 

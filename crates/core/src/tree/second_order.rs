@@ -12,8 +12,8 @@ use crate::tree::regressor::{
     RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::tree::shared::{
-    FeatureHistogram, HistogramBin, build_feature_histograms, candidate_feature_indices,
-    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    FeatureHistogram, HistogramBin, build_feature_histograms, build_feature_histograms_parallel,
+    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
     subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
@@ -134,6 +134,20 @@ struct SplitChoice {
     feature_index: usize,
     threshold_bin: u16,
     gain: f64,
+}
+
+/// Result of evaluating one standard node before mutating the shared row buffer.
+///
+/// Keeping node evaluation separate from child recursion is the first step
+/// toward level-wise GBM parallelism: a later implementation can evaluate a
+/// whole batch of active nodes in parallel, then perform row partitioning only
+/// for the nodes that actually split.
+struct StandardNodeEvaluation {
+    sample_count: usize,
+    leaf_prediction: f64,
+    parent_strength: f64,
+    histograms: Option<Vec<SecondOrderFeatureHistogram>>,
+    best_split: Option<SplitChoice>,
 }
 
 #[derive(Debug, Clone)]
@@ -522,61 +536,16 @@ fn build_standard_node(
     histograms: Option<Vec<SecondOrderFeatureHistogram>>,
     root_canary_selected: &mut bool,
 ) -> usize {
-    let stats = node_stats(rows, context.gradients, context.hessians);
-    let leaf_prediction = leaf_value(
-        stats.gradient_sum,
-        stats.hessian_sum,
-        context.options.l2_regularization,
-    );
+    let evaluation = evaluate_standard_node(context, rows, depth, histograms);
 
-    if rows.is_empty()
-        || depth >= context.options.tree_options.max_depth
-        || rows.len() < context.options.tree_options.min_samples_split
-        || stats.hessian_sum <= 0.0
-    {
-        return push_leaf(nodes, leaf_prediction, rows.len());
-    }
-
-    let histograms = histograms.unwrap_or_else(|| {
-        build_second_order_feature_histograms(
-            context.table,
-            context.gradients,
-            context.hessians,
-            rows,
-        )
-    });
-    let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
-        context.options.tree_options.max_features,
-        node_seed(
-            context.options.tree_options.random_seed,
-            depth,
-            rows,
-            0xA11C_E5E1u64,
-        ),
-    );
-
-    let best_split = if context.parallelism.enabled() {
-        feature_indices
-            .into_par_iter()
-            .filter_map(|feature_index| {
-                score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
-            })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
-    } else {
-        feature_indices
-            .into_iter()
-            .filter_map(|feature_index| {
-                score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
-            })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
-    };
-
-    match best_split {
+    match evaluation.best_split {
         Some(split)
             if split.gain > context.options.min_gain_to_split
                 && !context.table.is_canary_binned_feature(split.feature_index) =>
         {
+            let histograms = evaluation
+                .histograms
+                .expect("splittable second-order node must retain histograms");
             let left_count = partition_rows_for_binary_split(
                 context.table,
                 split.feature_index,
@@ -590,6 +559,7 @@ fn build_standard_node(
                     context.gradients,
                     context.hessians,
                     left_rows,
+                    context.parallelism,
                 );
                 let right_histograms = subtract_feature_histograms(&histograms, &left_histograms);
                 (
@@ -616,6 +586,7 @@ fn build_standard_node(
                     context.gradients,
                     context.hessians,
                     right_rows,
+                    context.parallelism,
                 );
                 let left_histograms = subtract_feature_histograms(&histograms, &right_histograms);
                 (
@@ -645,12 +616,8 @@ fn build_standard_node(
                     threshold_bin: split.threshold_bin,
                     left_child,
                     right_child,
-                    sample_count: rows.len(),
-                    impurity: node_objective_strength(
-                        stats.gradient_sum,
-                        stats.hessian_sum,
-                        context.options.l2_regularization,
-                    ),
+                    sample_count: evaluation.sample_count,
+                    impurity: evaluation.parent_strength,
                     gain: split.gain,
                     variance: None,
                 },
@@ -663,9 +630,86 @@ fn build_standard_node(
             if depth == 0 {
                 *root_canary_selected = true;
             }
-            push_leaf(nodes, leaf_prediction, rows.len())
+            push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count)
         }
-        _ => push_leaf(nodes, leaf_prediction, rows.len()),
+        _ => push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count),
+    }
+}
+
+fn evaluate_standard_node(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    depth: usize,
+    histograms: Option<Vec<SecondOrderFeatureHistogram>>,
+) -> StandardNodeEvaluation {
+    let stats = node_stats(rows, context.gradients, context.hessians);
+    let leaf_prediction = leaf_value(
+        stats.gradient_sum,
+        stats.hessian_sum,
+        context.options.l2_regularization,
+    );
+    let sample_count = rows.len();
+    let parent_strength = node_objective_strength(
+        stats.gradient_sum,
+        stats.hessian_sum,
+        context.options.l2_regularization,
+    );
+
+    if rows.is_empty()
+        || depth >= context.options.tree_options.max_depth
+        || rows.len() < context.options.tree_options.min_samples_split
+        || stats.hessian_sum <= 0.0
+    {
+        return StandardNodeEvaluation {
+            sample_count,
+            leaf_prediction,
+            parent_strength,
+            histograms: None,
+            best_split: None,
+        };
+    }
+
+    let histograms = histograms.unwrap_or_else(|| {
+        build_second_order_feature_histograms(
+            context.table,
+            context.gradients,
+            context.hessians,
+            rows,
+            context.parallelism,
+        )
+    });
+    let feature_indices = candidate_feature_indices(
+        context.table.binned_feature_count(),
+        context.options.tree_options.max_features,
+        node_seed(
+            context.options.tree_options.random_seed,
+            depth,
+            rows,
+            0xA11C_E5E1u64,
+        ),
+    );
+    let best_split = if context.parallelism.enabled() {
+        feature_indices
+            .into_par_iter()
+            .filter_map(|feature_index| {
+                score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
+            })
+            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+    } else {
+        feature_indices
+            .into_iter()
+            .filter_map(|feature_index| {
+                score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
+            })
+            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+    };
+
+    StandardNodeEvaluation {
+        sample_count,
+        leaf_prediction,
+        parent_strength,
+        histograms: Some(histograms),
+        best_split,
     }
 }
 
@@ -724,21 +768,24 @@ fn build_second_order_feature_histograms(
     gradients: &[f64],
     hessians: &[f64],
     rows: &[usize],
+    parallelism: Parallelism,
 ) -> Vec<SecondOrderFeatureHistogram> {
-    build_feature_histograms(
-        table,
-        rows,
-        |_| SecondOrderHistogramBin {
-            count: 0,
-            gradient_sum: 0.0,
-            hessian_sum: 0.0,
-        },
-        |_feature_index, payload, row_idx| {
-            payload.count += 1;
-            payload.gradient_sum += gradients[row_idx];
-            payload.hessian_sum += hessians[row_idx];
-        },
-    )
+    let make_bin = |_| SecondOrderHistogramBin {
+        count: 0,
+        gradient_sum: 0.0,
+        hessian_sum: 0.0,
+    };
+    let add_row = |_feature_index, payload: &mut SecondOrderHistogramBin, row_idx| {
+        payload.count += 1;
+        payload.gradient_sum += gradients[row_idx];
+        payload.hessian_sum += hessians[row_idx];
+    };
+
+    if parallelism.enabled() {
+        build_feature_histograms_parallel(table, rows, make_bin, add_row)
+    } else {
+        build_feature_histograms(table, rows, make_bin, add_row)
+    }
 }
 
 fn score_feature_from_hist(
@@ -1305,6 +1352,90 @@ mod tests {
             repeated_model.predict_table(&table)
         );
         assert!(unique_prediction_signatures.len() >= 4);
+    }
+
+    #[test]
+    fn cart_second_order_tree_parallel_training_matches_sequential() {
+        let table = randomized_permutation_table();
+        let gradients = vec![
+            3.0, 2.0, 1.5, 0.5, -0.5, -1.0, -2.0, -3.0, 2.5, 1.0, -1.5, -2.5,
+        ];
+        let hessians = vec![1.0; 12];
+        let options = SecondOrderRegressionTreeOptions {
+            tree_options: RegressionTreeOptions {
+                max_depth: 4,
+                max_features: Some(2),
+                random_seed: 19,
+                ..RegressionTreeOptions::default()
+            },
+            l2_regularization: 1.0,
+            min_sum_hessian_in_leaf: 0.1,
+            min_gain_to_split: 0.0,
+        };
+
+        let sequential = train_cart_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::sequential(),
+            options,
+        )
+        .unwrap();
+        let parallel = train_cart_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::with_threads(2),
+            options,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sequential.predict_table(&table),
+            parallel.predict_table(&table)
+        );
+    }
+
+    #[test]
+    fn randomized_second_order_tree_parallel_training_matches_sequential() {
+        let table = randomized_permutation_table();
+        let gradients = vec![
+            3.0, 2.0, 1.5, 0.5, -0.5, -1.0, -2.0, -3.0, 2.5, 1.0, -1.5, -2.5,
+        ];
+        let hessians = vec![1.0; 12];
+        let options = SecondOrderRegressionTreeOptions {
+            tree_options: RegressionTreeOptions {
+                max_depth: 4,
+                max_features: Some(2),
+                random_seed: 23,
+                ..RegressionTreeOptions::default()
+            },
+            l2_regularization: 1.0,
+            min_sum_hessian_in_leaf: 0.1,
+            min_gain_to_split: 0.0,
+        };
+
+        let sequential = train_randomized_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::sequential(),
+            options,
+        )
+        .unwrap();
+        let parallel = train_randomized_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::with_threads(2),
+            options,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sequential.predict_table(&table),
+            parallel.predict_table(&table)
+        );
     }
 
     #[test]

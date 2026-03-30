@@ -1984,6 +1984,16 @@ impl PyModel {
         self.inner.tree_count()
     }
 
+    #[getter]
+    fn used_feature_count(&self) -> usize {
+        self.inner.used_feature_count()
+    }
+
+    #[getter]
+    fn used_feature_indices(&self) -> Vec<usize> {
+        self.inner.used_feature_indices()
+    }
+
     #[pyo3(signature = (tree_index=0))]
     fn tree_structure<'py>(
         &self,
@@ -2246,6 +2256,16 @@ impl PyOptimizedModel {
     #[getter]
     fn tree_count(&self) -> usize {
         self.inner.tree_count()
+    }
+
+    #[getter]
+    fn used_feature_count(&self) -> usize {
+        self.inner.used_feature_count()
+    }
+
+    #[getter]
+    fn used_feature_indices(&self) -> Vec<usize> {
+        self.inner.used_feature_indices()
     }
 
     #[pyo3(signature = (tree_index=0))]

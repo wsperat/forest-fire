@@ -39,6 +39,7 @@ mod introspection;
 pub mod ir;
 mod model_api;
 mod optimized_runtime;
+mod runtime_planning;
 mod sampling;
 mod training;
 pub mod tree;
@@ -75,6 +76,7 @@ const LAZYFRAME_PREDICT_BATCH_ROWS: usize = 10_000;
 pub(crate) use inference_input::ColumnMajorBinnedMatrix;
 pub(crate) use inference_input::CompactBinnedColumn;
 pub(crate) use inference_input::InferenceTable;
+pub(crate) use inference_input::ProjectedTableView;
 #[cfg(feature = "polars")]
 pub(crate) use inference_input::polars_named_columns;
 pub(crate) use introspection::prediction_value_stats;
@@ -88,6 +90,11 @@ pub(crate) use optimized_runtime::OptimizedRuntime;
 pub(crate) use optimized_runtime::PARALLEL_INFERENCE_CHUNK_ROWS;
 pub(crate) use optimized_runtime::STANDARD_BATCH_INFERENCE_CHUNK_ROWS;
 pub(crate) use optimized_runtime::resolve_inference_thread_count;
+pub(crate) use runtime_planning::build_feature_index_map;
+pub(crate) use runtime_planning::build_feature_projection;
+pub(crate) use runtime_planning::model_used_feature_indices;
+pub(crate) use runtime_planning::ordered_ensemble_indices;
+pub(crate) use runtime_planning::remap_feature_index;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainAlgorithm {
@@ -504,6 +511,13 @@ impl Parallelism {
         Self { thread_count: 1 }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_threads(thread_count: usize) -> Self {
+        Self {
+            thread_count: thread_count.max(1),
+        }
+    }
+
     pub(crate) fn enabled(self) -> bool {
         self.thread_count > 1
     }
@@ -551,40 +565,82 @@ impl OptimizedRuntime {
         n_rows > 1 && self.supports_batch_matrix()
     }
 
-    fn from_model(model: &Model) -> Self {
+    fn from_model(model: &Model, feature_index_map: &[usize]) -> Self {
         match model {
-            Model::DecisionTreeClassifier(classifier) => Self::from_classifier(classifier),
-            Model::DecisionTreeRegressor(regressor) => Self::from_regressor(regressor),
+            Model::DecisionTreeClassifier(classifier) => {
+                Self::from_classifier(classifier, feature_index_map)
+            }
+            Model::DecisionTreeRegressor(regressor) => {
+                Self::from_regressor(regressor, feature_index_map)
+            }
             Model::RandomForest(forest) => match forest.task() {
-                Task::Classification => Self::ForestClassifier {
-                    trees: forest.trees().iter().map(Self::from_model).collect(),
-                    class_labels: forest
-                        .class_labels()
-                        .expect("classification forest stores class labels"),
-                },
-                Task::Regression => Self::ForestRegressor {
-                    trees: forest.trees().iter().map(Self::from_model).collect(),
-                },
+                Task::Classification => {
+                    let tree_order = ordered_ensemble_indices(forest.trees());
+                    Self::ForestClassifier {
+                        trees: tree_order
+                            .into_iter()
+                            .map(|tree_index| {
+                                Self::from_model(&forest.trees()[tree_index], feature_index_map)
+                            })
+                            .collect(),
+                        class_labels: forest
+                            .class_labels()
+                            .expect("classification forest stores class labels"),
+                    }
+                }
+                Task::Regression => {
+                    let tree_order = ordered_ensemble_indices(forest.trees());
+                    Self::ForestRegressor {
+                        trees: tree_order
+                            .into_iter()
+                            .map(|tree_index| {
+                                Self::from_model(&forest.trees()[tree_index], feature_index_map)
+                            })
+                            .collect(),
+                    }
+                }
             },
             Model::GradientBoostedTrees(model) => match model.task() {
-                Task::Classification => Self::BoostedBinaryClassifier {
-                    trees: model.trees().iter().map(Self::from_model).collect(),
-                    tree_weights: model.tree_weights().to_vec(),
-                    base_score: model.base_score(),
-                    class_labels: model
-                        .class_labels()
-                        .expect("classification boosting stores class labels"),
-                },
-                Task::Regression => Self::BoostedRegressor {
-                    trees: model.trees().iter().map(Self::from_model).collect(),
-                    tree_weights: model.tree_weights().to_vec(),
-                    base_score: model.base_score(),
-                },
+                Task::Classification => {
+                    let tree_order = ordered_ensemble_indices(model.trees());
+                    Self::BoostedBinaryClassifier {
+                        trees: tree_order
+                            .iter()
+                            .map(|tree_index| {
+                                Self::from_model(&model.trees()[*tree_index], feature_index_map)
+                            })
+                            .collect(),
+                        tree_weights: tree_order
+                            .iter()
+                            .map(|tree_index| model.tree_weights()[*tree_index])
+                            .collect(),
+                        base_score: model.base_score(),
+                        class_labels: model
+                            .class_labels()
+                            .expect("classification boosting stores class labels"),
+                    }
+                }
+                Task::Regression => {
+                    let tree_order = ordered_ensemble_indices(model.trees());
+                    Self::BoostedRegressor {
+                        trees: tree_order
+                            .iter()
+                            .map(|tree_index| {
+                                Self::from_model(&model.trees()[*tree_index], feature_index_map)
+                            })
+                            .collect(),
+                        tree_weights: tree_order
+                            .iter()
+                            .map(|tree_index| model.tree_weights()[*tree_index])
+                            .collect(),
+                        base_score: model.base_score(),
+                    }
+                }
             },
         }
     }
 
-    fn from_classifier(classifier: &DecisionTreeClassifier) -> Self {
+    fn from_classifier(classifier: &DecisionTreeClassifier, feature_index_map: &[usize]) -> Self {
         match classifier.structure() {
             tree::classifier::TreeStructure::Standard { nodes, root } => {
                 if classifier_nodes_are_binary_only(nodes) {
@@ -593,6 +649,7 @@ impl OptimizedRuntime {
                             nodes,
                             *root,
                             classifier.class_labels(),
+                            feature_index_map,
                         ),
                         class_labels: classifier.class_labels().to_vec(),
                     };
@@ -613,7 +670,7 @@ impl OptimizedRuntime {
                             right_child,
                             ..
                         } => OptimizedClassifierNode::Binary {
-                            feature_index: *feature_index,
+                            feature_index: remap_feature_index(*feature_index, feature_index_map),
                             threshold_bin: *threshold_bin,
                             children: [*left_child, *right_child],
                         },
@@ -633,7 +690,10 @@ impl OptimizedRuntime {
                                 child_lookup[usize::from(*bin)] = *child_index;
                             }
                             OptimizedClassifierNode::Multiway {
-                                feature_index: *feature_index,
+                                feature_index: remap_feature_index(
+                                    *feature_index,
+                                    feature_index_map,
+                                ),
                                 child_lookup,
                                 max_bin_index,
                                 fallback_probabilities: normalized_probabilities_from_counts(
@@ -655,7 +715,10 @@ impl OptimizedRuntime {
                 leaf_class_counts,
                 ..
             } => Self::ObliviousClassifier {
-                feature_indices: splits.iter().map(|split| split.feature_index).collect(),
+                feature_indices: splits
+                    .iter()
+                    .map(|split| remap_feature_index(split.feature_index, feature_index_map))
+                    .collect(),
                 threshold_bins: splits.iter().map(|split| split.threshold_bin).collect(),
                 leaf_values: leaf_class_counts
                     .iter()
@@ -666,11 +729,11 @@ impl OptimizedRuntime {
         }
     }
 
-    fn from_regressor(regressor: &DecisionTreeRegressor) -> Self {
+    fn from_regressor(regressor: &DecisionTreeRegressor, feature_index_map: &[usize]) -> Self {
         match regressor.structure() {
             tree::regressor::RegressionTreeStructure::Standard { nodes, root } => {
                 Self::BinaryRegressor {
-                    nodes: build_binary_regressor_layout(nodes, *root),
+                    nodes: build_binary_regressor_layout(nodes, *root, feature_index_map),
                 }
             }
             tree::regressor::RegressionTreeStructure::Oblivious {
@@ -678,7 +741,10 @@ impl OptimizedRuntime {
                 leaf_values,
                 ..
             } => Self::ObliviousRegressor {
-                feature_indices: splits.iter().map(|split| split.feature_index).collect(),
+                feature_indices: splits
+                    .iter()
+                    .map(|split| remap_feature_index(split.feature_index, feature_index_map))
+                    .collect(),
                 threshold_bins: splits.iter().map(|split| split.threshold_bin).collect(),
                 leaf_values: leaf_values.clone(),
             },
@@ -1390,9 +1456,10 @@ fn build_binary_classifier_layout(
     nodes: &[tree::classifier::TreeNode],
     root: usize,
     _class_labels: &[f64],
+    feature_index_map: &[usize],
 ) -> Vec<OptimizedBinaryClassifierNode> {
     let mut layout = Vec::with_capacity(nodes.len());
-    append_binary_classifier_node(nodes, root, &mut layout);
+    append_binary_classifier_node(nodes, root, &mut layout, feature_index_map);
     layout
 }
 
@@ -1400,6 +1467,7 @@ fn append_binary_classifier_node(
     nodes: &[tree::classifier::TreeNode],
     node_index: usize,
     layout: &mut Vec<OptimizedBinaryClassifierNode>,
+    feature_index_map: &[usize],
 ) -> usize {
     let current_index = layout.len();
     layout.push(OptimizedBinaryClassifierNode::Leaf(Vec::new()));
@@ -1429,16 +1497,17 @@ fn append_binary_classifier_node(
                 }
             };
 
-            let fallthrough_index = append_binary_classifier_node(nodes, fallthrough_child, layout);
+            let fallthrough_index =
+                append_binary_classifier_node(nodes, fallthrough_child, layout, feature_index_map);
             debug_assert_eq!(fallthrough_index, current_index + 1);
             let jump_index = if jump_child == fallthrough_child {
                 fallthrough_index
             } else {
-                append_binary_classifier_node(nodes, jump_child, layout)
+                append_binary_classifier_node(nodes, jump_child, layout, feature_index_map)
             };
 
             layout[current_index] = OptimizedBinaryClassifierNode::Branch {
-                feature_index: *feature_index,
+                feature_index: remap_feature_index(*feature_index, feature_index_map),
                 threshold_bin: *threshold_bin,
                 jump_index,
                 jump_if_greater,
@@ -1465,9 +1534,10 @@ fn regressor_node_sample_count(
 fn build_binary_regressor_layout(
     nodes: &[tree::regressor::RegressionNode],
     root: usize,
+    feature_index_map: &[usize],
 ) -> Vec<OptimizedBinaryRegressorNode> {
     let mut layout = Vec::with_capacity(nodes.len());
-    append_binary_regressor_node(nodes, root, &mut layout);
+    append_binary_regressor_node(nodes, root, &mut layout, feature_index_map);
     layout
 }
 
@@ -1475,6 +1545,7 @@ fn append_binary_regressor_node(
     nodes: &[tree::regressor::RegressionNode],
     node_index: usize,
     layout: &mut Vec<OptimizedBinaryRegressorNode>,
+    feature_index_map: &[usize],
 ) -> usize {
     let current_index = layout.len();
     layout.push(OptimizedBinaryRegressorNode::Leaf(0.0));
@@ -1502,16 +1573,17 @@ fn append_binary_regressor_node(
                 }
             };
 
-            let fallthrough_index = append_binary_regressor_node(nodes, fallthrough_child, layout);
+            let fallthrough_index =
+                append_binary_regressor_node(nodes, fallthrough_child, layout, feature_index_map);
             debug_assert_eq!(fallthrough_index, current_index + 1);
             let jump_index = if jump_child == fallthrough_child {
                 fallthrough_index
             } else {
-                append_binary_regressor_node(nodes, jump_child, layout)
+                append_binary_regressor_node(nodes, jump_child, layout, feature_index_map)
             };
 
             layout[current_index] = OptimizedBinaryRegressorNode::Branch {
-                feature_index: *feature_index,
+                feature_index: remap_feature_index(*feature_index, feature_index_map),
                 threshold_bin: *threshold_bin,
                 jump_index,
                 jump_if_greater,
