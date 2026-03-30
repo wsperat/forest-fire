@@ -18,6 +18,7 @@ This example uses a random forest classifier and walks through the most common
 production-oriented lifecycle.
 
 ```python
+import forestfire
 import numpy as np
 import polars as pl
 
@@ -55,6 +56,9 @@ print(tree_df)
 
 optimized = model.optimize_inference()
 
+print(model.used_feature_indices)
+print(optimized.used_feature_indices)
+
 batch = X[:5_000]
 proba = optimized.predict_proba(batch)
 pred = optimized.predict(batch)
@@ -67,6 +71,10 @@ reloaded = Model.deserialize(payload)
 
 reloaded_pred = reloaded.predict(batch)
 print(np.allclose(pred, reloaded_pred))
+
+compiled = optimized.serialize_compiled()
+compiled_reloaded = forestfire.OptimizedModel.deserialize_compiled(compiled)
+print(np.allclose(compiled_reloaded.predict(batch), pred))
 ```
 
 What this example shows:
@@ -75,7 +83,11 @@ What this example shows:
 - training and introspection stay on the semantic model
 - `optimize_inference()` creates a runtime-oriented scoring view without changing
   model meaning
+- used-feature metadata shows how much of the original feature space the model
+  actually depends on
 - serialization and reload preserve the same prediction semantics
+- compiled optimized artifacts preserve the lowered runtime as well as the
+  semantic model
 - batch scoring is the intended normal usage mode once the model is trained
 
 ## Example 2: Gradient boosting with introspection and reload
@@ -120,6 +132,9 @@ print(model.tree_leaf(leaf_index=0, tree_index=0))
 
 optimized = model.optimize_inference()
 
+print(model.used_feature_count)
+print(optimized.used_feature_count)
+
 batch = X[:10_000]
 base_pred = model.predict_proba(batch)
 fast_pred = optimized.predict_proba(batch)
@@ -142,6 +157,8 @@ What this example shows:
 - introspection still works tree-by-tree on a boosted ensemble
 - optimized inference is expected to preserve the probability path, not just the
   hard labels
+- used-feature metadata is often especially informative for ensembles, because
+  the runtime may only need a fraction of the original feature columns
 - JSON IR export and binary serialization both operate on the same semantic
   model
 

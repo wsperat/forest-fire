@@ -145,6 +145,13 @@ Single-row prediction also accepts 1D inputs like:
 - `[1, 2, 3]`
 - `np.array([1, 2, 3])`
 
+The key API distinction is:
+
+- training can use raw inputs or an explicit `Table`
+- inference should normally use raw inputs directly
+
+That means `Table` is a training-oriented preprocessing container, not the preferred prediction input type.
+
 ## Tables and input handling
 
 ### `Table`
@@ -156,13 +163,34 @@ Single-row prediction also accepts 1D inputs like:
 - `DenseTable` for mixed numeric/binary data
 - `SparseTable` for binary sparse inputs
 
+Why `Table` exists at all:
+
+- training wants one normalized, validated, binned representation
+- all learners should see the same preprocessing contract
+- canaries, auto binning, and sparse-vs-dense decisions belong in one place
+
+Why `Table` is not the main inference abstraction:
+
+- inference often starts from raw application data
+- prediction should not require users to construct a training-oriented container first
+- optimized runtimes now do their own lightweight projected preprocessing directly from raw inputs
+
 ### `DenseTable`
 
 `DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into a power-of-two number of bins, using the highest populated count up to `512` by default while keeping at least two rows per realized bin, and binary `0/1` columns are stored as booleans.
 
+That combination is deliberate:
+
+- Arrow arrays provide compact columnar storage
+- power-of-two bins make later runtime layouts simpler
+- forcing at least two rows per realized bin avoids wasting domain size on near-empty bins
+- boolean storage keeps true binary columns cheap during both training and inference
+
 ### `SparseTable`
 
 `SparseTable` is binary-only. Internally it stores, per feature, the row positions where the value is `1`, so memory usage scales with the positive entries rather than the full dense shape.
+
+This is useful because many sparse inputs are really presence/absence matrices. In that case the right abstraction is not “a giant mostly-zero dense matrix”; it is “which rows contain a positive value for each feature”.
 
 ## Main model methods
 
@@ -188,6 +216,38 @@ Key runtime changes:
 - compiled binary and oblivious runtimes use compact column-major binned matrices
 - row batches are scored in parallel across physical cores
 
+The runtime pipeline is:
+
+1. inspect the semantic model
+2. compute `used_feature_indices`
+3. lower trees into runtime-friendly structures
+4. accept raw inference input
+5. validate it against the semantic schema
+6. preprocess only the projected feature subset
+7. score rows through scalar or batch-oriented execution
+
+That is why optimized inference can reduce total latency even when the tree traversal itself is only moderately faster: it often avoids preprocessing columns that were never going to be used.
+
+### Using runtime metadata
+
+The most useful runtime inspection values are:
+
+- `model.used_feature_indices`
+- `model.used_feature_count`
+- `optimized.used_feature_indices`
+- `optimized.used_feature_count`
+
+Example:
+
+```python
+optimized = model.optimize_inference()
+
+print(model.used_feature_indices)
+print(optimized.used_feature_count)
+```
+
+Those values are semantic, not profiler-derived. They come from the trained splits in the model.
+
 It helps most on:
 
 - large prediction batches
@@ -196,14 +256,29 @@ It helps most on:
 - compiled binary trees
 - wide inputs where the trained model only touches a small subset of columns
 
-Useful runtime metadata:
+### Compiled optimized artifacts
 
-- `model.used_feature_indices`
-- `model.used_feature_count`
-- `optimized.used_feature_indices`
-- `optimized.used_feature_count`
+An optimized Python model can also be serialized into a compiled artifact:
 
-Those values reflect semantic feature usage. Optimized models still accept the full inference input schema, but internally they only preprocess the projected subset.
+```python
+optimized = model.optimize_inference()
+payload = optimized.serialize_compiled()
+restored = forestfire.OptimizedModel.deserialize_compiled(payload)
+```
+
+That artifact contains:
+
+- the semantic IR
+- the lowered runtime layout
+- the feature projection metadata
+
+This is useful when you want:
+
+- faster reloads of the optimized runtime
+- the same optimized execution strategy after deserialization
+- one deployment artifact for repeated scoring
+
+The semantic JSON serialization and the compiled optimized artifact solve different problems. The JSON form is the canonical model meaning; the compiled artifact is the cached execution form.
 
 ## Introspection
 

@@ -76,8 +76,15 @@ The intended user flow is:
 1. give the library a feature matrix and target
 2. let `Table` decide how to represent the data
 3. call the unified `train(...)` entrypoint
-4. use `predict(...)` on raw inference data
-5. optionally call `optimize_inference(...)` when scoring is performance-critical
-6. serialize the result when you need a portable artifact
+4. use `predict(...)` on raw inference data rather than rebuilding a training table
+5. optionally inspect `used_feature_indices` to see what the trained model actually depends on
+6. optionally call `optimize_inference(...)` when scoring is performance-critical
+7. serialize the semantic model or snapshot the optimized runtime depending on deployment needs
 
 That is why the API is organized around `Table`, `train`, `predict`, `optimize_inference`, and `serialize`, rather than around many learner-specific classes.
+
+The most important conceptual distinction is:
+
+- `Table` is primarily for training-time normalization and preprocessing
+- inference should usually consume raw user-facing inputs directly
+- optimized inference derives its own projected runtime representation from the trained model

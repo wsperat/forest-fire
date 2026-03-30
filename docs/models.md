@@ -28,6 +28,13 @@ Why do it this way:
 - runtime lowering lets the project keep one semantic model while still specializing execution for batch prediction
 - optimized runtimes can compact the active feature space without changing what inputs the semantic model expects
 
+The important design rule is:
+
+- `Model` is the canonical semantic object
+- `OptimizedModel` is a derived execution object
+
+That distinction is what lets ForestFire keep introspection, serialization, and optimized inference aligned instead of forcing them to compete.
+
 ### What it changes internally
 
 - prediction-only node layouts drop training-only fields
@@ -49,6 +56,14 @@ Why those changes help:
 - locality-oriented tree ordering gives ensembles a better chance of reusing hot feature columns and top-level metadata
 - compact batch matrices reduce bandwidth and improve cache density
 - batched preprocessing amortizes input conversion over many rows instead of repeating it per traversal
+
+Another way to say this is that optimized inference changes three things at once:
+
+1. which data structures represent the model
+2. which feature columns are materialized at prediction time
+3. which execution strategy is used for row batches
+
+The optimized model is therefore not just “the same predictor with a faster tree walk”. It is a full runtime lowering pass.
 
 ### Feature projection
 
@@ -74,6 +89,32 @@ Both `Model` and `OptimizedModel` expose:
 
 That makes it easy to inspect whether a trained model is genuinely sparse in feature usage before relying on the optimized path.
 
+This is especially useful for ensembles, because the semantic feature count and the effective runtime feature count can differ substantially:
+
+- the semantic model may have been trained on a wide table
+- each tree may only use a small subset
+- the optimized ensemble can then project to the union of all actually-used features
+
+That is one of the main reasons optimized inference can improve not just traversal speed but total end-to-end scoring cost.
+
+### Compiled optimized models
+
+`OptimizedModel` can also be serialized into a compiled artifact.
+
+That artifact keeps:
+
+- the semantic IR
+- the lowered runtime layout
+- the feature projection metadata
+
+The reason to keep all three is that they solve different problems:
+
+- the semantic IR preserves meaning
+- the lowered runtime preserves load-time work
+- the projection metadata preserves how runtime-local feature indices map back to the semantic schema
+
+So a compiled optimized model is best understood as a deployment cache for the optimized runtime, not as a new canonical model definition.
+
 Where the impact is largest:
 
 - large batches
@@ -96,6 +137,13 @@ Compiled optimized artifacts retain both:
 
 That means reloading a compiled optimized model skips the lowering step without changing the model’s semantic serialization.
 
+In other words, ForestFire deliberately has two layers of artifacts:
+
+- canonical semantic artifacts for portability and inspection
+- optional compiled runtime artifacts for faster load and predict paths
+
+That split is what keeps the project flexible as runtime layouts evolve.
+
 ### IR
 
 The IR exists to make inference semantics explicit and portable.
@@ -115,6 +163,12 @@ The rationale for the IR is broader than export alone:
 - it makes introspection possible without inventing a second ad hoc debug format
 
 In other words, the IR is not a side artifact. It is the shared meaning layer for the project.
+
+That is why `Model` and `OptimizedModel` export the same IR JSON:
+
+- both objects represent the same learned function
+- only one of them stores it in a runtime-specialized way
+- the IR must therefore describe the common semantics, not the optimization strategy
 
 ## Tree introspection
 
@@ -140,6 +194,13 @@ The introspection API exists because “tree model” users often need to answer
 - are the leaf values concentrated or spread out?
 
 The design goal here is to expose the trained structure without making users decode the raw IR by hand.
+
+There is also a practical runtime reason to keep introspection semantic:
+
+- optimized runtimes may reorder trees or remap feature indices internally
+- users generally want to inspect the trained meaning, not the lowered execution cache
+
+So introspection stays anchored to the semantic model even when optimized inference is available.
 
 ## `to_dataframe(...)`
 
