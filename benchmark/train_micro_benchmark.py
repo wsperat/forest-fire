@@ -15,6 +15,7 @@ from common import (
     default_parallelism,
     dump_results,
     ensure_output_dir,
+    forestfire_max_features,
     format_result_line,
     generate_dataset,
     log,
@@ -93,7 +94,7 @@ def forestfire_train_kwargs(config: BenchmarkConfig) -> dict[str, Any]:
         "max_depth": None,
         "min_samples_split": None,
         "min_samples_leaf": None,
-        "max_features": config.max_features,
+        "max_features": forestfire_max_features(config.max_features),
         "physical_cores": config.physical_cores,
         "seed": config.seed,
     }
