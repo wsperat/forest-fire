@@ -12,7 +12,7 @@ polars = ["dep:polars"]
 
 [dependencies]
 arrow.workspace = true
-forestfire-data = { path = "../data" }
+forestfire-data = { version = "0.1.4", path = "../data" }
 num_cpus.workspace = true
 rand.workspace = true
 polars = { version = "0.46", optional = true, default-features = false, features = ["lazy"] }
