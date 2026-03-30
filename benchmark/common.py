@@ -105,7 +105,7 @@ def ensure_output_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def dump_results(path: Path, results: list[BenchmarkResult]) -> None:
+def dump_results(path: Path, results: Sequence[Any]) -> None:
     path.write_text(
         json.dumps([asdict(result) for result in results], indent=2, sort_keys=True)
         + "\n",
@@ -729,7 +729,11 @@ def plot_micro_grid(
                 continue
             ax.plot(
                 [int(getattr(result, x_attr)) for result in phase_results],
-                [float(result.seconds) for result in phase_results],
+                [
+                    float(result.seconds)
+                    for result in phase_results
+                    if result.seconds is not None
+                ],
                 marker="o",
                 linewidth=2.0,
                 color=phase_color(phase),
@@ -871,7 +875,9 @@ def write_training_micro_summary_markdown(
 
     by_phase: dict[str, list[float]] = defaultdict(list)
     for result in filtered:
-        by_phase[result.phase].append(float(result.seconds))
+        seconds = result.seconds
+        if seconds is not None:
+            by_phase[result.phase].append(float(seconds))
 
     lines.append("## Median measured time")
     lines.append("")
@@ -898,8 +904,8 @@ def write_training_micro_summary_markdown(
     if end_to_end_ratios:
         lines.append("## Median share of end-to-end training")
         lines.append("")
-        for phase, ratios in sorted(end_to_end_ratios.items()):
-            lines.append(f"- `{phase}` share: `{median(ratios) * 100.0:.1f}%`")
+        for phase, share_ratios in sorted(end_to_end_ratios.items()):
+            lines.append(f"- `{phase}` share: `{median(share_ratios) * 100.0:.1f}%`")
         lines.append("")
 
     lines.append("## Scaling from smallest to largest row count")
@@ -949,7 +955,9 @@ def write_prediction_micro_summary_markdown(
 
     by_phase: dict[str, list[float]] = defaultdict(list)
     for result in filtered:
-        by_phase[result.phase].append(float(result.seconds))
+        seconds = result.seconds
+        if seconds is not None:
+            by_phase[result.phase].append(float(seconds))
 
     lines.append("## Median measured time")
     lines.append("")

@@ -130,16 +130,18 @@ def main() -> None:
                 )
                 X, y = generate_dataset(problem, rows, n_features, config.seed)
                 train_kwargs = forestfire_train_kwargs(config)
+                table = Table(X, y, canaries=2, bins="auto")
+
+                def fit_from_table() -> Any:
+                    return train(table, **train_kwargs)
 
                 phases = {
                     "table_build": lambda: Table(X, y, canaries=2, bins="auto"),
-                    "fit_from_table": lambda: train(table, **train_kwargs),
+                    "fit_from_table": fit_from_table,
                     "fit_end_to_end": lambda: train(
                         X, y, canaries=2, bins="auto", **train_kwargs
                     ),
                 }
-
-                table = Table(X, y, canaries=2, bins="auto")
 
                 for phase, fn in phases.items():
                     log(
