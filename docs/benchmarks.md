@@ -17,6 +17,8 @@ The suite currently measures:
 
 - training time
 - prediction time
+- training micro-phases
+- prediction micro-phases
 
 For prediction, the suite also includes:
 
@@ -79,6 +81,76 @@ The purpose of the grid is to separate two different scaling questions:
 
 Those are not the same pressure on a tree system.
 
+## Micro-benchmarks
+
+The grid benchmarks answer end-to-end questions.
+
+The micro-benchmarks answer a different question:
+
+- where is ForestFire itself spending the time?
+
+They are ForestFire-only by design. They do not compare against other
+libraries, because the point is to isolate ForestFire’s own bottlenecks rather
+than library-to-library competitiveness.
+
+### Training micro-benchmark
+
+The training micro-benchmark splits the fit path into three phases:
+
+- `table_build`
+- `fit_from_table`
+- `fit_end_to_end`
+
+What those mean:
+
+- `table_build`: training-side preprocessing only
+- `fit_from_table`: learner fit on an already-built `Table`
+- `fit_end_to_end`: the full public `train(X, y, ...)` path
+
+This lets you see how much of total training time is being spent in:
+
+- input normalization
+- binning / sparse-vs-dense table construction
+- the learner itself
+
+The training micro-benchmark still runs over a row/feature grid, but it uses a
+smaller default row range than the macro benchmark so fixed preprocessing
+overheads remain visible.
+
+### Prediction micro-benchmark
+
+The prediction micro-benchmark fixes training complexity and varies only
+prediction batch size.
+
+That separation is important, because otherwise a prediction benchmark is partly
+a training benchmark in disguise: changing the row count also changes the
+realized model.
+
+The prediction micro-benchmark therefore:
+
+1. trains one reference model at a fixed training row budget
+2. lowers it to an optimized runtime once
+3. serializes / reloads the compiled optimized artifact once
+4. benchmarks only the runtime prediction paths on varying batch sizes
+
+The prediction phases are:
+
+- `predict_base`
+- `predict_optimized`
+- `predict_compiled`
+
+What those mean:
+
+- `predict_base`: semantic `Model.predict(...)`
+- `predict_optimized`: lowered `OptimizedModel.predict(...)`
+- `predict_compiled`: deserialized compiled-artifact runtime
+
+That makes it easier to answer questions like:
+
+- is the optimized runtime faster once training complexity is held constant?
+- how much of the benefit survives compiled-artifact reload?
+- at what batch size does the optimized runtime start pulling away?
+
 ## Complexity matching
 
 To keep the cross-library comparisons more meaningful, each grid cell now uses ForestFire as the complexity reference.
@@ -128,9 +200,17 @@ ForestFire itself is still timed independently after the reference fit for train
 - `task benchmark-training-gbm`
 - `task benchmark-prediction-rf`
 - `task benchmark-prediction-gbm`
+- `task benchmark-training-micro-rf`
+- `task benchmark-training-micro-gbm`
+- `task benchmark-prediction-micro-rf`
+- `task benchmark-prediction-micro-gbm`
+- `task benchmark-micro`
 - `task benchmark`
 
-The umbrella `task benchmark` runs the four family-specific train/predict grids.
+The task split is:
+
+- `task benchmark`: cross-library end-to-end train/predict grids
+- `task benchmark-micro`: ForestFire-only phase breakdowns
 
 ## Output artifacts
 
@@ -140,10 +220,16 @@ For each family/problem pair, the scripts write:
 
 - `training_grid_results_<family>_<problem>.json`
 - `prediction_grid_results_<family>_<problem>.json`
+- `training_micro_results_<family>_<problem>.json`
+- `prediction_micro_results_<family>_<problem>.json`
 - `training_grid_<family>_<problem>.png`
 - `prediction_grid_<family>_<problem>.png`
+- `training_micro_<family>_<problem>.png`
+- `prediction_micro_<family>_<problem>.png`
 - `training_summary_<family>_<problem>.md`
 - `prediction_summary_<family>_<problem>.md`
+- `training_micro_summary_<family>_<problem>.md`
+- `prediction_micro_summary_<family>_<problem>.md`
 
 The summary markdown files are generated from the measured results and call out:
 
@@ -151,6 +237,13 @@ The summary markdown files are generated from the measured results and call out:
 - median measured time by backend
 - scaling from the smallest to the largest row count
 - optimized-vs-base ForestFire speedups where applicable
+
+For the micro-benchmarks, the generated summaries instead focus on:
+
+- median time per ForestFire phase
+- preprocessing share of end-to-end training
+- optimized / compiled speedups over semantic prediction
+- scaling from the smallest to the largest batch size
 
 Artifacts are updated incrementally as the grid runs, so long benchmark executions still leave behind partial plots, JSON, and summaries instead of producing only all-or-nothing output.
 

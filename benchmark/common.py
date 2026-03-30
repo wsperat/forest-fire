@@ -16,10 +16,14 @@ os.environ.setdefault("XDG_CACHE_HOME", ".cache")
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import ScalarFormatter
 from numpy.typing import NDArray
 
 DEFAULT_ROW_GRID = tuple(2**exponent for exponent in range(13, 20, 2))
 DEFAULT_FEATURE_GRID = (8, 16, 32, 64, 128, 256)
+DEFAULT_TRAINING_MICRO_ROW_GRID = tuple(2**exponent for exponent in range(10, 19, 2))
+DEFAULT_PREDICTION_MICRO_BATCH_GRID = (1, 8, 64, 512, 4096, 32768)
+DEFAULT_PREDICTION_MICRO_TRAIN_ROWS = 2**17
 
 
 def default_parallelism() -> int:
@@ -64,6 +68,35 @@ class BenchmarkResult:
     reference_max_leaves: int | None = None
     fit_seconds: float | None = None
     predict_seconds: float | None = None
+    status: str = "ok"
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class TrainingMicroBenchmarkResult:
+    benchmark: str
+    family: str
+    problem: str
+    phase: str
+    rows: int
+    n_features: int
+    n_estimators: int
+    seconds: float | None = None
+    status: str = "ok"
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class PredictionMicroBenchmarkResult:
+    benchmark: str
+    family: str
+    problem: str
+    phase: str
+    train_rows: int
+    predict_rows: int
+    n_features: int
+    n_estimators: int
+    seconds: float | None = None
     status: str = "ok"
     note: str | None = None
 
@@ -509,20 +542,27 @@ PREDICT_BACKEND_FITTERS: dict[
 }
 
 
-def format_result_line(result: BenchmarkResult) -> str:
+def format_result_line(result: Any) -> str:
+    label = getattr(result, "backend", getattr(result, "phase", "unknown"))
+    row_value = getattr(result, "rows", getattr(result, "predict_rows", "n/a"))
     fields = [
-        result.backend,
+        label,
         result.family,
         result.problem,
-        f"rows={result.rows}",
+        f"rows={row_value}",
         f"features={result.n_features}",
         result.status,
     ]
-    if result.fit_seconds is not None:
+    if hasattr(result, "fit_seconds") and result.fit_seconds is not None:
         fields.append(f"fit={result.fit_seconds:.6f}s")
-    if result.predict_seconds is not None:
+    if hasattr(result, "predict_seconds") and result.predict_seconds is not None:
         fields.append(f"predict={result.predict_seconds:.6f}s")
-    if result.reference_max_leaves is not None:
+    if hasattr(result, "seconds") and result.seconds is not None:
+        fields.append(f"time={result.seconds:.6f}s")
+    if (
+        hasattr(result, "reference_max_leaves")
+        and result.reference_max_leaves is not None
+    ):
         fields.append(f"max_leaves={result.reference_max_leaves}")
     if result.note:
         fields.append(result.note)
@@ -552,6 +592,17 @@ def backend_color(backend: str) -> str:
         "xgboost": "#cc79a7",
         "catboost": "#56b4e9",
     }.get(backend, "#4c4c4c")
+
+
+def phase_color(phase: str) -> str:
+    return {
+        "table_build": "#0072b2",
+        "fit_from_table": "#009e73",
+        "fit_end_to_end": "#d55e00",
+        "predict_base": "#0072b2",
+        "predict_optimized": "#e69f00",
+        "predict_compiled": "#cc79a7",
+    }.get(phase, "#4c4c4c")
 
 
 def plot_grid_comparison(
@@ -608,6 +659,84 @@ def plot_grid_comparison(
                 color=backend_color(backend),
                 label=backend,
             )
+
+    for index in range(len(feature_grid), n_rows * n_cols):
+        axes[index // n_cols][index % n_cols].axis("off")
+
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles,
+            labels,
+            loc="upper right",
+            bbox_to_anchor=(0.985, 0.985),
+            ncol=1,
+        )
+    fig.suptitle(title_prefix)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+
+def plot_micro_grid(
+    results: Sequence[TrainingMicroBenchmarkResult | PredictionMicroBenchmarkResult],
+    feature_grid: Sequence[int],
+    x_values: Sequence[int],
+    title_prefix: str,
+    ylabel: str,
+    output_path: Path,
+    x_label: str,
+    x_attr: str,
+) -> None:
+    filtered = [
+        result
+        for result in results
+        if result.status == "ok" and result.seconds is not None
+    ]
+    if not filtered:
+        return
+
+    phase_order = list(dict.fromkeys(result.phase for result in filtered))
+    n_cols = 3
+    n_rows = (len(feature_grid) + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols, 4.0 * n_rows),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+
+    for index, feature_count in enumerate(feature_grid):
+        ax = axes[index // n_cols][index % n_cols]
+        ax.set_title(f"{feature_count} features")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(ylabel)
+        ax.grid(True, which="both", axis="both", alpha=0.25)
+
+        feature_results = [
+            result for result in filtered if result.n_features == feature_count
+        ]
+        for phase in phase_order:
+            phase_results = sorted(
+                (result for result in feature_results if result.phase == phase),
+                key=lambda result: int(getattr(result, x_attr)),
+            )
+            if not phase_results:
+                continue
+            ax.plot(
+                [int(getattr(result, x_attr)) for result in phase_results],
+                [float(result.seconds) for result in phase_results],
+                marker="o",
+                linewidth=2.0,
+                color=phase_color(phase),
+                label=phase,
+            )
+        ax.set_xticks(x_values)
+        ax.get_xaxis().set_major_formatter(ScalarFormatter())
 
     for index in range(len(feature_grid), n_rows * n_cols):
         axes[index // n_cols][index % n_cols].axis("off")
@@ -718,6 +847,167 @@ def write_summary_markdown(
             f"`{median(optimized_pairs):.2f}x`"
         )
         lines.append("")
+
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_training_micro_summary_markdown(
+    results: Sequence[TrainingMicroBenchmarkResult],
+    title: str,
+    output_path: Path,
+) -> None:
+    filtered = [
+        result for result in results if result.status == "ok" and result.seconds
+    ]
+    if not filtered:
+        return
+
+    lines = [f"# {title}", ""]
+    lines.append(
+        "This summary focuses on ForestFire training phases so preprocessing "
+        "and learner-fit costs can be inspected independently."
+    )
+    lines.append("")
+
+    by_phase: dict[str, list[float]] = defaultdict(list)
+    for result in filtered:
+        by_phase[result.phase].append(float(result.seconds))
+
+    lines.append("## Median measured time")
+    lines.append("")
+    for phase, values in sorted(by_phase.items()):
+        lines.append(f"- `{phase}` median: `{median(values):.6f}s`")
+    lines.append("")
+
+    end_to_end_ratios: dict[str, list[float]] = defaultdict(list)
+    by_cell: dict[tuple[int, int], dict[str, TrainingMicroBenchmarkResult]] = (
+        defaultdict(dict)
+    )
+    for result in filtered:
+        by_cell[(result.rows, result.n_features)][result.phase] = result
+    for cell in by_cell.values():
+        end_to_end = cell.get("fit_end_to_end")
+        if end_to_end is None or not end_to_end.seconds or end_to_end.seconds <= 0.0:
+            continue
+        for phase in ("table_build", "fit_from_table"):
+            phase_result = cell.get(phase)
+            if phase_result is None or phase_result.seconds is None:
+                continue
+            end_to_end_ratios[phase].append(phase_result.seconds / end_to_end.seconds)
+
+    if end_to_end_ratios:
+        lines.append("## Median share of end-to-end training")
+        lines.append("")
+        for phase, ratios in sorted(end_to_end_ratios.items()):
+            lines.append(f"- `{phase}` share: `{median(ratios) * 100.0:.1f}%`")
+        lines.append("")
+
+    lines.append("## Scaling from smallest to largest row count")
+    lines.append("")
+    feature_counts = sorted({result.n_features for result in filtered})
+    for phase, _values in sorted(by_phase.items()):
+        ratios: list[float] = []
+        for feature_count in feature_counts:
+            phase_results = sorted(
+                (
+                    result
+                    for result in filtered
+                    if result.phase == phase and result.n_features == feature_count
+                ),
+                key=lambda result: result.rows,
+            )
+            if len(phase_results) < 2:
+                continue
+            smallest = float(phase_results[0].seconds or 0.0)
+            largest = float(phase_results[-1].seconds or 0.0)
+            if smallest > 0.0:
+                ratios.append(largest / smallest)
+        if ratios:
+            lines.append(f"- `{phase}` median growth ratio: `{median(ratios):.2f}x`")
+    lines.append("")
+
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_prediction_micro_summary_markdown(
+    results: Sequence[PredictionMicroBenchmarkResult],
+    title: str,
+    output_path: Path,
+) -> None:
+    filtered = [
+        result for result in results if result.status == "ok" and result.seconds
+    ]
+    if not filtered:
+        return
+
+    lines = [f"# {title}", ""]
+    lines.append(
+        "This summary fixes training complexity and varies only prediction "
+        "batch size so runtime bottlenecks are easier to isolate."
+    )
+    lines.append("")
+
+    by_phase: dict[str, list[float]] = defaultdict(list)
+    for result in filtered:
+        by_phase[result.phase].append(float(result.seconds))
+
+    lines.append("## Median measured time")
+    lines.append("")
+    for phase, values in sorted(by_phase.items()):
+        lines.append(f"- `{phase}` median: `{median(values):.6f}s`")
+    lines.append("")
+
+    grouped: dict[tuple[int, int], dict[str, PredictionMicroBenchmarkResult]] = (
+        defaultdict(dict)
+    )
+    for result in filtered:
+        grouped[(result.predict_rows, result.n_features)][result.phase] = result
+
+    speedups: dict[str, list[float]] = defaultdict(list)
+    for cell in grouped.values():
+        base = cell.get("predict_base")
+        if base is None or base.seconds is None or base.seconds <= 0.0:
+            continue
+        for phase in ("predict_optimized", "predict_compiled"):
+            candidate = cell.get(phase)
+            if (
+                candidate is None
+                or candidate.seconds is None
+                or candidate.seconds <= 0.0
+            ):
+                continue
+            speedups[phase].append(base.seconds / candidate.seconds)
+
+    if speedups:
+        lines.append("## Speedup over base semantic prediction")
+        lines.append("")
+        for phase, values in sorted(speedups.items()):
+            lines.append(f"- `{phase}` median speedup: `{median(values):.2f}x`")
+        lines.append("")
+
+    lines.append("## Scaling from smallest to largest batch size")
+    lines.append("")
+    feature_counts = sorted({result.n_features for result in filtered})
+    for phase in sorted(by_phase):
+        ratios: list[float] = []
+        for feature_count in feature_counts:
+            phase_results = sorted(
+                (
+                    result
+                    for result in filtered
+                    if result.phase == phase and result.n_features == feature_count
+                ),
+                key=lambda result: result.predict_rows,
+            )
+            if len(phase_results) < 2:
+                continue
+            smallest = float(phase_results[0].seconds or 0.0)
+            largest = float(phase_results[-1].seconds or 0.0)
+            if smallest > 0.0:
+                ratios.append(largest / smallest)
+        if ratios:
+            lines.append(f"- `{phase}` median growth ratio: `{median(ratios):.2f}x`")
+    lines.append("")
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

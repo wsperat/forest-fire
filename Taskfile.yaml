@@ -211,6 +211,15 @@ tasks:
         python benchmark/train_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
+  benchmark-training-micro:
+    desc: Benchmark ForestFire training phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
   benchmark-training-rf:
     desc: Benchmark random-forest training over the default grid
     deps: [python-ext-develop-release]
@@ -218,6 +227,15 @@ tasks:
       - >-
         uv run --group benchmark
         python benchmark/train_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
+  benchmark-training-micro-rf:
+    desc: Benchmark random-forest training phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_micro_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
   benchmark-training-gbm:
@@ -230,6 +248,16 @@ tasks:
         python benchmark/train_benchmark.py
         --output-dir docs/benchmarks
         --family gradient_boosting
+  benchmark-training-micro-gbm:
+    desc: >-
+      Benchmark gradient-boosting training phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family gradient_boosting
   benchmark-prediction:
     desc: Benchmark random-forest prediction over the default grid
     deps: [python-ext-develop-release]
@@ -237,6 +265,15 @@ tasks:
       - >-
         uv run --group benchmark
         python benchmark/predict_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
+  benchmark-prediction-micro:
+    desc: Benchmark ForestFire prediction phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_micro_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
   benchmark-prediction-rf:
@@ -249,6 +286,16 @@ tasks:
         python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
+  benchmark-prediction-micro-rf:
+    desc: >-
+      Benchmark random-forest prediction phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
   benchmark-prediction-gbm:
     desc: >-
       Benchmark gradient-boosting prediction over the default grid
@@ -259,6 +306,23 @@ tasks:
         python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
         --family gradient_boosting
+  benchmark-prediction-micro-gbm:
+    desc: >-
+      Benchmark gradient-boosting prediction phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family gradient_boosting
+  benchmark-micro:
+    desc: Run ForestFire-only training and prediction micro-benchmarks
+    cmds:
+      - task benchmark-training-micro-rf
+      - task benchmark-training-micro-gbm
+      - task benchmark-prediction-micro-rf
+      - task benchmark-prediction-micro-gbm
   benchmark:
     desc: Run random-forest and gradient-boosting train/predict benchmarks
     cmds:
