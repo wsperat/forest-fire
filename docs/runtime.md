@@ -84,6 +84,25 @@ Why this matters:
 
 This is why oblivious trees are such a good fit for optimized runtime lowering even though they are more constrained during training.
 
+## Feature projection
+
+Optimized models do not eagerly preprocess every feature from the semantic input schema.
+
+Instead, the runtime:
+
+- scans the semantic model for the feature indices that actually appear in splits
+- computes the sorted union of those indices across the whole model or ensemble
+- remaps the lowered runtime into that compact local feature space
+- preprocesses only the projected columns during optimized scoring
+
+Why this helps:
+
+- wide inputs often carry many columns the model never touches
+- skipping unused columns reduces binning and packing work before traversal starts
+- the benefit compounds in forests and boosted ensembles because the same projected columns are reused many times
+
+This is a runtime optimization only. The semantic model still expects the full input schema, and both semantic and optimized models expose the same prediction behavior.
+
 ## Batched preprocessing
 
 Prediction cost is not just model traversal. It also includes turning user input into the internal binned representation.
@@ -97,6 +116,24 @@ Why:
 - compact batch formats can then be fed directly into compiled runtimes
 
 This is also why `polars.LazyFrame` prediction is batched in chunks instead of being materialized and traversed one row at a time.
+
+## Ensemble locality ordering
+
+Forests and boosted ensembles also get a lightweight runtime-only ordering pass before lowering.
+
+Today the ordering key is intentionally simple:
+
+- primary/root split feature first
+- then used-feature count
+- then the full used-feature set as a stable tiebreaker
+
+Why do this at all:
+
+- nearby trees are more likely to touch the same projected feature columns
+- top-level feature metadata and hot batch columns have a better chance of staying warm in cache
+- the runtime can improve locality without changing the semantic model, IR, or predictions
+
+This is not a semantic reorder. It only affects the lowered optimized runtime and compiled artifacts.
 
 ## Compact `u8` / `u16` batches
 
@@ -112,6 +149,12 @@ This is a small design detail with large practical consequences:
 - more rows processed per cache line
 
 Because training already commits to bounded bins, the runtime can aggressively exploit that compactness.
+
+Feature projection makes this more effective:
+
+- if the model only uses a narrow subset of columns, the compact batch matrix only stores those columns
+- smaller projected matrices improve both bandwidth and cache residency
+- multiway lookup tables can also be right-sized to the actual realized bin domain
 
 ## Why the IR sits in the middle
 
@@ -167,6 +210,8 @@ Typical wins come from:
 - more compact working sets
 - more regular access patterns
 - better amortization of preprocessing work across batches
+- less preprocessing spent on columns the model never uses
+- better feature-column reuse across ensemble members
 
 The largest benefits generally show up when:
 

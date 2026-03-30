@@ -48,6 +48,7 @@ That includes:
 - training parameters
 - supported input types
 - optimized inference
+- used-feature projection in optimized models
 - serialization
 - tree introspection
 - dataframe export

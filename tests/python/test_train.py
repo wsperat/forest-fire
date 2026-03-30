@@ -841,7 +841,14 @@ def test_optimize_inference_preserves_predictions_and_ir(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
     X, y = and_data
-    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    X_with_unused = np.column_stack([X, np.full((X.shape[0], 2), [10.0, 20.0])])
+    model = train(
+        X_with_unused,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+    )
     optimized = model.optimize_inference(physical_cores=1)
 
     assert optimized.algorithm == model.algorithm
@@ -850,9 +857,12 @@ def test_optimize_inference_preserves_predictions_and_ir(
     assert optimized.tree_type == model.tree_type
     assert optimized.serialize() == model.serialize()
     assert optimized.to_ir_json() == model.to_ir_json()
+    assert model.used_feature_indices == [0, 1]
+    assert optimized.used_feature_indices == [0, 1]
+    assert optimized.used_feature_count == 2
     assert np.allclose(
-        optimized.predict(X),
-        model.predict(X),
+        optimized.predict(X_with_unused),
+        model.predict(X_with_unused),
         atol=PREDICTION_TOLERANCE,
         rtol=PREDICTION_TOLERANCE,
     )
@@ -1114,7 +1124,14 @@ def test_random_forest_optimized_classifier_predict_proba_matches_base_model_for
 
 
 def test_compiled_optimized_model_round_trips() -> None:
-    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    X = np.array(
+        [
+            [0.0, 10.0, 20.0],
+            [1.0, 10.0, 20.0],
+            [2.0, 10.0, 20.0],
+            [3.0, 10.0, 20.0],
+        ]
+    )
     y = np.array([10.0, 12.0, 14.0, 20.0])
     model = train(X, y, task="regression", tree_type="cart", canaries=0)
     optimized = model.optimize_inference(physical_cores=1)
@@ -1124,9 +1141,45 @@ def test_compiled_optimized_model_round_trips() -> None:
     assert isinstance(compiled, bytes)
     assert optimized.serialize() == restored.serialize()
     assert optimized.to_ir_json() == restored.to_ir_json()
+    assert optimized.used_feature_indices == [0]
+    assert restored.used_feature_indices == [0]
     assert np.allclose(
         optimized.predict(X),
         restored.predict(X),
+        atol=PREDICTION_TOLERANCE,
+        rtol=PREDICTION_TOLERANCE,
+    )
+
+
+def test_optimized_random_forest_projects_inputs_to_used_features() -> None:
+    X = np.array(
+        [
+            [0.0, 0.0, 5.0, 9.0],
+            [0.0, 1.0, 5.0, 9.0],
+            [1.0, 0.0, 5.0, 9.0],
+            [1.0, 1.0, 5.0, 9.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 0.0, 1.0])
+    model = train(
+        X,
+        y,
+        algorithm="rf",
+        task="classification",
+        tree_type="cart",
+        n_trees=8,
+        max_features=2,
+        seed=7,
+        canaries=0,
+    )
+    optimized = model.optimize_inference(physical_cores=1)
+
+    assert model.used_feature_indices == [0, 1]
+    assert optimized.used_feature_indices == [0, 1]
+    assert optimized.used_feature_count == 2
+    assert np.allclose(
+        optimized.predict(X),
+        model.predict(X),
         atol=PREDICTION_TOLERANCE,
         rtol=PREDICTION_TOLERANCE,
     )

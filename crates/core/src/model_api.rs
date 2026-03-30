@@ -10,6 +10,7 @@ pub struct OptimizedModel {
     pub(crate) source_model: Model,
     pub(crate) runtime: OptimizedRuntime,
     pub(crate) executor: InferenceExecutor,
+    pub(crate) feature_projection: Vec<usize>,
 }
 
 impl OptimizedModel {
@@ -18,34 +19,48 @@ impl OptimizedModel {
         physical_cores: Option<usize>,
     ) -> Result<Self, OptimizeError> {
         let thread_count = resolve_inference_thread_count(physical_cores)?;
-        let runtime = OptimizedRuntime::from_model(&source_model);
+        let feature_projection = build_feature_projection(&source_model);
+        let feature_index_map =
+            build_feature_index_map(source_model.num_features(), &feature_projection);
+        let runtime = OptimizedRuntime::from_model(&source_model, &feature_index_map);
         let executor = InferenceExecutor::new(thread_count)?;
 
         Ok(Self {
             source_model,
             runtime,
             executor,
+            feature_projection,
         })
     }
 
     pub fn predict_table(&self, table: &dyn TableAccess) -> Vec<f64> {
+        let projected = ProjectedTableView::new(table, &self.feature_projection);
         if self.runtime.should_use_batch_matrix(table.n_rows()) {
-            let matrix = ColumnMajorBinnedMatrix::from_table_access(table);
+            let matrix = ColumnMajorBinnedMatrix::from_table_access_projected(
+                table,
+                &self.feature_projection,
+            );
             return self.predict_column_major_binned_matrix(&matrix);
         }
 
-        self.executor.predict_rows(table.n_rows(), |row_index| {
-            self.runtime.predict_table_row(table, row_index)
+        self.executor.predict_rows(projected.n_rows(), |row_index| {
+            self.runtime.predict_table_row(&projected, row_index)
         })
     }
 
     pub fn predict_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<f64>, PredictError> {
-        let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
+        let table = InferenceTable::from_rows_projected(
+            rows,
+            self.source_model.feature_preprocessing(),
+            &self.feature_projection,
+        )?;
         if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
-            Ok(self.predict_table(&table))
+            Ok(self.executor.predict_rows(table.n_rows(), |row_index| {
+                self.runtime.predict_table_row(&table, row_index)
+            }))
         }
     }
 
@@ -53,13 +68,18 @@ impl OptimizedModel {
         &self,
         columns: BTreeMap<String, Vec<f64>>,
     ) -> Result<Vec<f64>, PredictError> {
-        let table =
-            InferenceTable::from_named_columns(columns, self.source_model.feature_preprocessing())?;
+        let table = InferenceTable::from_named_columns_projected(
+            columns,
+            self.source_model.feature_preprocessing(),
+            &self.feature_projection,
+        )?;
         if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
-            Ok(self.predict_table(&table))
+            Ok(self.executor.predict_rows(table.n_rows(), |row_index| {
+                self.runtime.predict_table_row(&table, row_index)
+            }))
         }
     }
 
@@ -67,21 +87,29 @@ impl OptimizedModel {
         &self,
         table: &dyn TableAccess,
     ) -> Result<Vec<Vec<f64>>, PredictError> {
-        self.runtime.predict_proba_table(table, &self.executor)
+        let projected = ProjectedTableView::new(table, &self.feature_projection);
+        self.runtime.predict_proba_table(&projected, &self.executor)
     }
 
     pub fn predict_proba_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, PredictError> {
-        let table = InferenceTable::from_rows(rows, self.source_model.feature_preprocessing())?;
-        self.predict_proba_table(&table)
+        let table = InferenceTable::from_rows_projected(
+            rows,
+            self.source_model.feature_preprocessing(),
+            &self.feature_projection,
+        )?;
+        self.runtime.predict_proba_table(&table, &self.executor)
     }
 
     pub fn predict_proba_named_columns(
         &self,
         columns: BTreeMap<String, Vec<f64>>,
     ) -> Result<Vec<Vec<f64>>, PredictError> {
-        let table =
-            InferenceTable::from_named_columns(columns, self.source_model.feature_preprocessing())?;
-        self.predict_proba_table(&table)
+        let table = InferenceTable::from_named_columns_projected(
+            columns,
+            self.source_model.feature_preprocessing(),
+            &self.feature_projection,
+        )?;
+        self.runtime.predict_proba_table(&table, &self.executor)
     }
 
     pub fn predict_proba_sparse_binary_columns(
@@ -90,13 +118,14 @@ impl OptimizedModel {
         n_features: usize,
         columns: Vec<Vec<usize>>,
     ) -> Result<Vec<Vec<f64>>, PredictError> {
-        let table = InferenceTable::from_sparse_binary_columns(
+        let table = InferenceTable::from_sparse_binary_columns_projected(
             n_rows,
             n_features,
             columns,
             self.source_model.feature_preprocessing(),
+            &self.feature_projection,
         )?;
-        self.predict_proba_table(&table)
+        self.runtime.predict_proba_table(&table, &self.executor)
     }
 
     pub fn predict_sparse_binary_columns(
@@ -105,17 +134,20 @@ impl OptimizedModel {
         n_features: usize,
         columns: Vec<Vec<usize>>,
     ) -> Result<Vec<f64>, PredictError> {
-        let table = InferenceTable::from_sparse_binary_columns(
+        let table = InferenceTable::from_sparse_binary_columns_projected(
             n_rows,
             n_features,
             columns,
             self.source_model.feature_preprocessing(),
+            &self.feature_projection,
         )?;
         if self.runtime.should_use_batch_matrix(table.n_rows()) {
             let matrix = table.to_column_major_binned_matrix();
             Ok(self.predict_column_major_binned_matrix(&matrix))
         } else {
-            Ok(self.predict_table(&table))
+            Ok(self.executor.predict_rows(table.n_rows(), |row_index| {
+                self.runtime.predict_table_row(&table, row_index)
+            }))
         }
     }
 
@@ -221,6 +253,14 @@ impl OptimizedModel {
 
     pub fn tree_count(&self) -> usize {
         self.source_model.tree_count()
+    }
+
+    pub fn used_feature_indices(&self) -> Vec<usize> {
+        self.feature_projection.clone()
+    }
+
+    pub fn used_feature_count(&self) -> usize {
+        self.feature_projection.len()
     }
 
     pub fn tree_structure(
@@ -675,6 +715,14 @@ impl Model {
             Model::RandomForest(model) => model.feature_preprocessing(),
             Model::GradientBoostedTrees(model) => model.feature_preprocessing(),
         }
+    }
+
+    pub fn used_feature_indices(&self) -> Vec<usize> {
+        model_used_feature_indices(self)
+    }
+
+    pub fn used_feature_count(&self) -> usize {
+        self.used_feature_indices().len()
     }
 
     pub(crate) fn class_labels(&self) -> Option<Vec<f64>> {

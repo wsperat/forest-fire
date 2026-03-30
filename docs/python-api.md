@@ -88,11 +88,12 @@ Current stopping behavior:
 Current values:
 
 - `"auto"`
-- integer `1..=128`
+- integer `1..=512`
 
 Current `auto` behavior:
 
-- per numeric feature, ForestFire picks the highest power of two up to `128`
+- per numeric feature, ForestFire picks the highest power of two up to `512`
+- each realized bin must contain at least two rows
 - the chosen count is capped by the number of distinct observed values
 
 #### `physical_cores`
@@ -157,7 +158,7 @@ Single-row prediction also accepts 1D inputs like:
 
 ### `DenseTable`
 
-`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into a power-of-two number of bins, using the highest populated count up to `128` by default, and binary `0/1` columns are stored as booleans.
+`DenseTable` is Arrow-backed and optimized for repeated feature scans. Numeric features are rank-binned into a power-of-two number of bins, using the highest populated count up to `512` by default while keeping at least two rows per realized bin, and binary `0/1` columns are stored as booleans.
 
 ### `SparseTable`
 
@@ -181,6 +182,8 @@ Key runtime changes:
 - CART-style binary trees use compact fallthrough/jump layouts
 - multiway classifier splits use dense lookup tables
 - oblivious trees use compact level arrays
+- optimized models project inputs down to the features that actually appear in splits
+- forests and boosted ensembles are lowered in a feature-locality-friendly tree order
 - multi-row inputs are preprocessed together before scoring
 - compiled binary and oblivious runtimes use compact column-major binned matrices
 - row batches are scored in parallel across physical cores
@@ -191,6 +194,16 @@ It helps most on:
 - deeper trees
 - repeated scoring of the same model
 - compiled binary trees
+- wide inputs where the trained model only touches a small subset of columns
+
+Useful runtime metadata:
+
+- `model.used_feature_indices`
+- `model.used_feature_count`
+- `optimized.used_feature_indices`
+- `optimized.used_feature_count`
+
+Those values reflect semantic feature usage. Optimized models still accept the full inference input schema, but internally they only preprocess the projected subset.
 
 ## Introspection
 

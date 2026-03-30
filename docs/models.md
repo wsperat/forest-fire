@@ -26,6 +26,7 @@ Why do it this way:
 - the best structure for training is not automatically the best structure for scoring
 - training nodes carry bookkeeping that is useful for inspection and serialization but wasteful on the hot prediction path
 - runtime lowering lets the project keep one semantic model while still specializing execution for batch prediction
+- optimized runtimes can compact the active feature space without changing what inputs the semantic model expects
 
 ### What it changes internally
 
@@ -33,6 +34,8 @@ Why do it this way:
 - compiled CART-style trees use a fallthrough layout
 - multiway classifier nodes use dense bin lookup tables
 - oblivious trees become compact level arrays plus a leaf table
+- optimized runtimes project inputs down to the union of features the model actually uses
+- forests and boosted ensembles reorder trees by simple feature-locality keys before lowering
 - batch preprocessing happens ahead of traversal
 - compiled runtimes use compact `u8`/`u16` column-major batch matrices
 - `polars.LazyFrame` inputs are collected and scored in batches of about `10_000` rows
@@ -42,8 +45,34 @@ Why those changes help:
 - fallthrough layouts reduce branch-heavy pointer chasing in binary trees
 - dense lookup tables replace repeated branch scans in multiway nodes
 - oblivious trees are naturally amenable to regular array-based execution
+- feature projection avoids materializing and binning columns that are never touched by the trained model
+- locality-oriented tree ordering gives ensembles a better chance of reusing hot feature columns and top-level metadata
 - compact batch matrices reduce bandwidth and improve cache density
 - batched preprocessing amortizes input conversion over many rows instead of repeating it per traversal
+
+### Feature projection
+
+Optimized models still accept the full semantic input schema, but they no longer preprocess every feature eagerly.
+
+Instead, ForestFire:
+
+- inspects the semantic model
+- computes the sorted union of all feature indices that appear in splits
+- remaps the optimized runtime into that compact feature space
+- preprocesses only those projected columns during optimized inference
+
+This matters most when:
+
+- upstream pipelines emit wide tables but each tree only touches a small subset
+- forests or boosted ensembles repeatedly reuse a narrow set of strong predictors
+- batch preprocessing cost is large enough to matter, not just traversal cost
+
+Both `Model` and `OptimizedModel` expose:
+
+- `used_feature_indices()`
+- `used_feature_count()`
+
+That makes it easy to inspect whether a trained model is genuinely sparse in feature usage before relying on the optimized path.
 
 Where the impact is largest:
 
@@ -59,6 +88,13 @@ Available export paths:
 - JSON model serialization
 - JSON IR export
 - compiled optimized runtime serialization
+
+Compiled optimized artifacts retain both:
+
+- the semantic IR
+- the runtime-specific feature projection and lowered execution layout
+
+That means reloading a compiled optimized model skips the lowering step without changing the model’s semantic serialization.
 
 ### IR
 

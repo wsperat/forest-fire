@@ -168,7 +168,8 @@ That choice reflects the project’s general design preference: use explicit tra
 
 ForestFire training is optimized around a compact binned core and shared row-index buffers rather than row copies.
 
-- numeric features are pre-binned into compact integer ranks, capped at `128` bins
+- numeric features are pre-binned into compact integer ranks, capped at `512` bins
+- `bins="auto"` chooses the highest populated power-of-two count per feature while keeping at least two rows in every realized bin
 - long-running training and prediction release the Python GIL before entering the Rust hot path
 - CART and randomized trees use histogram-based numeric split search
 - standard binary trees partition row indices in place

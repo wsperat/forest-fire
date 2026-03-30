@@ -12,6 +12,7 @@ The Rust side is split across crates:
 use forestfire_core::{train, TrainConfig};
 
 let model = train(&table, TrainConfig::default())?;
+let optimized = model.optimize_inference(Some(1))?;
 ```
 
 ## Important core types
@@ -33,6 +34,20 @@ let model = train(&table, TrainConfig::default())?;
 - optimized inference runtimes
 - JSON IR serialization and deserialization
 - tree introspection metadata
+- compiled optimized runtime artifacts
+- used-feature introspection for semantic and optimized models
+
+Useful runtime-oriented methods:
+
+- `Model::used_feature_indices()`
+- `Model::used_feature_count()`
+- `Model::optimize_inference(...)`
+- `OptimizedModel::used_feature_indices()`
+- `OptimizedModel::used_feature_count()`
+- `OptimizedModel::serialize_compiled()`
+- `OptimizedModel::deserialize_compiled(...)`
+
+Optimized models still accept the full semantic feature space on input, but they lower the runtime into a compact projected feature space internally so batch preprocessing only touches the columns that appear in splits.
 
 ## Data crate
 
