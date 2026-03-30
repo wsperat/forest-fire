@@ -6,14 +6,21 @@ Some next steps are about training, some about runtime work, some about docs,
 and some about benchmarking. The goal is to keep forward-looking notes in one
 place instead of scattering them across otherwise stable reference pages.
 
-Recent cleanup work already completed and therefore intentionally not listed as
-open items here includes:
+Before looking at the remaining roadmap items, it is worth calling out cleanup
+work that has already landed and should no longer be read as pending:
 
-- splitting `crates/core/src/lib.rs` by responsibility
-- splitting `classifier.rs` by concern
-- consolidating shared histogram / partitioning / randomization internals across
-  classifier, regressor, and second-order tree builders
-- hardening and stress-testing seed mixing and randomized selection behavior
+- `crates/core/src/lib.rs` is now split by responsibility, with training,
+  introspection, forest, boosting, model API, and root test coverage living in
+  dedicated modules instead of accumulating in the crate root
+- `classifier.rs` is split by concern, with histogram handling, split scoring,
+  partitioning, oblivious training, IR support, and tests factored into focused
+  submodules
+- shared histogram / partitioning / randomization internals are consolidated
+  across classifier, regressor, and second-order tree builders via common
+  helpers instead of duplicated implementations
+- seed mixing and randomized selection behavior now have explicit invariants and
+  repeatability coverage, so deterministic training behavior is tested rather
+  than assumed
 
 ## Gradient boosting parallelism
 
