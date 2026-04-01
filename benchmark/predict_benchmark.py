@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from typing import Protocol, cast
 
 from common import (
     DEFAULT_FEATURE_GRID,
@@ -24,6 +25,10 @@ from common import (
     with_reference_complexity,
     write_summary_markdown,
 )
+
+
+class PredictModel(Protocol):
+    def predict(self, X: object) -> object: ...
 
 
 def parse_args() -> argparse.Namespace:
@@ -205,7 +210,7 @@ def main() -> None:
                         model = fitted_models[backend]
                         try:
                             predict_seconds = average_runtime(
-                                lambda: model.predict(X_predict),
+                                lambda: cast(PredictModel, model).predict(X_predict),
                                 benchmark_config.warmup_runs,
                                 benchmark_config.measurement_runs,
                             )
