@@ -1,9 +1,13 @@
 [package]
 name = "forestfire-inference"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2024"
+publish = false
+license = "MIT"
+repository = "https://github.com/wsperat/forest-fire"
+description = "Shared inference-facing traits and helpers for ForestFire."
 
 [dependencies]
-forestfire-core = { path = "../core" }
-forestfire-data = { path = "../data" }
+forestfire-core = { version = "0.1.4", path = "../core" }
+forestfire-data = { version = "0.1.4", path = "../data" }
 arrow.workspace = true
