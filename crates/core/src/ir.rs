@@ -634,15 +634,13 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             .trees
             .into_iter()
             .map(|tree| {
-                single_model_from_ir_parts(
-                    task,
+                boosted_tree_model_from_ir_parts(
                     tree_type,
                     criterion,
                     feature_preprocessing.clone(),
                     num_features,
                     options,
                     training_canaries,
-                    deserialized_class_labels.clone(),
                     tree,
                 )
             })
@@ -686,6 +684,80 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
         deserialized_class_labels,
         tree,
     )
+}
+
+fn boosted_tree_model_from_ir_parts(
+    tree_type: TreeType,
+    criterion: Criterion,
+    feature_preprocessing: Vec<FeaturePreprocessing>,
+    num_features: usize,
+    options: DecisionTreeOptions,
+    training_canaries: usize,
+    tree: TreeDefinition,
+) -> Result<Model, IrError> {
+    match (tree_type, tree) {
+        (
+            TreeType::Cart | TreeType::Randomized,
+            TreeDefinition::NodeTree {
+                nodes,
+                root_node_id,
+                ..
+            },
+        ) => Ok(Model::DecisionTreeRegressor(
+            DecisionTreeRegressor::from_ir_parts(
+                match tree_type {
+                    TreeType::Cart => RegressionTreeAlgorithm::Cart,
+                    TreeType::Randomized => RegressionTreeAlgorithm::Randomized,
+                    _ => unreachable!(),
+                },
+                criterion,
+                RegressionTreeStructure::Standard {
+                    nodes: rebuild_regressor_nodes(nodes)?,
+                    root: root_node_id,
+                },
+                RegressionTreeOptions {
+                    max_depth: options.max_depth,
+                    min_samples_split: options.min_samples_split,
+                    min_samples_leaf: options.min_samples_leaf,
+                    max_features: None,
+                    random_seed: 0,
+                },
+                num_features,
+                feature_preprocessing,
+                training_canaries,
+            ),
+        )),
+        (TreeType::Oblivious, TreeDefinition::ObliviousLevels { levels, leaves, .. }) => {
+            let leaf_sample_counts = rebuild_leaf_sample_counts(&leaves)?;
+            let leaf_variances = rebuild_leaf_variances(&leaves)?;
+            Ok(Model::DecisionTreeRegressor(
+                DecisionTreeRegressor::from_ir_parts(
+                    RegressionTreeAlgorithm::Oblivious,
+                    criterion,
+                    RegressionTreeStructure::Oblivious {
+                        splits: rebuild_regressor_oblivious_splits(levels)?,
+                        leaf_values: rebuild_regressor_leaf_values(leaves)?,
+                        leaf_sample_counts,
+                        leaf_variances,
+                    },
+                    RegressionTreeOptions {
+                        max_depth: options.max_depth,
+                        min_samples_split: options.min_samples_split,
+                        min_samples_leaf: options.min_samples_leaf,
+                        max_features: None,
+                        random_seed: 0,
+                    },
+                    num_features,
+                    feature_preprocessing,
+                    training_canaries,
+                ),
+            ))
+        }
+        (_, tree) => Err(IrError::UnsupportedRepresentation(match tree {
+            TreeDefinition::NodeTree { .. } => "node_tree".to_string(),
+            TreeDefinition::ObliviousLevels { .. } => "oblivious_levels".to_string(),
+        })),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

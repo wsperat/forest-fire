@@ -4,21 +4,21 @@ This summary is generated from the measured benchmark grid rather than being han
 
 ## Fastest backend by grid cell
 
-- `xgboost` is fastest in 10 grid cell(s)
-- `sklearn` is fastest in 6 grid cell(s)
-- `forestfire` is fastest in 4 grid cell(s)
+- `xgboost` is fastest in 11 grid cell(s)
+- `sklearn` is fastest in 7 grid cell(s)
 - `lightgbm` is fastest in 4 grid cell(s)
+- `forestfire` is fastest in 2 grid cell(s)
 
 ## Median measured time
 
-- `forestfire` median: `25.880536s`
-- `lightgbm` median: `12.615642s`
-- `sklearn` median: `13.585184s`
-- `xgboost` median: `8.230018s`
+- `forestfire` median: `35.199847s`
+- `lightgbm` median: `12.106981s`
+- `sklearn` median: `11.574159s`
+- `xgboost` median: `8.910534s`
 
 ## Scaling from smallest to largest row count
 
-- `forestfire` median growth ratio: `44.93x`
-- `lightgbm` median growth ratio: `6.37x`
-- `sklearn` median growth ratio: `152.54x`
-- `xgboost` median growth ratio: `6.77x`
+- `forestfire` median growth ratio: `12.52x`
+- `lightgbm` median growth ratio: `3.02x`
+- `sklearn` median growth ratio: `45.60x`
+- `xgboost` median growth ratio: `4.01x`

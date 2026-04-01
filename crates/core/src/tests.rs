@@ -1349,6 +1349,71 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
 }
 
 #[test]
+fn compiled_artifact_round_trips_for_boosted_binary_classifier_runtime() {
+    let table = DenseTable::with_options(
+        vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![0.2, 0.1],
+            vec![0.8, 0.9],
+        ],
+        vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0],
+        0,
+        NumericBins::fixed(8).unwrap(),
+    )
+    .unwrap();
+    let model = Model::GradientBoostedTrees(
+        GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(16),
+                learning_rate: Some(0.2),
+                max_depth: Some(2),
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap(),
+    );
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let compiled = optimized.serialize_compiled().unwrap();
+    let restored = OptimizedModel::deserialize_compiled(&compiled, Some(1)).unwrap();
+    let rows = vec![
+        vec![0.0, 0.0],
+        vec![0.0, 1.0],
+        vec![1.0, 0.0],
+        vec![1.0, 1.0],
+        vec![0.2, 0.1],
+        vec![0.8, 0.9],
+    ];
+
+    assert_eq!(
+        optimized.predict_rows(rows.clone()).unwrap(),
+        restored.predict_rows(rows.clone()).unwrap()
+    );
+    assert_predictions_close(
+        &optimized
+            .predict_proba_rows(rows.clone())
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        &restored
+            .predict_proba_rows(rows)
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
 fn compiled_artifact_rejects_invalid_header() {
     let err = OptimizedModel::deserialize_compiled(b"bad", Some(1)).unwrap_err();
     assert!(matches!(
