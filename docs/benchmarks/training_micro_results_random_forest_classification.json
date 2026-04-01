@@ -6,9 +6,9 @@
     "n_features": 8,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.00046891599777154624,
+    "seconds": 0.0008057909944909625,
     "status": "ok"
   },
   {
@@ -18,9 +18,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.0955954160017427,
+    "seconds": 0.41405837499769405,
     "status": "ok"
   },
   {
@@ -30,9 +30,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.10497062500508036,
+    "seconds": 0.4365587089996552,
     "status": "ok"
   },
   {
@@ -42,9 +42,9 @@
     "n_features": 16,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.0007752500096103176,
+    "seconds": 0.0007919579948065802,
     "status": "ok"
   },
   {
@@ -54,9 +54,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.15642341700731777,
+    "seconds": 0.7398813330000849,
     "status": "ok"
   },
   {
@@ -66,9 +66,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.15877487500256393,
+    "seconds": 0.6220729579945328,
     "status": "ok"
   },
   {
@@ -78,9 +78,9 @@
     "n_features": 32,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.0014994580124039203,
+    "seconds": 0.0014822090015513822,
     "status": "ok"
   },
   {
@@ -90,9 +90,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.24593029099924024,
+    "seconds": 1.196534624999913,
     "status": "ok"
   },
   {
@@ -102,9 +102,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.25303616700693965,
+    "seconds": 1.2003387500008103,
     "status": "ok"
   },
   {
@@ -114,9 +114,9 @@
     "n_features": 64,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.002947667002445087,
+    "seconds": 0.002966042004118208,
     "status": "ok"
   },
   {
@@ -126,9 +126,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.45146645899512805,
+    "seconds": 1.989909500000067,
     "status": "ok"
   },
   {
@@ -138,9 +138,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.4513301249971846,
+    "seconds": 1.8025150839966955,
     "status": "ok"
   },
   {
@@ -150,9 +150,9 @@
     "n_features": 128,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.005976083004497923,
+    "seconds": 0.006059999999706633,
     "status": "ok"
   },
   {
@@ -162,9 +162,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.8402968339942163,
+    "seconds": 3.410834000002069,
     "status": "ok"
   },
   {
@@ -174,9 +174,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.8219563330058008,
+    "seconds": 3.2561514170010923,
     "status": "ok"
   },
   {
@@ -186,9 +186,9 @@
     "n_features": 256,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 0.011415084009058774,
+    "seconds": 0.01202624999859836,
     "status": "ok"
   },
   {
@@ -198,9 +198,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 1.4317009579972364,
+    "seconds": 5.722749082997325,
     "status": "ok"
   },
   {
@@ -210,9 +210,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 1024,
-    "seconds": 1.4368128339992836,
+    "seconds": 5.736111416998028,
     "status": "ok"
   },
   {
@@ -222,9 +222,9 @@
     "n_features": 8,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.0017002920067170635,
+    "seconds": 0.0017134169975179248,
     "status": "ok"
   },
   {
@@ -234,9 +234,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.2844365830096649,
+    "seconds": 0.36937454200233333,
     "status": "ok"
   },
   {
@@ -246,9 +246,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.2961949999880744,
+    "seconds": 0.36738187500304775,
     "status": "ok"
   },
   {
@@ -258,9 +258,9 @@
     "n_features": 16,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.0031254159985110164,
+    "seconds": 0.003197833000740502,
     "status": "ok"
   },
   {
@@ -270,9 +270,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.5532075419905595,
+    "seconds": 0.6825112920050742,
     "status": "ok"
   },
   {
@@ -282,9 +282,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.5517641659971559,
+    "seconds": 0.6786522500042338,
     "status": "ok"
   },
   {
@@ -294,9 +294,9 @@
     "n_features": 32,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.00604758299596142,
+    "seconds": 0.006519874994410202,
     "status": "ok"
   },
   {
@@ -306,9 +306,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 1.0243533750035567,
+    "seconds": 1.767255541999475,
     "status": "ok"
   },
   {
@@ -318,9 +318,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 1.0284587920032209,
+    "seconds": 1.6695185830030823,
     "status": "ok"
   },
   {
@@ -330,9 +330,9 @@
     "n_features": 64,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.012028166995150968,
+    "seconds": 0.012561791001644451,
     "status": "ok"
   },
   {
@@ -342,9 +342,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 1.7726555839908542,
+    "seconds": 3.698215500000515,
     "status": "ok"
   },
   {
@@ -354,9 +354,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 1.812218542007031,
+    "seconds": 3.701601833003224,
     "status": "ok"
   },
   {
@@ -366,9 +366,9 @@
     "n_features": 128,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.02364662499167025,
+    "seconds": 0.024896708004234824,
     "status": "ok"
   },
   {
@@ -378,9 +378,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 3.1960354580078274,
+    "seconds": 6.6834679580060765,
     "status": "ok"
   },
   {
@@ -390,9 +390,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 3.1214393330010353,
+    "seconds": 6.698926457997004,
     "status": "ok"
   },
   {
@@ -402,9 +402,9 @@
     "n_features": 256,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 0.04829983400122728,
+    "seconds": 0.05032470799778821,
     "status": "ok"
   },
   {
@@ -414,9 +414,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 5.5603969160001725,
+    "seconds": 11.729978875002416,
     "status": "ok"
   },
   {
@@ -426,9 +426,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 4096,
-    "seconds": 5.569830666994676,
+    "seconds": 11.625424792000558,
     "status": "ok"
   },
   {
@@ -438,9 +438,9 @@
     "n_features": 8,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.007284624996827915,
+    "seconds": 0.007061958000122104,
     "status": "ok"
   },
   {
@@ -450,9 +450,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.8818726250028703,
+    "seconds": 1.115878625001642,
     "status": "ok"
   },
   {
@@ -462,9 +462,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.8847743329970399,
+    "seconds": 1.1837219590015593,
     "status": "ok"
   },
   {
@@ -474,9 +474,9 @@
     "n_features": 16,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.012640582994208671,
+    "seconds": 0.013245750000351109,
     "status": "ok"
   },
   {
@@ -486,9 +486,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 1.9104782079957658,
+    "seconds": 2.482898833004583,
     "status": "ok"
   },
   {
@@ -498,9 +498,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 1.9307350000017323,
+    "seconds": 2.514007124998898,
     "status": "ok"
   },
   {
@@ -510,9 +510,9 @@
     "n_features": 32,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.025194458008627407,
+    "seconds": 0.025799415998335462,
     "status": "ok"
   },
   {
@@ -522,9 +522,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 3.8980442079919158,
+    "seconds": 5.158471167000243,
     "status": "ok"
   },
   {
@@ -534,9 +534,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 3.9540344580018427,
+    "seconds": 5.109508416993776,
     "status": "ok"
   },
   {
@@ -546,9 +546,9 @@
     "n_features": 64,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.050297499998123385,
+    "seconds": 0.050848666003730614,
     "status": "ok"
   },
   {
@@ -558,9 +558,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 7.428811624995433,
+    "seconds": 8.245624125003815,
     "status": "ok"
   },
   {
@@ -570,9 +570,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 7.487547292010277,
+    "seconds": 8.276218874998449,
     "status": "ok"
   },
   {
@@ -582,9 +582,9 @@
     "n_features": 128,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.10204233399417717,
+    "seconds": 0.10420375000103377,
     "status": "ok"
   },
   {
@@ -594,9 +594,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 13.707938374995138,
+    "seconds": 17.0347058749976,
     "status": "ok"
   },
   {
@@ -606,9 +606,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 13.789059499991708,
+    "seconds": 17.145503750005446,
     "status": "ok"
   },
   {
@@ -618,9 +618,9 @@
     "n_features": 256,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 0.20368770800996572,
+    "seconds": 0.20918416699714726,
     "status": "ok"
   },
   {
@@ -630,9 +630,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 25.33016279200092,
+    "seconds": 29.136554917000467,
     "status": "ok"
   },
   {
@@ -642,9 +642,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 16384,
-    "seconds": 25.65407512499951,
+    "seconds": 29.22943262499757,
     "status": "ok"
   },
   {
@@ -654,9 +654,9 @@
     "n_features": 8,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 0.027324208000209183,
+    "seconds": 0.02817391699500149,
     "status": "ok"
   },
   {
@@ -666,9 +666,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 3.665629374998389,
+    "seconds": 4.001362292001431,
     "status": "ok"
   },
   {
@@ -678,9 +678,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 3.438583082999685,
+    "seconds": 3.9866122910025297,
     "status": "ok"
   },
   {
@@ -690,9 +690,9 @@
     "n_features": 16,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 0.05248458399728406,
+    "seconds": 0.054576124995946884,
     "status": "ok"
   },
   {
@@ -702,9 +702,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 7.330586000010953,
+    "seconds": 8.207134917000076,
     "status": "ok"
   },
   {
@@ -714,9 +714,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 7.372314749998623,
+    "seconds": 8.165506124998501,
     "status": "ok"
   },
   {
@@ -726,9 +726,9 @@
     "n_features": 32,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 0.10380995800369419,
+    "seconds": 0.10648937500081956,
     "status": "ok"
   },
   {
@@ -738,9 +738,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 15.862154832997476,
+    "seconds": 15.977613416995155,
     "status": "ok"
   },
   {
@@ -750,9 +750,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 15.897780667000916,
+    "seconds": 16.014089457996306,
     "status": "ok"
   },
   {
@@ -762,9 +762,9 @@
     "n_features": 64,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 0.2116810000006808,
+    "seconds": 0.21265145800134633,
     "status": "ok"
   },
   {
@@ -774,9 +774,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 34.82665558300505,
+    "seconds": 28.014680790998682,
     "status": "ok"
   },
   {
@@ -786,9 +786,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 34.835484584007645,
+    "seconds": 28.243744291998155,
     "status": "ok"
   },
   {
@@ -798,9 +798,9 @@
     "n_features": 128,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 0.42676087500876747,
+    "seconds": 0.4328143749953597,
     "status": "ok"
   },
   {
@@ -810,9 +810,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 69.7444907080062,
+    "seconds": 53.77539283400256,
     "status": "ok"
   },
   {
@@ -822,9 +822,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 69.99874241701036,
+    "seconds": 54.432457374998194,
     "status": "ok"
   },
   {
@@ -834,9 +834,9 @@
     "n_features": 256,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 0.8385962499887682,
+    "seconds": 0.8596350000007078,
     "status": "ok"
   },
   {
@@ -846,9 +846,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 133.83886558399536,
+    "seconds": 106.08966125000006,
     "status": "ok"
   },
   {
@@ -858,9 +858,9 @@
     "n_features": 256,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 65536,
-    "seconds": 135.00301495799795,
+    "seconds": 106.24789716699888,
     "status": "ok"
   },
   {
@@ -870,9 +870,9 @@
     "n_features": 8,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 0.11446325000724755,
+    "seconds": 0.11502174999623094,
     "status": "ok"
   },
   {
@@ -882,9 +882,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 15.706691416999092,
+    "seconds": 15.865717000000586,
     "status": "ok"
   },
   {
@@ -894,9 +894,9 @@
     "n_features": 8,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 15.824576040991815,
+    "seconds": 15.679514333998668,
     "status": "ok"
   },
   {
@@ -906,9 +906,9 @@
     "n_features": 16,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 0.22665983400656842,
+    "seconds": 0.22468395799660357,
     "status": "ok"
   },
   {
@@ -918,9 +918,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 36.66773945899331,
+    "seconds": 31.301660707998963,
     "status": "ok"
   },
   {
@@ -930,9 +930,9 @@
     "n_features": 16,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 36.940509124993696,
+    "seconds": 31.529334958002437,
     "status": "ok"
   },
   {
@@ -942,9 +942,9 @@
     "n_features": 32,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 0.4488022919977084,
+    "seconds": 0.4410466249973979,
     "status": "ok"
   },
   {
@@ -954,9 +954,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 87.38338004199613,
+    "seconds": 55.63985474999936,
     "status": "ok"
   },
   {
@@ -966,9 +966,9 @@
     "n_features": 32,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 88.52965995800332,
+    "seconds": 56.695568958006334,
     "status": "ok"
   },
   {
@@ -978,9 +978,9 @@
     "n_features": 64,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 0.8893261249904754,
+    "seconds": 0.8827284580038395,
     "status": "ok"
   },
   {
@@ -990,9 +990,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 194.5559033749887,
+    "seconds": 109.43766812499962,
     "status": "ok"
   },
   {
@@ -1002,9 +1002,9 @@
     "n_features": 64,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 195.86597362499742,
+    "seconds": 110.47072637500241,
     "status": "ok"
   },
   {
@@ -1014,9 +1014,9 @@
     "n_features": 128,
     "note": null,
     "phase": "table_build",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 1.7827597919967957,
+    "seconds": 1.758020541004953,
     "status": "ok"
   },
   {
@@ -1026,9 +1026,9 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_from_table",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 409.248256625011,
+    "seconds": 222.22527458300465,
     "status": "ok"
   },
   {
@@ -1038,9 +1038,45 @@
     "n_features": 128,
     "note": null,
     "phase": "fit_end_to_end",
-    "problem": "regression",
+    "problem": "classification",
     "rows": 262144,
-    "seconds": 411.61285329199745,
+    "seconds": 217.91593237500638,
+    "status": "ok"
+  },
+  {
+    "benchmark": "training_micro",
+    "family": "random_forest",
+    "n_estimators": 1000,
+    "n_features": 256,
+    "note": null,
+    "phase": "table_build",
+    "problem": "classification",
+    "rows": 262144,
+    "seconds": 3.5280196249950677,
+    "status": "ok"
+  },
+  {
+    "benchmark": "training_micro",
+    "family": "random_forest",
+    "n_estimators": 1000,
+    "n_features": 256,
+    "note": null,
+    "phase": "fit_from_table",
+    "problem": "classification",
+    "rows": 262144,
+    "seconds": 398.0478944170027,
+    "status": "ok"
+  },
+  {
+    "benchmark": "training_micro",
+    "family": "random_forest",
+    "n_estimators": 1000,
+    "n_features": 256,
+    "note": null,
+    "phase": "fit_end_to_end",
+    "problem": "classification",
+    "rows": 262144,
+    "seconds": 397.3728238330077,
     "status": "ok"
   }
 ]

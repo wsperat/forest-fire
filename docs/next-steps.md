@@ -6,22 +6,6 @@ Some next steps are about training, some about runtime work, some about docs,
 and some about benchmarking. The goal is to keep forward-looking notes in one
 place instead of scattering them across otherwise stable reference pages.
 
-Before looking at the remaining roadmap items, it is worth calling out cleanup
-work that has already landed and should no longer be read as pending:
-
-- `crates/core/src/lib.rs` is now split by responsibility, with training,
-  introspection, forest, boosting, model API, and root test coverage living in
-  dedicated modules instead of accumulating in the crate root
-- `classifier.rs` is split by concern, with histogram handling, split scoring,
-  partitioning, oblivious training, IR support, and tests factored into focused
-  submodules
-- shared histogram / partitioning / randomization internals are consolidated
-  across classifier, regressor, and second-order tree builders via common
-  helpers instead of duplicated implementations
-- seed mixing and randomized selection behavior now have explicit invariants and
-  repeatability coverage, so deterministic training behavior is tested rather
-  than assumed
-
 ## Gradient boosting parallelism
 
 One of the clearest remaining training gaps is gradient-boosting parallelism.
@@ -135,6 +119,60 @@ Examples:
 These may all be valid design choices, but they affect behavior in edge cases.
 Making them explicit would help users understand surprising outcomes and would
 also make regression testing easier.
+
+## Revisit canary policy for boosting
+
+The current canary mechanism is useful because it gives ForestFire an explicit
+"stop when the best real split is indistinguishable from shuffled noise"
+criterion.
+
+That is a good fit for some settings, but boosting is a special case. In
+boosting, later trees are not trying to explain the full target from scratch.
+They are trying to explain the *residual margin* left behind by the existing
+ensemble. That means a stage can be locally weak in an absolute sense while
+still being globally useful once shrinkage and many stages are taken into
+account.
+
+The `make_moons` benchmark exposed exactly that failure mode:
+
+- the CART binary-GBM path produced a zero-tree ensemble
+- the model therefore stayed at the base score
+- the resulting probability surface was flat at `0.5`
+
+That outcome strongly suggests the current root-canary policy is too eager in
+at least some second-order boosting settings.
+
+The next step should not be to remove canaries from boosting entirely. It
+should be to make the policy stage-aware and objective-aware.
+
+The most promising directions are:
+
+- compare the best real split against canaries using *margin reduction* or
+  stage-loss reduction instead of a more generic tree-training signal
+- require more evidence before stopping the first few boosting stages, where a
+  weak but real root split may still unlock a useful ensemble trajectory
+- distinguish "no signal at all" from "signal is weak but consistently better
+  than the current ensemble baseline"
+- allow boosting to continue when the best real split beats the unsplit leaf by
+  a meaningful amount, even if it does not beat every canary statistic under
+  the current rule
+- consider a softer canary policy for boosting than for plain decision trees,
+  random forests, or mean-target baselines
+
+The practical goal is:
+
+- keep canaries as a guardrail against fitting pure noise
+- but avoid collapsing useful GBM runs into zero-tree ensembles on genuinely
+  structured datasets
+
+This should be treated as both an algorithmic and benchmarking task:
+
+- add focused tests for binary-GBM datasets that should produce at least one
+  tree
+- use `make_moons` and similar low-dimensional nonlinear datasets as regression
+  benchmarks for canary behavior
+- record whether canary-triggered early stopping produced a zero-tree ensemble,
+  because that is a distinct failure mode worth surfacing directly
 
 ## Keep investing in runtime parity tests
 

@@ -4,17 +4,17 @@ This summary focuses on ForestFire training phases so preprocessing and learner-
 
 ## Median measured time
 
-- `fit_end_to_end` median: `0.176595s`
-- `fit_from_table` median: `0.127327s`
-- `table_build` median: `0.044284s`
+- `fit_end_to_end` median: `3.954034s`
+- `fit_from_table` median: `3.898044s`
+- `table_build` median: `0.027324s`
 
 ## Median share of end-to-end training
 
-- `fit_from_table` share: `78.2%`
-- `table_build` share: `25.1%`
+- `fit_from_table` share: `99.4%`
+- `table_build` share: `0.7%`
 
 ## Scaling from smallest to largest row count
 
-- `fit_end_to_end` median growth ratio: `3.85x`
-- `fit_from_table` median growth ratio: `5.15x`
-- `table_build` median growth ratio: `4.47x`
+- `fit_end_to_end` median growth ratio: `291.26x`
+- `fit_from_table` median growth ratio: `294.87x`
+- `table_build` median growth ratio: `295.34x`

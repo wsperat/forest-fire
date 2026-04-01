@@ -316,6 +316,14 @@ tasks:
         python benchmark/predict_micro_benchmark.py
         --output-dir docs/benchmarks
         --family gradient_boosting
+  benchmark-moons:
+    desc: Benchmark make_moons probability surfaces for RF and GBM classifiers
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/moons_benchmark.py
+        --output-dir docs/benchmarks
   benchmark-micro:
     desc: Run ForestFire-only training and prediction micro-benchmarks
     cmds:
