@@ -38,9 +38,10 @@ jobs:
       - name: isort (check only)
         run: >-
           uv run isort --check-only
-          bindings/python/forestfire.pyi
+          bindings/python/python/forestfire/_core.pyi
           examples/python/showcase.py
           tests/python/test_train.py
+          tests/python/test_sklearn_wrappers.py
       - name: Ruff lint
         run: >-
           uv run ruff check --output-format=github
@@ -50,9 +51,10 @@ jobs:
       - name: Ruff formatting (check only)
         run: >-
           uv run ruff format --check
-          bindings/python/forestfire.pyi
+          bindings/python/python/forestfire/_core.pyi
           examples/python/showcase.py
           tests/python/test_train.py
+          tests/python/test_sklearn_wrappers.py
       - name: yamllint
         run: >-
           uv run yamllint
@@ -66,6 +68,9 @@ jobs:
       - name: Build Python extension
         run: uv run maturin develop -m bindings/python/Cargo.toml
       - name: pytest
-        run: uv run pytest -q tests/python/test_train.py
+        run: >-
+          uv run pytest -q
+          tests/python/test_train.py
+          tests/python/test_sklearn_wrappers.py
       - name: Run Python examples
         run: uv run python examples/python/showcase.py
