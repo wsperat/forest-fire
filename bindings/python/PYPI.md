@@ -26,6 +26,9 @@ print(model.predict(X))
 print(model.predict_proba(X))
 ```
 
+Common missing-value markers such as `None`, `np.nan`, pandas/NumPy `NaN`, and
+`polars` nulls are handled automatically during training and prediction.
+
 The source repository, documentation, and issue tracker live at:
 
 - https://github.com/wsperat/forest-fire

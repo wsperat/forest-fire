@@ -16,6 +16,7 @@ Current capabilities:
 - random forests
 - gradient boosting
 - classification and regression
+- automatic missing-value handling during training and prediction
 - optimized inference runtimes
 - compiled optimized runtime artifacts
 - model introspection and dataframe export
@@ -54,6 +55,9 @@ model = train(X, y, task="classification", tree_type="cart")
 print(model.predict(X))
 print(model.predict_proba(X))
 ```
+
+Missing values are handled automatically from common Python inputs such as
+`None`, `np.nan`, pandas/NumPy `NaN`, and `polars` nulls.
 
 Install from PyPI:
 

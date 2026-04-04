@@ -47,7 +47,9 @@ That includes:
 
 - training parameters
 - supported input types
+- missing-value handling semantics
 - optimized inference
+- selective missing checks via `optimize_inference(..., missing_features=...)`
 - used-feature projection in optimized models
 - serialization
 - tree introspection

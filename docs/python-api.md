@@ -152,6 +152,31 @@ The key API distinction is:
 
 That means `Table` is a training-oriented preprocessing container, not the preferred prediction input type.
 
+## Missing values
+
+ForestFire accepts the common missing-value representations that usually appear
+through those inputs:
+
+- Python `None`
+- floating-point `NaN`
+- pandas/NumPy `NaN`
+- `polars` null values
+
+Training and prediction treat those values as missing rather than rejecting
+them.
+
+The split semantics are:
+
+- each feature reserves a separate missing bin
+- split search ignores that bin when choosing the best observed threshold or branch grouping
+- once the best observed split has been found, the learner evaluates sending missing rows left vs right and stores the better routing decision
+- if a feature had no missing rows at a learned split, a later missing value falls back to the node prediction instead of pretending that the feature had seen a trained missing branch
+
+That fallback is:
+
+- majority class or node probabilities for classification
+- node mean prediction for regression
+
 ## Tables and input handling
 
 ### `Table`
@@ -186,6 +211,9 @@ That combination is deliberate:
 - forcing at least two rows per realized bin avoids wasting domain size on near-empty bins
 - boolean storage keeps true binary columns cheap during both training and inference
 
+Each dense feature also reserves one extra bin for missing values so split
+search can handle missingness without rebucketing the data at every node.
+
 ### `SparseTable`
 
 `SparseTable` is binary-only. Internally it stores, per feature, the row positions where the value is `1`, so memory usage scales with the positive entries rather than the full dense shape.
@@ -204,6 +232,15 @@ This is useful because many sparse inputs are really presence/absence matrices. 
 ## Optimized inference
 
 `optimize_inference(...)` returns an `OptimizedModel` that preserves model semantics while lowering execution into a runtime-oriented representation.
+
+Python signature:
+
+```python
+optimized = model.optimize_inference(
+    physical_cores=None,
+    missing_features=None,
+)
+```
 
 Key runtime changes:
 
@@ -227,6 +264,34 @@ The runtime pipeline is:
 7. score rows through scalar or batch-oriented execution
 
 That is why optimized inference can reduce total latency even when the tree traversal itself is only moderately faster: it often avoids preprocessing columns that were never going to be used.
+
+### Missing checks in optimized runtimes
+
+By default, optimized runtimes preserve missing-aware inference for every used
+feature:
+
+```python
+optimized = model.optimize_inference()
+```
+
+If you know that only some semantic feature indices may be missing at
+prediction time, pass them explicitly:
+
+```python
+optimized = model.optimize_inference(missing_features=[0, 4, 9])
+```
+
+Semantics:
+
+- `missing_features=None`: keep missing checks for every used feature
+- `missing_features=[...]`: only optimized nodes that split on those semantic feature indices keep explicit missing handling
+- `missing_features=[]`: omit missing checks entirely in the optimized runtime
+
+This is a runtime-only optimization knob. Use it only when you control
+inference inputs and know which columns can actually be missing. Otherwise, the
+default is the safe choice. If an excluded feature later arrives missing, the
+optimized model will not execute the learned missing-specific branch for that
+split.
 
 ### Using runtime metadata
 

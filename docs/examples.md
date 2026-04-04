@@ -56,6 +56,9 @@ print(tree_df)
 
 optimized = model.optimize_inference()
 
+# If only features 0 and 1 may be missing at inference time:
+# optimized = model.optimize_inference(missing_features=[0, 1])
+
 print(model.used_feature_indices)
 print(optimized.used_feature_indices)
 
@@ -83,6 +86,8 @@ What this example shows:
 - training and introspection stay on the semantic model
 - `optimize_inference()` creates a runtime-oriented scoring view without changing
   model meaning
+- `missing_features=[...]` is available when only some columns need explicit
+  missing checks in the optimized runtime
 - used-feature metadata shows how much of the original feature space the model
   actually depends on
 - serialization and reload preserve the same prediction semantics

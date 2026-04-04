@@ -63,6 +63,39 @@ This keeps the common path ergonomic without hiding the important distinction th
 - the valid tree families
 - the prediction API surface, especially `predict_proba(...)`
 
+## Missing values during training
+
+ForestFire treats missing values as first-class training inputs rather than as
+rows that must be dropped beforehand.
+
+Accepted missing markers include:
+
+- Python `None`
+- floating-point `NaN`
+- pandas/NumPy `NaN`
+- `polars` null values
+
+The training contract is:
+
+- every feature gets a dedicated missing bin
+- split search chooses the best split from the non-missing bins only
+- after that observed split is chosen, the learner evaluates routing the
+  missing rows to the left or right child and keeps whichever assignment
+  produces the better split score
+
+That design matters because it separates two questions that are often muddled
+together:
+
+- what is the best split among observed values?
+- given that split, where should the missing rows go?
+
+When a node never saw missing values for its split feature during training, the
+model does not invent a learned missing branch. A later missing value at
+prediction time falls back to the node prediction instead:
+
+- majority class for classification
+- node mean for regression
+
 ## Stopping and control parameters
 
 - `max_depth`
@@ -169,6 +202,7 @@ That choice reflects the project’s general design preference: use explicit tra
 ForestFire training is optimized around a compact binned core and shared row-index buffers rather than row copies.
 
 - numeric features are pre-binned into compact integer ranks, capped at `512` bins
+- each feature reserves one extra missing bin alongside the observed bins
 - `bins="auto"` chooses the highest populated power-of-two count per feature while keeping at least two rows in every realized bin
 - long-running training and prediction release the Python GIL before entering the Rust hot path
 - CART and randomized trees use histogram-based numeric split search

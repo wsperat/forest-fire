@@ -19,6 +19,10 @@ That distinction is important because ForestFire does not treat “probability p
 
 It preserves model semantics while changing the execution layout.
 
+That includes missing-value semantics: optimized models keep the learned
+missing routing for the features you ask them to preserve, and otherwise retain
+the canonical semantic model for serialization and inspection.
+
 This split between training representation and runtime representation is one of the core design decisions in the project.
 
 Why do it this way:

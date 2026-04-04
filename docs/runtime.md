@@ -99,6 +99,52 @@ When you later call `predict(...)` on the optimized model, the runtime does:
 
 That flow is the important architectural point: optimization is not just about faster tree traversal. It starts before traversal, at input materialization.
 
+## Missing-value routing in the runtime
+
+Missing values are part of the semantic model, not an afterthought bolted onto
+prediction.
+
+At training time ForestFire:
+
+- places missing values in a dedicated bin
+- ignores that bin while choosing the best observed split
+- then evaluates whether the missing rows should go left or right for that split
+
+At inference time the learned split therefore has one of three missing
+behaviors:
+
+- route missing values to the left child
+- route missing values to the right child
+- if that split feature had no missing values during training, fall back to the node prediction
+
+That last case is deliberate. It avoids storing or executing missing checks
+that never mattered for the learned split semantics.
+
+## Selective missing checks for optimized inference
+
+Optimized runtimes can keep or omit explicit missing checks per feature.
+
+The public knobs are:
+
+- Python: `model.optimize_inference(missing_features=...)`
+- Rust: `model.optimize_inference_with_missing_features(...)`
+
+The contract is:
+
+- default / `None`: preserve missing-aware behavior for every used feature
+- explicit feature list: keep missing checks only for those semantic feature indices
+- empty list: build the optimized runtime without explicit missing checks
+
+Why this exists:
+
+- explicit missing checks are semantically necessary only for features that may actually be missing at inference time
+- if your serving pipeline guarantees that some columns are always present, removing those checks can keep the hot path smaller
+
+This configuration only affects the lowered runtime. The semantic model still
+describes the full learned missing-value behavior. If an excluded feature later
+arrives missing anyway, the optimized runtime will not execute the learned
+missing-specific branch for that split.
+
 ## CART-style fallthrough layout
 
 Binary trees are a natural fit for compact control-flow layouts.

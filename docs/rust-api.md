@@ -50,12 +50,17 @@ Useful runtime-oriented methods:
 - `Model::used_feature_indices()`
 - `Model::used_feature_count()`
 - `Model::optimize_inference(...)`
+- `Model::optimize_inference_with_missing_features(...)`
 - `OptimizedModel::used_feature_indices()`
 - `OptimizedModel::used_feature_count()`
 - `OptimizedModel::serialize_compiled()`
 - `OptimizedModel::deserialize_compiled(...)`
 
 Optimized models still accept the full semantic feature space on input, but they lower the runtime into a compact projected feature space internally so batch preprocessing only touches the columns that appear in splits.
+
+Inference inputs can also contain missing values through the normal raw-input
+paths, including floating-point `NaN` values and `polars` nulls when the
+feature is available.
 
 That means there are really three layers to keep in mind:
 
@@ -97,6 +102,19 @@ let restored = forestfire_core::OptimizedModel::deserialize_compiled(&bytes, Som
 ```
 
 Use this when you want to preserve the lowered runtime layout across reloads instead of recomputing it from the semantic model each time.
+
+### Example: selective missing checks in the optimized runtime
+
+```rust
+let optimized = model.optimize_inference_with_missing_features(
+    Some(1),
+    Some(vec![0, 3, 7]),
+)?;
+```
+
+Pass `None` to preserve missing-aware behavior for every used feature. Pass an
+explicit feature-index list only when your inference pipeline guarantees that
+other columns will never be missing.
 
 ## Data crate
 
