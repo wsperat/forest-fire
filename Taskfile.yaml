@@ -195,6 +195,18 @@ tasks:
     desc: Upload built distributions to PyPI with twine
     deps: [python-package-check]
     cmds: ["uv run --group release twine upload \\\n  dist/*\n"]
+  cargo-package-check:
+    desc: Build publishable crate archives without uploading them
+    deps: [rust-toolchain]
+    cmds:
+      - cargo package -p forestfire-data
+      - cargo package -p forestfire-core
+  cargo-publish:
+    desc: Publish release crates to crates.io in dependency order
+    deps: [rust-toolchain]
+    cmds:
+      - cargo publish -p forestfire-data
+      - cargo publish -p forestfire-core
   docs-serve:
     desc: Serve the MkDocs documentation site locally
     deps: [install-docs]

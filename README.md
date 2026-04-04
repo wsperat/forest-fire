@@ -16,6 +16,7 @@ Current capabilities:
 - random forests
 - gradient boosting
 - classification and regression
+- sklearn-compatible estimator wrappers
 - automatic missing-value handling during training and prediction
 - optimized inference runtimes
 - compiled optimized runtime artifacts
@@ -76,6 +77,14 @@ Import in Python:
 
 ```python
 import forestfire
+```
+
+Sklearn-style wrappers are also available:
+
+```python
+from forestfire.tree import ObliviousRegressor
+from forestfire.forest import CARTRandomForestRegressor
+from forestfire.gbm import ExtraGBMRegressor
 ```
 
 ## Development

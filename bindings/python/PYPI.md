@@ -8,6 +8,7 @@ Current capabilities:
 - random forests
 - gradient boosting
 - classification and regression
+- sklearn-compatible estimator wrappers
 - optimized inference runtimes
 - model introspection and export
 
@@ -24,6 +25,14 @@ y = np.array([0.0, 0.0, 1.0, 1.0])
 model = train(X, y, task="classification", tree_type="cart")
 print(model.predict(X))
 print(model.predict_proba(X))
+```
+
+Sklearn-style wrappers are also available:
+
+```python
+from forestfire.tree import CARTClassifier
+from forestfire.forest import CARTRandomForestRegressor
+from forestfire.gbm import ObliviousGBMRegressor
 ```
 
 Common missing-value markers such as `None`, `np.nan`, pandas/NumPy `NaN`, and

@@ -8,6 +8,7 @@ The Python package exposes:
 - `train(...)`
 - `Model`
 - `OptimizedModel`
+- sklearn-compatible wrappers in `forestfire.tree`, `forestfire.forest`, and `forestfire.gbm`
 
 ## Install
 
@@ -36,6 +37,16 @@ print(model.predict(X))
 print(model.predict_proba(X))
 ```
 
+Sklearn-style estimators:
+
+```python
+from forestfire.tree import CARTClassifier
+from forestfire.forest import CARTRandomForestRegressor
+from forestfire.gbm import ObliviousGBMRegressor
+
+classifier = CARTClassifier(max_depth=4).fit(X, y)
+```
+
 ## Documentation
 
 The detailed Python documentation now lives in the docs site:
@@ -47,6 +58,7 @@ That includes:
 
 - training parameters
 - `bins=...` vs `histogram_bins=...`
+- sklearn-compatible estimator wrappers
 - supported input types
 - missing-value handling semantics
 - `missing_value_strategy="heuristic" | "optimal" | {...}`

@@ -39,9 +39,16 @@ The docs site is deployed separately through `.github/workflows/docs.yaml` to Gi
 
 Make sure you:
 
+- bump the version in the workspace `pyproject.toml`
 - bump the version in `bindings/python/pyproject.toml`
 - bump the version in `bindings/python/Cargo.toml`
+- verify the mixed package metadata still includes:
+  - `module-name = "forestfire._core"`
+  - `python-source = "python"`
+  - `python/forestfire/_core.pyi`
+  - `python/forestfire/py.typed`
 - verify the PyPI project name is correct
+- confirm that the `forestfire-ml` project name is the intended PyPI target
 - run the package check task before tagging
 - ensure the GitHub trusted publisher is configured for the correct project name
 

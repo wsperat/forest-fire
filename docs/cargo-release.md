@@ -24,6 +24,7 @@ Publish order is:
 
 1. `forestfire-data`
 2. `forestfire-core`
-3. `forestfire-inference`
+
+`forestfire-inference` and the example crate stay workspace-local and are not published.
 
 If crates.io has not indexed the previous crate yet, wait a minute and retry the remaining publish step.
