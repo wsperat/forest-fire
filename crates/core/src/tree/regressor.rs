@@ -11,8 +11,8 @@ use crate::ir::{
     criterion_name, feature_name, threshold_upper_bound,
 };
 use crate::tree::shared::{
-    FeatureHistogram, HistogramBin, build_feature_histograms, candidate_feature_indices,
-    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
+    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
     subtract_feature_histograms,
 };
 use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
@@ -110,6 +110,8 @@ pub(crate) enum RegressionNode {
     BinarySplit {
         feature_index: usize,
         threshold_bin: u16,
+        missing_direction: MissingBranchDirection,
+        missing_value: f64,
         left_child: usize,
         right_child: usize,
         sample_count: usize,
@@ -133,6 +135,7 @@ struct RegressionSplitCandidate {
     feature_index: usize,
     threshold_bin: u16,
     score: f64,
+    missing_direction: MissingBranchDirection,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +166,7 @@ struct BinarySplitChoice {
     feature_index: usize,
     threshold_bin: u16,
     score: f64,
+    missing_direction: MissingBranchDirection,
 }
 
 #[derive(Debug, Clone)]
@@ -414,10 +418,24 @@ impl DecisionTreeRegressor {
                         RegressionNode::BinarySplit {
                             feature_index,
                             threshold_bin,
+                            missing_direction,
+                            missing_value,
                             left_child,
                             right_child,
                             ..
                         } => {
+                            if table.is_missing(*feature_index, row_idx) {
+                                match missing_direction {
+                                    MissingBranchDirection::Left => {
+                                        node_index = *left_child;
+                                    }
+                                    MissingBranchDirection::Right => {
+                                        node_index = *right_child;
+                                    }
+                                    MissingBranchDirection::Node => return *missing_value,
+                                }
+                                continue;
+                            }
                             let bin = table.binned_value(*feature_index, row_idx);
                             node_index = if bin <= *threshold_bin {
                                 *left_child
@@ -514,6 +532,8 @@ impl DecisionTreeRegressor {
                             RegressionNode::BinarySplit {
                                 feature_index,
                                 threshold_bin,
+                                missing_direction,
+                                missing_value: _,
                                 left_child,
                                 right_child,
                                 sample_count,
@@ -526,6 +546,7 @@ impl DecisionTreeRegressor {
                                 split: binary_split_ir(
                                     *feature_index,
                                     *threshold_bin,
+                                    *missing_direction,
                                     &self.feature_preprocessing,
                                 ),
                                 children: BinaryChildren {
@@ -640,6 +661,7 @@ fn populate_depths(nodes: &[RegressionNode], node_id: usize, depth: usize, depth
 fn binary_split_ir(
     feature_index: usize,
     threshold_bin: u16,
+    _missing_direction: MissingBranchDirection,
     preprocessing: &[FeaturePreprocessing],
 ) -> BinarySplit {
     match preprocessing.get(feature_index) {
@@ -836,6 +858,7 @@ fn build_binary_node_in_place_with_hist(
                 context.table,
                 best_split.feature_index,
                 best_split.threshold_bin,
+                best_split.missing_direction,
                 rows,
             );
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
@@ -898,6 +921,8 @@ fn build_binary_node_in_place_with_hist(
                 RegressionNode::BinarySplit {
                     feature_index: best_split.feature_index,
                     threshold_bin: best_split.threshold_bin,
+                    missing_direction: best_split.missing_direction,
+                    missing_value: leaf_value,
                     left_child,
                     right_child,
                     sample_count: rows.len(),
@@ -1029,7 +1054,8 @@ fn score_split(
             min_samples_leaf,
         );
     }
-    if matches!(criterion, Criterion::Mean) {
+    let has_missing = feature_has_missing(table, feature_index, rows);
+    if matches!(criterion, Criterion::Mean) && !has_missing {
         if matches!(algorithm, RegressionTreeAlgorithm::Randomized) {
             if let Some(candidate) = score_randomized_split_mean_fast(
                 table,
@@ -1059,28 +1085,22 @@ fn score_split(
     let parent_loss = regression_loss(rows, targets, criterion);
 
     rows.iter()
-        .map(|row_idx| table.binned_value(feature_index, *row_idx))
+        .copied()
+        .filter(|row_idx| !table.is_missing(feature_index, *row_idx))
+        .map(|row_idx| table.binned_value(feature_index, row_idx))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .filter_map(|threshold_bin| {
-            let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = rows
-                .iter()
-                .copied()
-                .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
-
-            if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
-                return None;
-            }
-
-            let score = parent_loss
-                - (regression_loss(&left_rows, targets, criterion)
-                    + regression_loss(&right_rows, targets, criterion));
-
-            Some(RegressionSplitCandidate {
+            evaluate_regression_missing_assignment(
+                table,
+                targets,
                 feature_index,
+                rows,
+                criterion,
+                min_samples_leaf,
                 threshold_bin,
-                score,
-            })
+                parent_loss,
+            )
         })
         .max_by(|left, right| left.score.total_cmp(&right.score))
 }
@@ -1095,32 +1115,26 @@ fn score_randomized_split(
 ) -> Option<RegressionSplitCandidate> {
     let candidate_thresholds = rows
         .iter()
-        .map(|row_idx| table.binned_value(feature_index, *row_idx))
+        .copied()
+        .filter(|row_idx| !table.is_missing(feature_index, *row_idx))
+        .map(|row_idx| table.binned_value(feature_index, row_idx))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
     let threshold_bin =
         choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
 
-    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) = rows
-        .iter()
-        .copied()
-        .partition(|row_idx| table.binned_value(feature_index, *row_idx) <= threshold_bin);
-
-    if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
-        return None;
-    }
-
     let parent_loss = regression_loss(rows, targets, criterion);
-    let score = parent_loss
-        - (regression_loss(&left_rows, targets, criterion)
-            + regression_loss(&right_rows, targets, criterion));
-
-    Some(RegressionSplitCandidate {
+    evaluate_regression_missing_assignment(
+        table,
+        targets,
         feature_index,
+        rows,
+        criterion,
+        min_samples_leaf,
         threshold_bin,
-        score,
-    })
+        parent_loss,
+    )
 }
 
 fn score_oblivious_split(
@@ -1220,6 +1234,7 @@ fn split_oblivious_leaves_in_place(
             table,
             feature_index,
             threshold_bin,
+            MissingBranchDirection::Right,
             &mut row_indices[leaf.start..leaf.end],
         );
         let mid = leaf.start + left_count;
@@ -1340,27 +1355,17 @@ fn score_binary_split(
     criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<RegressionSplitCandidate> {
-    let (left_rows, right_rows): (Vec<usize>, Vec<usize>) =
-        rows.iter().copied().partition(|row_idx| {
-            !table
-                .binned_boolean_value(feature_index, *row_idx)
-                .expect("binary feature must expose boolean values")
-        });
-
-    if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
-        return None;
-    }
-
     let parent_loss = regression_loss(rows, targets, criterion);
-    let score = parent_loss
-        - (regression_loss(&left_rows, targets, criterion)
-            + regression_loss(&right_rows, targets, criterion));
-
-    Some(RegressionSplitCandidate {
+    evaluate_regression_missing_assignment(
+        table,
+        targets,
         feature_index,
-        threshold_bin: 0,
-        score,
-    })
+        rows,
+        criterion,
+        min_samples_leaf,
+        0,
+        parent_loss,
+    )
 }
 
 fn score_binary_split_choice(
@@ -1370,7 +1375,41 @@ fn score_binary_split_choice(
 ) -> Option<BinarySplitChoice> {
     if matches!(context.criterion, Criterion::Mean) {
         if context.table.is_binary_binned_feature(feature_index) {
+            if feature_has_missing(context.table, feature_index, rows) {
+                return score_split(
+                    context.table,
+                    context.targets,
+                    feature_index,
+                    rows,
+                    context.criterion,
+                    context.options.min_samples_leaf,
+                    context.algorithm,
+                )
+                .map(|candidate| BinarySplitChoice {
+                    feature_index: candidate.feature_index,
+                    threshold_bin: candidate.threshold_bin,
+                    score: candidate.score,
+                    missing_direction: candidate.missing_direction,
+                });
+            }
             return score_binary_split_choice_mean(context, feature_index, rows);
+        }
+        if feature_has_missing(context.table, feature_index, rows) {
+            return score_split(
+                context.table,
+                context.targets,
+                feature_index,
+                rows,
+                context.criterion,
+                context.options.min_samples_leaf,
+                context.algorithm,
+            )
+            .map(|candidate| BinarySplitChoice {
+                feature_index: candidate.feature_index,
+                threshold_bin: candidate.threshold_bin,
+                score: candidate.score,
+                missing_direction: candidate.missing_direction,
+            });
         }
         return match context.algorithm {
             RegressionTreeAlgorithm::Cart => {
@@ -1396,6 +1435,7 @@ fn score_binary_split_choice(
         feature_index: candidate.feature_index,
         threshold_bin: candidate.threshold_bin,
         score: candidate.score,
+        missing_direction: candidate.missing_direction,
     })
 }
 
@@ -1413,7 +1453,8 @@ fn score_binary_split_choice_from_hist(
         RegressionFeatureHistogram::Binary {
             false_bin,
             true_bin,
-        } => score_binary_split_choice_mean_from_stats(
+            missing_bin,
+        } if missing_bin.count == 0 => score_binary_split_choice_mean_from_stats(
             context,
             feature_index,
             false_bin.count,
@@ -1423,26 +1464,39 @@ fn score_binary_split_choice_from_hist(
             true_bin.sum,
             true_bin.sum_sq,
         ),
+        RegressionFeatureHistogram::Binary { .. } => {
+            score_binary_split_choice(context, feature_index, rows)
+        }
         RegressionFeatureHistogram::Numeric {
             bins,
             observed_bins,
-        } => match context.algorithm {
-            RegressionTreeAlgorithm::Cart => score_numeric_split_choice_mean_from_hist(
-                context,
-                feature_index,
-                rows.len(),
-                bins,
-                observed_bins,
-            ),
-            RegressionTreeAlgorithm::Randomized => score_randomized_split_choice_mean_from_hist(
-                context,
-                feature_index,
-                rows,
-                bins,
-                observed_bins,
-            ),
-            RegressionTreeAlgorithm::Oblivious => None,
-        },
+        } if bins
+            .get(context.table.numeric_bin_cap())
+            .is_none_or(|missing_bin| missing_bin.count == 0) =>
+        {
+            match context.algorithm {
+                RegressionTreeAlgorithm::Cart => score_numeric_split_choice_mean_from_hist(
+                    context,
+                    feature_index,
+                    rows.len(),
+                    bins,
+                    observed_bins,
+                ),
+                RegressionTreeAlgorithm::Randomized => {
+                    score_randomized_split_choice_mean_from_hist(
+                        context,
+                        feature_index,
+                        rows,
+                        bins,
+                        observed_bins,
+                    )
+                }
+                RegressionTreeAlgorithm::Oblivious => None,
+            }
+        }
+        RegressionFeatureHistogram::Numeric { .. } => {
+            score_binary_split_choice(context, feature_index, rows)
+        }
     }
 }
 
@@ -1472,6 +1526,7 @@ fn score_binary_split_choice_mean_from_stats(
         feature_index,
         threshold_bin: 0,
         score: parent_loss - (left_loss + right_loss),
+        missing_direction: MissingBranchDirection::Node,
     })
 }
 
@@ -1519,6 +1574,7 @@ fn score_numeric_split_choice_mean_from_hist(
         feature_index,
         threshold_bin,
         score: best_score,
+        missing_direction: MissingBranchDirection::Node,
     })
 }
 
@@ -1564,6 +1620,7 @@ fn score_randomized_split_choice_mean_from_hist(
         feature_index,
         threshold_bin,
         score: parent_loss - (left_loss + right_loss),
+        missing_direction: MissingBranchDirection::Node,
     })
 }
 
@@ -1610,6 +1667,7 @@ fn score_binary_split_choice_mean(
         feature_index,
         threshold_bin: 0,
         score: parent_loss - (left_loss + right_loss),
+        missing_direction: MissingBranchDirection::Node,
     })
 }
 
@@ -1688,6 +1746,7 @@ fn score_numeric_split_mean_fast(
         feature_index,
         threshold_bin,
         score: best_score,
+        missing_direction: MissingBranchDirection::Node,
     })
 }
 
@@ -1707,6 +1766,7 @@ fn score_numeric_split_choice_mean_fast(
         feature_index: candidate.feature_index,
         threshold_bin: candidate.threshold_bin,
         score: candidate.score,
+        missing_direction: MissingBranchDirection::Node,
     })
 }
 
@@ -1767,6 +1827,7 @@ fn score_randomized_split_mean_fast(
         feature_index,
         threshold_bin,
         score,
+        missing_direction: MissingBranchDirection::Node,
     })
 }
 
@@ -1786,7 +1847,79 @@ fn score_randomized_split_choice_mean_fast(
         feature_index: candidate.feature_index,
         threshold_bin: candidate.threshold_bin,
         score: candidate.score,
+        missing_direction: MissingBranchDirection::Node,
     })
+}
+
+fn feature_has_missing(table: &dyn TableAccess, feature_index: usize, rows: &[usize]) -> bool {
+    rows.iter()
+        .any(|row_idx| table.is_missing(feature_index, *row_idx))
+}
+
+fn evaluate_regression_missing_assignment(
+    table: &dyn TableAccess,
+    targets: &[f64],
+    feature_index: usize,
+    rows: &[usize],
+    criterion: Criterion,
+    min_samples_leaf: usize,
+    threshold_bin: u16,
+    parent_loss: f64,
+) -> Option<RegressionSplitCandidate> {
+    let mut left_rows = Vec::new();
+    let mut right_rows = Vec::new();
+    let mut missing_rows = Vec::new();
+
+    for row_idx in rows.iter().copied() {
+        if table.is_missing(feature_index, row_idx) {
+            missing_rows.push(row_idx);
+        } else if table.is_binary_binned_feature(feature_index) {
+            if !table
+                .binned_boolean_value(feature_index, row_idx)
+                .expect("observed binary feature must expose boolean values")
+            {
+                left_rows.push(row_idx);
+            } else {
+                right_rows.push(row_idx);
+            }
+        } else if table.binned_value(feature_index, row_idx) <= threshold_bin {
+            left_rows.push(row_idx);
+        } else {
+            right_rows.push(row_idx);
+        }
+    }
+
+    let evaluate = |direction: MissingBranchDirection| {
+        let mut candidate_left = left_rows.clone();
+        let mut candidate_right = right_rows.clone();
+        match direction {
+            MissingBranchDirection::Left => candidate_left.extend(missing_rows.iter().copied()),
+            MissingBranchDirection::Right => candidate_right.extend(missing_rows.iter().copied()),
+            MissingBranchDirection::Node => {}
+        }
+        if candidate_left.len() < min_samples_leaf || candidate_right.len() < min_samples_leaf {
+            return None;
+        }
+
+        let score = parent_loss
+            - (regression_loss(&candidate_left, targets, criterion)
+                + regression_loss(&candidate_right, targets, criterion));
+        Some(RegressionSplitCandidate {
+            feature_index,
+            threshold_bin,
+            score,
+            missing_direction: direction,
+        })
+    };
+
+    if missing_rows.is_empty() {
+        evaluate(MissingBranchDirection::Node)
+    } else {
+        [MissingBranchDirection::Left, MissingBranchDirection::Right]
+            .into_iter()
+            .filter_map(evaluate)
+            .max_by(|left, right| left.score.total_cmp(&right.score))
+    }
 }
 
 fn score_numeric_oblivious_split_mean_fast(
@@ -2240,6 +2373,7 @@ mod tests {
                         upper_bound: 10.0,
                     },
                 ],
+                missing_bin: 128,
             },
         ];
         let options = RegressionTreeOptions::default();
@@ -2262,6 +2396,8 @@ mod tests {
                     RegressionNode::BinarySplit {
                         feature_index: 0,
                         threshold_bin: 0,
+                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
+                        missing_value: -1.0,
                         left_child: 0,
                         right_child: 1,
                         sample_count: 5,
@@ -2295,6 +2431,8 @@ mod tests {
                     RegressionNode::BinarySplit {
                         feature_index: 0,
                         threshold_bin: 0,
+                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
+                        missing_value: -1.0,
                         left_child: 0,
                         right_child: 1,
                         sample_count: 5,
@@ -2340,6 +2478,47 @@ mod tests {
             assert!(json.contains(&format!("\"tree_type\":\"{tree_type}\"")));
             assert!(json.contains("\"task\":\"regression\""));
         }
+    }
+
+    #[test]
+    fn cart_regressor_assigns_training_missing_values_to_best_child() {
+        let table = DenseTable::with_canaries(
+            vec![
+                vec![0.0],
+                vec![0.0],
+                vec![1.0],
+                vec![1.0],
+                vec![f64::NAN],
+                vec![f64::NAN],
+            ],
+            vec![0.0, 0.0, 10.0, 10.0, 0.0, 0.0],
+            0,
+        )
+        .unwrap();
+
+        let model = train_cart_regressor(&table).unwrap();
+
+        let wrapped = Model::DecisionTreeRegressor(model.clone());
+        assert_eq!(
+            wrapped.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+            vec![0.0]
+        );
+    }
+
+    #[test]
+    fn cart_regressor_defaults_unseen_missing_to_node_mean() {
+        let table = DenseTable::with_canaries(
+            vec![vec![0.0], vec![0.0], vec![1.0]],
+            vec![0.0, 0.0, 9.0],
+            0,
+        )
+        .unwrap();
+
+        let model = train_cart_regressor(&table).unwrap();
+        let wrapped = Model::DecisionTreeRegressor(model.clone());
+        let prediction = wrapped.predict_rows(vec![vec![f64::NAN]]).unwrap()[0];
+
+        assert!((prediction - 3.0).abs() < 1e-9);
     }
 
     fn table_targets(table: &dyn TableAccess) -> Vec<f64> {

@@ -335,10 +335,11 @@ fn optimize_model_detached(
     py: Python<'_>,
     model: &Model,
     physical_cores: Option<usize>,
+    missing_features: Option<Vec<usize>>,
 ) -> PyResult<CoreOptimizedModel> {
     py.detach(|| {
         model
-            .optimize_inference(physical_cores)
+            .optimize_inference_with_missing_features(physical_cores, missing_features)
             .map_err(|err| err.to_string())
     })
     .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
@@ -1604,6 +1605,10 @@ fn encode_string_labels(labels: Vec<String>) -> PyResult<TrainingTargets> {
 }
 
 fn extract_scalar(value: &Bound<PyAny>) -> PyResult<f64> {
+    if value.is_none() {
+        return Ok(f64::NAN);
+    }
+
     if let Ok(value) = value.extract::<bool>() {
         return Ok(f64::from(u8::from(value)));
     }
@@ -2076,13 +2081,14 @@ impl PyModel {
         )
     }
 
-    #[pyo3(signature = (physical_cores=None))]
+    #[pyo3(signature = (physical_cores=None, missing_features=None))]
     fn optimize_inference(
         &self,
         py: Python<'_>,
         physical_cores: Option<usize>,
+        missing_features: Option<Vec<usize>>,
     ) -> PyResult<PyOptimizedModel> {
-        let inner = optimize_model_detached(py, &self.inner, physical_cores)?;
+        let inner = optimize_model_detached(py, &self.inner, physical_cores, missing_features)?;
         Ok(PyOptimizedModel {
             inner,
             string_class_labels: self.string_class_labels.clone(),

@@ -816,6 +816,17 @@ def test_predict_rejects_missing_named_feature(
         model.predict({"f0": [0.0, 1.0]})
 
 
+def test_train_and_predict_handle_python_none_missing_values() -> None:
+    X = [[0.0], [1.0], [None], [None]]
+    y = np.array([0.0, 1.0, 0.0, 0.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    preds = model.predict([[None], [0.0], [1.0]])
+
+    assert np.array_equal(preds, np.array([0.0, 0.0, 1.0]))
+
+
 def test_predict_rejects_unexpected_named_feature(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -865,6 +876,21 @@ def test_optimize_inference_preserves_predictions_and_ir(
         model.predict(X_with_unused),
         atol=PREDICTION_TOLERANCE,
         rtol=PREDICTION_TOLERANCE,
+    )
+
+
+def test_optimize_inference_missing_features_option_changes_missing_checks() -> None:
+    X = np.array([[0.0], [0.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    missing_aware = model.optimize_inference(physical_cores=1)
+    missing_disabled = model.optimize_inference(physical_cores=1, missing_features=[])
+
+    assert np.array_equal(missing_aware.predict([[np.nan]]), np.array([0.0]))
+    assert not np.array_equal(
+        missing_aware.predict([[np.nan]]),
+        missing_disabled.predict([[np.nan]]),
     )
 
 

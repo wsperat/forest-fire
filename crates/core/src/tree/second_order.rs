@@ -12,9 +12,9 @@ use crate::tree::regressor::{
     RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::tree::shared::{
-    FeatureHistogram, HistogramBin, build_feature_histograms, build_feature_histograms_parallel,
-    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
-    subtract_feature_histograms,
+    FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
+    build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
+    node_seed, partition_rows_for_binary_split, subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
@@ -550,6 +550,7 @@ fn build_standard_node(
                 context.table,
                 split.feature_index,
                 split.threshold_bin,
+                MissingBranchDirection::Right,
                 rows,
             );
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
@@ -614,6 +615,8 @@ fn build_standard_node(
                 RegressionNode::BinarySplit {
                     feature_index: split.feature_index,
                     threshold_bin: split.threshold_bin,
+                    missing_direction: MissingBranchDirection::Node,
+                    missing_value: evaluation.leaf_prediction,
                     left_child,
                     right_child,
                     sample_count: evaluation.sample_count,
@@ -798,6 +801,7 @@ fn score_feature_from_hist(
         FeatureHistogram::Binary {
             false_bin,
             true_bin,
+            ..
         } => score_binary_split_from_stats(
             context,
             feature_index,
@@ -1152,6 +1156,7 @@ fn split_oblivious_leaves_in_place(
             table,
             feature_index,
             threshold_bin,
+            MissingBranchDirection::Right,
             &mut row_indices[leaf.start..leaf.end],
         );
         let mid = leaf.start + left_count;

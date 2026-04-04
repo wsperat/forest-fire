@@ -440,6 +440,11 @@ impl TableAccess for SampledTable<'_> {
             .feature_value(feature_index, self.resolve_row(row_index))
     }
 
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base
+            .is_missing(feature_index, self.resolve_row(row_index))
+    }
+
     fn is_binary_feature(&self, index: usize) -> bool {
         self.base.is_binary_feature(index)
     }
@@ -490,6 +495,10 @@ impl TableAccess for NoCanaryTable<'_> {
 
     fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
         self.base.feature_value(feature_index, row_index)
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base.is_missing(feature_index, row_index)
     }
 
     fn is_binary_feature(&self, index: usize) -> bool {

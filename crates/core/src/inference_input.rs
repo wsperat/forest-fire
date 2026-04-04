@@ -1,15 +1,16 @@
 use super::*;
+use forestfire_data::BINARY_MISSING_BIN;
 
 #[derive(Debug, Clone)]
 enum InferenceFeatureColumn {
     Numeric(Vec<f64>),
-    Binary(Vec<bool>),
+    Binary(Vec<u8>),
 }
 
 #[derive(Debug, Clone)]
 enum InferenceBinnedColumn {
     Numeric(Vec<u16>),
-    Binary(Vec<bool>),
+    Binary(Vec<u8>),
 }
 
 #[derive(Debug, Clone)]
@@ -331,8 +332,9 @@ impl InferenceTable {
                         .into_iter()
                         .enumerate()
                         .map(|(row_index, value)| match value {
-                            v if v.total_cmp(&0.0).is_eq() => Ok(false),
-                            v if v.total_cmp(&1.0).is_eq() => Ok(true),
+                            v if v.is_nan() => Ok(BINARY_MISSING_BIN as u8),
+                            v if v.total_cmp(&0.0).is_eq() => Ok(0u8),
+                            v if v.total_cmp(&1.0).is_eq() => Ok(1u8),
                             v => Err(PredictError::InvalidBinaryValue {
                                 feature_index,
                                 row_index,
@@ -343,10 +345,13 @@ impl InferenceTable {
                     feature_columns.push(InferenceFeatureColumn::Binary(values.clone()));
                     binned_feature_columns.push(InferenceBinnedColumn::Binary(values));
                 }
-                FeaturePreprocessing::Numeric { bin_boundaries } => {
+                FeaturePreprocessing::Numeric {
+                    bin_boundaries,
+                    missing_bin,
+                } => {
                     let bins = column
                         .iter()
-                        .map(|value| infer_numeric_bin(*value, bin_boundaries))
+                        .map(|value| infer_numeric_bin(*value, bin_boundaries, *missing_bin))
                         .collect();
                     feature_columns.push(InferenceFeatureColumn::Numeric(column));
                     binned_feature_columns.push(InferenceBinnedColumn::Numeric(bins));
@@ -367,9 +372,9 @@ impl InferenceTable {
             .map(
                 |feature_index| match &self.binned_feature_columns[feature_index] {
                     InferenceBinnedColumn::Numeric(values) => compact_binned_column(values),
-                    InferenceBinnedColumn::Binary(values) => CompactBinnedColumn::U8(
-                        values.iter().map(|value| u8::from(*value)).collect(),
-                    ),
+                    InferenceBinnedColumn::Binary(values) => {
+                        CompactBinnedColumn::U8(values.clone())
+                    }
                 },
             )
             .collect();
@@ -395,25 +400,11 @@ impl ColumnMajorBinnedMatrix {
         let columns = projection
             .iter()
             .map(|feature_index| {
-                if table.is_binary_binned_feature(*feature_index) {
-                    CompactBinnedColumn::U8(
-                        (0..table.n_rows())
-                            .map(|row_index| {
-                                u8::from(
-                                    table
-                                        .binned_boolean_value(*feature_index, row_index)
-                                        .unwrap_or(false),
-                                )
-                            })
-                            .collect(),
-                    )
-                } else {
-                    compact_binned_column(
-                        &(0..table.n_rows())
-                            .map(|row_index| table.binned_value(*feature_index, row_index))
-                            .collect::<Vec<_>>(),
-                    )
-                }
+                compact_binned_column(
+                    &(0..table.n_rows())
+                        .map(|row_index| table.binned_value(*feature_index, row_index))
+                        .collect::<Vec<_>>(),
+                )
             })
             .collect();
 
@@ -426,25 +417,11 @@ impl ColumnMajorBinnedMatrix {
     pub(crate) fn from_table_access(table: &dyn TableAccess) -> Self {
         let columns = (0..table.n_features())
             .map(|feature_index| {
-                if table.is_binary_binned_feature(feature_index) {
-                    CompactBinnedColumn::U8(
-                        (0..table.n_rows())
-                            .map(|row_index| {
-                                u8::from(
-                                    table
-                                        .binned_boolean_value(feature_index, row_index)
-                                        .unwrap_or(false),
-                                )
-                            })
-                            .collect(),
-                    )
-                } else {
-                    compact_binned_column(
-                        &(0..table.n_rows())
-                            .map(|row_index| table.binned_value(feature_index, row_index))
-                            .collect::<Vec<_>>(),
-                    )
-                }
+                compact_binned_column(
+                    &(0..table.n_rows())
+                        .map(|row_index| table.binned_value(feature_index, row_index))
+                        .collect::<Vec<_>>(),
+                )
             })
             .collect();
 
@@ -497,6 +474,11 @@ impl TableAccess for ProjectedTableView<'_> {
             .feature_value(self.projection[feature_index], row_index)
     }
 
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base
+            .is_missing(self.projection[feature_index], row_index)
+    }
+
     fn is_binary_feature(&self, index: usize) -> bool {
         self.base.is_binary_feature(self.projection[index])
     }
@@ -526,7 +508,10 @@ impl TableAccess for ProjectedTableView<'_> {
     }
 }
 
-fn infer_numeric_bin(value: f64, boundaries: &[NumericBinBoundary]) -> u16 {
+fn infer_numeric_bin(value: f64, boundaries: &[NumericBinBoundary], missing_bin: u16) -> u16 {
+    if value.is_nan() {
+        return missing_bin;
+    }
     boundaries
         .iter()
         .find(|boundary| value <= boundary.upper_bound)
@@ -568,7 +553,17 @@ impl TableAccess for InferenceTable {
     fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
         match &self.feature_columns[feature_index] {
             InferenceFeatureColumn::Numeric(values) => values[row_index],
-            InferenceFeatureColumn::Binary(values) => f64::from(u8::from(values[row_index])),
+            InferenceFeatureColumn::Binary(values) => match values[row_index] {
+                value if value == BINARY_MISSING_BIN as u8 => f64::NAN,
+                value => f64::from(value),
+            },
+        }
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        match &self.feature_columns[feature_index] {
+            InferenceFeatureColumn::Numeric(values) => values[row_index].is_nan(),
+            InferenceFeatureColumn::Binary(values) => values[row_index] == BINARY_MISSING_BIN as u8,
         }
     }
 
@@ -589,7 +584,11 @@ impl TableAccess for InferenceTable {
     fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
         match &self.binned_feature_columns[feature_index] {
             InferenceBinnedColumn::Numeric(_) => None,
-            InferenceBinnedColumn::Binary(values) => Some(values[row_index]),
+            InferenceBinnedColumn::Binary(values) => match values[row_index] {
+                value if value == BINARY_MISSING_BIN as u8 => None,
+                0 => Some(false),
+                _ => Some(true),
+            },
         }
     }
 
@@ -633,25 +632,17 @@ fn polars_column_values(column: &Column) -> Result<Vec<f64>, PredictError> {
             .bool()?
             .into_iter()
             .enumerate()
-            .map(|(row_index, value)| {
+            .map(|(_row_index, value)| {
                 value
                     .map(|value| f64::from(u8::from(value)))
-                    .ok_or_else(|| PredictError::NullValue {
-                        feature: name.clone(),
-                        row_index,
-                    })
+                    .unwrap_or(f64::NAN)
             })
             .collect(),
         DataType::Float64 => series
             .f64()?
             .into_iter()
             .enumerate()
-            .map(|(row_index, value)| {
-                value.ok_or_else(|| PredictError::NullValue {
-                    feature: name.clone(),
-                    row_index,
-                })
-            })
+            .map(|(_row_index, value)| value.unwrap_or(f64::NAN))
             .collect(),
         DataType::Float32
         | DataType::Int8
@@ -667,12 +658,7 @@ fn polars_column_values(column: &Column) -> Result<Vec<f64>, PredictError> {
                 .f64()?
                 .into_iter()
                 .enumerate()
-                .map(|(row_index, value)| {
-                    value.ok_or_else(|| PredictError::NullValue {
-                        feature: name.clone(),
-                        row_index,
-                    })
-                })
+                .map(|(_row_index, value)| value.unwrap_or(f64::NAN))
                 .collect()
         }
         dtype => Err(PredictError::UnsupportedFeatureType {

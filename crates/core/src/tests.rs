@@ -1606,6 +1606,144 @@ fn model_rejects_missing_named_feature() {
 }
 
 #[test]
+fn optimized_classifier_preserves_missing_routing() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Gini,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+        },
+    )
+    .unwrap();
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let rows = vec![vec![0.0], vec![1.0], vec![f64::NAN]];
+
+    assert_eq!(
+        model.predict_rows(rows.clone()).unwrap(),
+        optimized.predict_rows(rows).unwrap()
+    );
+}
+
+#[test]
+fn optimized_regressor_preserves_missing_routing() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 10.0, 10.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Mean,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+        },
+    )
+    .unwrap();
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let rows = vec![vec![0.0], vec![1.0], vec![f64::NAN]];
+
+    assert_eq!(
+        model.predict_rows(rows.clone()).unwrap(),
+        optimized.predict_rows(rows).unwrap()
+    );
+}
+
+#[test]
+fn optimized_missing_feature_configuration_can_skip_missing_checks() {
+    let table = DenseTable::with_canaries(
+        vec![vec![0.0], vec![0.0], vec![1.0]],
+        vec![0.0, 0.0, 1.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Gini,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+        },
+    )
+    .unwrap();
+
+    let missing_aware = model.optimize_inference(Some(1)).unwrap();
+    let missing_disabled = model
+        .optimize_inference_with_missing_features(Some(1), Some(Vec::new()))
+        .unwrap();
+
+    assert_eq!(
+        missing_aware.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        vec![0.0]
+    );
+    assert_ne!(
+        missing_aware.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        missing_disabled.predict_rows(vec![vec![f64::NAN]]).unwrap()
+    );
+}
+
+#[test]
 fn model_rejects_unexpected_named_feature() {
     let table = DenseTable::with_canaries(
         vec![

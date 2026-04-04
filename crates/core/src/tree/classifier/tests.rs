@@ -270,6 +270,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     upper_bound: 10.0,
                 },
             ],
+            missing_bin: 128,
         },
     ];
     let options = DecisionTreeOptions::default();
@@ -295,6 +296,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     feature_index: 1,
                     fallback_class_index: 0,
                     branches: vec![(0, 0), (127, 1)],
+                    missing_child: None,
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.24,
@@ -328,6 +330,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     feature_index: 1,
                     fallback_class_index: 0,
                     branches: vec![(0, 0), (127, 1)],
+                    missing_child: None,
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.24,
@@ -360,6 +363,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::BinarySplit {
                     feature_index: 0,
                     threshold_bin: 0,
+                    missing_direction: crate::tree::shared::MissingBranchDirection::Node,
                     left_child: 0,
                     right_child: 1,
                     sample_count: 5,
@@ -394,6 +398,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::BinarySplit {
                     feature_index: 0,
                     threshold_bin: 0,
+                    missing_direction: crate::tree::shared::MissingBranchDirection::Node,
                     left_child: 0,
                     right_child: 1,
                     sample_count: 5,
@@ -417,6 +422,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             splits: vec![ObliviousSplit {
                 feature_index: 0,
                 threshold_bin: 0,
+                missing_directions: Vec::new(),
                 sample_count: 4,
                 impurity: 0.5,
                 gain: 0.25,
@@ -442,6 +448,53 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
         assert!(json.contains(&format!("\"tree_type\":\"{tree_type}\"")));
         assert!(json.contains("\"task\":\"classification\""));
     }
+}
+
+#[test]
+fn cart_classifier_assigns_training_missing_values_to_best_child() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+
+    let model = train_cart(&table).unwrap();
+
+    assert_eq!(
+        model.predict_table(&table),
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    );
+    let wrapped = Model::DecisionTreeClassifier(model.clone());
+    assert_eq!(
+        wrapped.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        vec![0.0]
+    );
+}
+
+#[test]
+fn cart_classifier_defaults_unseen_missing_to_node_majority() {
+    let table = DenseTable::with_canaries(
+        vec![vec![0.0], vec![0.0], vec![1.0]],
+        vec![0.0, 0.0, 1.0],
+        0,
+    )
+    .unwrap();
+
+    let model = train_cart(&table).unwrap();
+
+    let wrapped = Model::DecisionTreeClassifier(model.clone());
+    assert_eq!(
+        wrapped.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        vec![0.0]
+    );
 }
 
 fn table_targets(table: &dyn TableAccess) -> Vec<f64> {

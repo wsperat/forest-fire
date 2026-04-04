@@ -479,6 +479,11 @@ impl TableAccess for SampledTable<'_> {
             .feature_value(feature_index, self.resolve_row(row_index))
     }
 
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base
+            .is_missing(feature_index, self.resolve_row(row_index))
+    }
+
     fn is_binary_feature(&self, index: usize) -> bool {
         self.base.is_binary_feature(index)
     }
@@ -806,6 +811,10 @@ mod tests {
 
         fn feature_value(&self, _feature_index: usize, _row_index: usize) -> f64 {
             0.0
+        }
+
+        fn is_missing(&self, _feature_index: usize, _row_index: usize) -> bool {
+            false
         }
 
         fn is_binary_feature(&self, _index: usize) -> bool {
