@@ -20,11 +20,12 @@ tasks:
     cmds:
       - >-
         uv run isort --check-only
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - >-
         uv run ruff check
         bindings/python
@@ -34,22 +35,24 @@ tasks:
         tests/python
       - >-
         uv run ruff format --check
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   lint:
     desc: Auto-fix linting and formatting issues
     cmds:
       - >-
         uv run isort
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - >-
         uv run ruff check --fix
         bindings/python
@@ -59,11 +62,12 @@ tasks:
         tests/python
       - >-
         uv run ruff format
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - uv run yamlfix Taskfile.yaml .pre-commit-config.yaml .github/workflows
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   mypy:
