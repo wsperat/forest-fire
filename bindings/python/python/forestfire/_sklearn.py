@@ -1,76 +1,59 @@
+# mypy: disable-error-code="import-untyped,misc,no-redef,attr-defined"
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 from ._core import Model, train
 
-if TYPE_CHECKING:
+try:
+    from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
+except ImportError:
 
     class BaseEstimator:
-        def get_params(self, deep: bool = True) -> dict[str, Any]: ...
+        def get_params(self, deep: bool = True) -> dict[str, Any]:
+            del deep
+            return {name: getattr(self, name) for name in self._parameter_names()}
 
-        def set_params(self, **params: Any) -> BaseEstimator: ...
+        def set_params(self, **params: Any) -> BaseEstimator:
+            valid_params = set(self._parameter_names())
+            for key, value in params.items():
+                if key not in valid_params:
+                    raise ValueError(
+                        f"Invalid parameter '{key}' for estimator {type(self).__name__}."
+                    )
+                setattr(self, key, value)
+            return self
+
+        @classmethod
+        def _parameter_names(cls) -> list[str]:
+            names = []
+            for name in cls.__init__.__code__.co_varnames[
+                1 : cls.__init__.__code__.co_argcount
+            ]:
+                if name != "self":
+                    names.append(name)
+            return names
 
     class ClassifierMixin:
-        def predict(self, x: Any) -> Any: ...
-
-        def score(self, x: Any, y: Any) -> float: ...
+        def score(self, x: Any, y: Any) -> float:
+            predictions = np.asarray(self.predict(x))
+            targets = np.asarray(y)
+            return float(np.mean(predictions == targets))
 
     class RegressorMixin:
-        def predict(self, x: Any) -> Any: ...
-
-        def score(self, x: Any, y: Any) -> float: ...
-else:
-    try:
-        from sklearn.base import BaseEstimator as BaseEstimator
-        from sklearn.base import ClassifierMixin as ClassifierMixin
-        from sklearn.base import RegressorMixin as RegressorMixin
-    except ImportError:
-
-        class BaseEstimator:
-            def get_params(self, deep: bool = True) -> dict[str, Any]:
-                del deep
-                return {name: getattr(self, name) for name in self._parameter_names()}
-
-            def set_params(self, **params: Any) -> BaseEstimator:
-                valid_params = set(self._parameter_names())
-                for key, value in params.items():
-                    if key not in valid_params:
-                        raise ValueError(
-                            f"Invalid parameter '{key}' for estimator {type(self).__name__}."
-                        )
-                    setattr(self, key, value)
-                return self
-
-            @classmethod
-            def _parameter_names(cls) -> list[str]:
-                names = []
-                for name in cls.__init__.__code__.co_varnames[
-                    1 : cls.__init__.__code__.co_argcount
-                ]:
-                    if name != "self":
-                        names.append(name)
-                return names
-
-        class ClassifierMixin:
-            def score(self, x: Any, y: Any) -> float:
-                predictions = np.asarray(self.predict(x))
-                targets = np.asarray(y)
-                return float(np.mean(predictions == targets))
-
-        class RegressorMixin:
-            def score(self, x: Any, y: Any) -> float:
-                predictions = np.asarray(self.predict(x), dtype=np.float64)
-                targets = np.asarray(y, dtype=np.float64)
-                residual = np.sum((targets - predictions) ** 2)
-                total = np.sum((targets - np.mean(targets)) ** 2)
-                if total == 0.0:
-                    return 1.0 if residual == 0.0 else 0.0
-                return float(1.0 - (residual / total))
+        def score(self, x: Any, y: Any) -> float:
+            predictions = np.asarray(self.predict(x), dtype=np.float64)
+            targets = np.asarray(y, dtype=np.float64)
+            residual = np.sum((targets - predictions) ** 2)
+            total = np.sum((targets - np.mean(targets)) ** 2)
+            if total == 0.0:
+                return 1.0 if residual == 0.0 else 0.0
+            return float(1.0 - (residual / total))
 
 
 def _resolve_n_jobs(n_jobs: int | None) -> int | None:
