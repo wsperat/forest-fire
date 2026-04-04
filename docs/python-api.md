@@ -6,6 +6,7 @@ The Python surface is centered on:
 - `train(...)`
 - `Model`
 - `OptimizedModel`
+- sklearn-compatible wrappers in `forestfire.tree`, `forestfire.forest`, and `forestfire.gbm`
 
 ## Training
 
@@ -216,6 +217,76 @@ The key API distinction is:
 - inference should normally use raw inputs directly
 
 That means `Table` is a training-oriented preprocessing container, not the preferred prediction input type.
+
+## Sklearn wrappers
+
+ForestFire also exposes sklearn-compatible estimators on top of the Rust
+backend.
+
+Import paths:
+
+- `from forestfire.tree import ...`
+- `from forestfire.forest import ...`
+- `from forestfire.gbm import ...`
+
+Examples:
+
+```python
+from forestfire.tree import ObliviousRegressor
+from forestfire.forest import CARTRandomForestRegressor
+from forestfire.gbm import ExtraGBMRegressor
+
+tree = ObliviousRegressor(max_depth=4).fit(X, y)
+forest = CARTRandomForestRegressor(n_estimators=200).fit(X, y)
+gbm = ExtraGBMRegressor(n_estimators=100, learning_rate=0.05).fit(X, y)
+```
+
+Available wrappers:
+
+- `forestfire.tree`
+- `ID3Classifier`
+- `C45Classifier`
+- `CARTClassifier`
+- `ExtraClassifier`
+- `ObliviousClassifier`
+- `CARTRegressor`
+- `ExtraRegressor`
+- `ObliviousRegressor`
+
+- `forestfire.forest`
+- `ID3RandomForestClassifier`
+- `C45RandomForestClassifier`
+- `CARTRandomForestClassifier`
+- `ExtraRandomForestClassifier`
+- `ObliviousRandomForestClassifier`
+- `CARTRandomForestRegressor`
+- `ExtraRandomForestRegressor`
+- `ObliviousRandomForestRegressor`
+
+- `forestfire.gbm`
+- `CARTGBMClassifier`
+- `ExtraGBMClassifier`
+- `ObliviousGBMClassifier`
+- `CARTGBMRegressor`
+- `ExtraGBMRegressor`
+- `ObliviousGBMRegressor`
+
+Sklearn wrapper semantics:
+
+- they call the same Rust-backed `train(...)` API under the hood
+- `fit(...)`, `predict(...)`, and classifier `predict_proba(...)` are supported
+- fitted estimators expose `model_`
+- classifiers expose `classes_`
+- fitted estimators expose `n_features_in_` when the input shape is available
+- `get_params(...)` and `set_params(...)` are supported
+- `sample_weight` is currently rejected
+
+Wrapper defaults intentionally differ from raw `train(...)` in one place:
+
+- sklearn wrappers default to `canaries=0`
+
+That avoids canary-based early stopping surprising users on small sklearn-style
+toy datasets.
 
 ## Missing values
 

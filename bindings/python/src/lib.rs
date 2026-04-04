@@ -2607,7 +2607,7 @@ impl PyTable {
 }
 
 #[pymodule]
-fn forestfire(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+fn _core(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyModel>()?;
     m.add_class::<PyOptimizedModel>()?;
     m.add_class::<PyTable>()?;

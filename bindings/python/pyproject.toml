@@ -3,8 +3,8 @@ requires = ["maturin>=1.4,<2"]
 build-backend = "maturin"
 
 [project]
-name = "forestfire"
-version = "0.1.5"
+name = "forestfire-ml"
+version = "0.2.0"
 description = "Tree-based learning in Rust with a Python API."
 readme = "PYPI.md"
 license = "MIT"
@@ -41,8 +41,14 @@ pyarrow = [
 ]
 
 [tool.maturin]
-module-name = "forestfire"
-include = ["forestfire.pyi", "PYPI.md", "LICENSE"]
+module-name = "forestfire._core"
+python-source = "python"
+include = [
+  "python/forestfire/_core.pyi",
+  "python/forestfire/py.typed",
+  "PYPI.md",
+  "LICENSE",
+]
 
 [dependency-groups]
 dev = [
@@ -50,4 +56,5 @@ dev = [
   "numpy>=2,<3",
   "pyarrow>=18,<20",
   "maturin>=1.4,<2",
+  "scikit-learn>=1.6,<2",
 ]
