@@ -17,6 +17,7 @@
 
 use forestfire_data::{
     BinnedColumnKind, MAX_NUMERIC_BINS, NumericBins, TableAccess, numeric_bin_boundaries,
+    numeric_missing_bin,
 };
 #[cfg(feature = "polars")]
 use polars::prelude::{Column, DataFrame, DataType, IdxSize, LazyFrame};
@@ -24,7 +25,7 @@ use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -196,9 +197,54 @@ pub enum FeaturePreprocessing {
     /// Numeric features are represented by explicit bin boundaries.
     Numeric {
         bin_boundaries: Vec<NumericBinBoundary>,
+        missing_bin: u16,
     },
     /// Binary features do not require numeric bin boundaries.
     Binary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingValueStrategy {
+    Heuristic,
+    Optimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MissingValueStrategyConfig {
+    Global(MissingValueStrategy),
+    PerFeature(BTreeMap<usize, MissingValueStrategy>),
+}
+
+impl MissingValueStrategyConfig {
+    pub fn heuristic() -> Self {
+        Self::Global(MissingValueStrategy::Heuristic)
+    }
+
+    pub fn optimal() -> Self {
+        Self::Global(MissingValueStrategy::Optimal)
+    }
+
+    pub fn resolve_for_feature_count(
+        &self,
+        feature_count: usize,
+    ) -> Result<Vec<MissingValueStrategy>, TrainError> {
+        match self {
+            MissingValueStrategyConfig::Global(strategy) => Ok(vec![*strategy; feature_count]),
+            MissingValueStrategyConfig::PerFeature(strategies) => {
+                let mut resolved = vec![MissingValueStrategy::Heuristic; feature_count];
+                for (&feature_index, &strategy) in strategies {
+                    if feature_index >= feature_count {
+                        return Err(TrainError::InvalidMissingValueStrategyFeature {
+                            feature_index,
+                            feature_count,
+                        });
+                    }
+                    resolved[feature_index] = strategy;
+                }
+                Ok(resolved)
+            }
+        }
+    }
 }
 
 /// Unified training configuration shared by the Rust and Python entry points.
@@ -206,7 +252,7 @@ pub enum FeaturePreprocessing {
 /// The crate keeps one normalized config type so the binding layer only has to
 /// perform input validation and type conversion; all semantic decisions happen
 /// from this one structure downward.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TrainConfig {
     /// High-level training family.
     pub algorithm: TrainAlgorithm,
@@ -240,6 +286,14 @@ pub struct TrainConfig {
     pub top_gradient_fraction: Option<f64>,
     /// Fraction of the remaining rows randomly retained by GOSS sampling.
     pub other_gradient_fraction: Option<f64>,
+    /// Strategy used to evaluate missing-value routing during split search.
+    pub missing_value_strategy: MissingValueStrategyConfig,
+    /// Optional numeric histogram bin configuration for training-time split search.
+    ///
+    /// `None` preserves the incoming table's existing numeric bins. `Some(...)`
+    /// rebuilds the numeric training view at the requested resolution before
+    /// fitting, while leaving the caller's source table unchanged.
+    pub histogram_bins: Option<NumericBins>,
 }
 
 impl Default for TrainConfig {
@@ -261,6 +315,8 @@ impl Default for TrainConfig {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         }
     }
 }
@@ -298,6 +354,10 @@ pub enum TrainError {
     InvalidMinSamplesLeaf(usize),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
+    InvalidMissingValueStrategyFeature {
+        feature_index: usize,
+        feature_count: usize,
+    },
 }
 
 impl Display for TrainError {
@@ -357,6 +417,14 @@ impl Display for TrainError {
                     count
                 )
             }
+            TrainError::InvalidMissingValueStrategyFeature {
+                feature_index,
+                feature_count,
+            } => write!(
+                f,
+                "missing_value_strategy references feature {}, but the training table only has {} features.",
+                feature_index, feature_count
+            ),
         }
     }
 }
@@ -540,10 +608,34 @@ pub(crate) fn capture_feature_preprocessing(table: &dyn TableAccess) -> Vec<Feat
                     .into_iter()
                     .map(|(bin, upper_bound)| NumericBinBoundary { bin, upper_bound })
                     .collect(),
+                    missing_bin: numeric_missing_bin(NumericBins::Fixed(table.numeric_bin_cap())),
                 }
             }
         })
         .collect()
+}
+
+fn missing_feature_enabled(
+    feature_index: usize,
+    missing_features: Option<&BTreeSet<usize>>,
+) -> bool {
+    missing_features.is_none_or(|features| features.contains(&feature_index))
+}
+
+fn optimized_missing_bin(
+    preprocessing: &[FeaturePreprocessing],
+    feature_index: usize,
+    missing_features: Option<&BTreeSet<usize>>,
+) -> Option<u16> {
+    if !missing_feature_enabled(feature_index, missing_features) {
+        return None;
+    }
+
+    match preprocessing.get(feature_index) {
+        Some(FeaturePreprocessing::Binary) => Some(forestfire_data::BINARY_MISSING_BIN),
+        Some(FeaturePreprocessing::Numeric { missing_bin, .. }) => Some(*missing_bin),
+        None => None,
+    }
 }
 
 impl OptimizedRuntime {
@@ -565,13 +657,17 @@ impl OptimizedRuntime {
         n_rows > 1 && self.supports_batch_matrix()
     }
 
-    fn from_model(model: &Model, feature_index_map: &[usize]) -> Self {
+    fn from_model(
+        model: &Model,
+        feature_index_map: &[usize],
+        missing_features: Option<&BTreeSet<usize>>,
+    ) -> Self {
         match model {
             Model::DecisionTreeClassifier(classifier) => {
-                Self::from_classifier(classifier, feature_index_map)
+                Self::from_classifier(classifier, feature_index_map, missing_features)
             }
             Model::DecisionTreeRegressor(regressor) => {
-                Self::from_regressor(regressor, feature_index_map)
+                Self::from_regressor(regressor, feature_index_map, missing_features)
             }
             Model::RandomForest(forest) => match forest.task() {
                 Task::Classification => {
@@ -580,7 +676,11 @@ impl OptimizedRuntime {
                         trees: tree_order
                             .into_iter()
                             .map(|tree_index| {
-                                Self::from_model(&forest.trees()[tree_index], feature_index_map)
+                                Self::from_model(
+                                    &forest.trees()[tree_index],
+                                    feature_index_map,
+                                    missing_features,
+                                )
                             })
                             .collect(),
                         class_labels: forest
@@ -594,7 +694,11 @@ impl OptimizedRuntime {
                         trees: tree_order
                             .into_iter()
                             .map(|tree_index| {
-                                Self::from_model(&forest.trees()[tree_index], feature_index_map)
+                                Self::from_model(
+                                    &forest.trees()[tree_index],
+                                    feature_index_map,
+                                    missing_features,
+                                )
                             })
                             .collect(),
                     }
@@ -607,7 +711,11 @@ impl OptimizedRuntime {
                         trees: tree_order
                             .iter()
                             .map(|tree_index| {
-                                Self::from_model(&model.trees()[*tree_index], feature_index_map)
+                                Self::from_model(
+                                    &model.trees()[*tree_index],
+                                    feature_index_map,
+                                    missing_features,
+                                )
                             })
                             .collect(),
                         tree_weights: tree_order
@@ -626,7 +734,11 @@ impl OptimizedRuntime {
                         trees: tree_order
                             .iter()
                             .map(|tree_index| {
-                                Self::from_model(&model.trees()[*tree_index], feature_index_map)
+                                Self::from_model(
+                                    &model.trees()[*tree_index],
+                                    feature_index_map,
+                                    missing_features,
+                                )
                             })
                             .collect(),
                         tree_weights: tree_order
@@ -640,7 +752,11 @@ impl OptimizedRuntime {
         }
     }
 
-    fn from_classifier(classifier: &DecisionTreeClassifier, feature_index_map: &[usize]) -> Self {
+    fn from_classifier(
+        classifier: &DecisionTreeClassifier,
+        feature_index_map: &[usize],
+        missing_features: Option<&BTreeSet<usize>>,
+    ) -> Self {
         match classifier.structure() {
             tree::classifier::TreeStructure::Standard { nodes, root } => {
                 if classifier_nodes_are_binary_only(nodes) {
@@ -650,6 +766,8 @@ impl OptimizedRuntime {
                             *root,
                             classifier.class_labels(),
                             feature_index_map,
+                            classifier.feature_preprocessing(),
+                            missing_features,
                         ),
                         class_labels: classifier.class_labels().to_vec(),
                     };
@@ -666,18 +784,51 @@ impl OptimizedRuntime {
                         tree::classifier::TreeNode::BinarySplit {
                             feature_index,
                             threshold_bin,
+                            missing_direction,
                             left_child,
                             right_child,
+                            class_counts,
                             ..
                         } => OptimizedClassifierNode::Binary {
                             feature_index: remap_feature_index(*feature_index, feature_index_map),
                             threshold_bin: *threshold_bin,
                             children: [*left_child, *right_child],
+                            missing_bin: optimized_missing_bin(
+                                classifier.feature_preprocessing(),
+                                *feature_index,
+                                missing_features,
+                            ),
+                            missing_child: if missing_feature_enabled(
+                                *feature_index,
+                                missing_features,
+                            ) {
+                                match missing_direction {
+                                    tree::shared::MissingBranchDirection::Left => Some(*left_child),
+                                    tree::shared::MissingBranchDirection::Right => {
+                                        Some(*right_child)
+                                    }
+                                    tree::shared::MissingBranchDirection::Node => None,
+                                }
+                            } else {
+                                None
+                            },
+                            missing_probabilities: if missing_feature_enabled(
+                                *feature_index,
+                                missing_features,
+                            ) && matches!(
+                                missing_direction,
+                                tree::shared::MissingBranchDirection::Node
+                            ) {
+                                Some(normalized_probabilities_from_counts(class_counts))
+                            } else {
+                                None
+                            },
                         },
                         tree::classifier::TreeNode::MultiwaySplit {
                             feature_index,
                             class_counts,
                             branches,
+                            missing_child,
                             ..
                         } => {
                             let max_bin_index = branches
@@ -696,6 +847,19 @@ impl OptimizedRuntime {
                                 ),
                                 child_lookup,
                                 max_bin_index,
+                                missing_bin: optimized_missing_bin(
+                                    classifier.feature_preprocessing(),
+                                    *feature_index,
+                                    missing_features,
+                                ),
+                                missing_child: if missing_feature_enabled(
+                                    *feature_index,
+                                    missing_features,
+                                ) {
+                                    *missing_child
+                                } else {
+                                    None
+                                },
                                 fallback_probabilities: normalized_probabilities_from_counts(
                                     class_counts,
                                 ),
@@ -729,11 +893,21 @@ impl OptimizedRuntime {
         }
     }
 
-    fn from_regressor(regressor: &DecisionTreeRegressor, feature_index_map: &[usize]) -> Self {
+    fn from_regressor(
+        regressor: &DecisionTreeRegressor,
+        feature_index_map: &[usize],
+        missing_features: Option<&BTreeSet<usize>>,
+    ) -> Self {
         match regressor.structure() {
             tree::regressor::RegressionTreeStructure::Standard { nodes, root } => {
                 Self::BinaryRegressor {
-                    nodes: build_binary_regressor_layout(nodes, *root, feature_index_map),
+                    nodes: build_binary_regressor_layout(
+                        nodes,
+                        *root,
+                        feature_index_map,
+                        regressor.feature_preprocessing(),
+                        missing_features,
+                    ),
                 }
             }
             tree::regressor::RegressionTreeStructure::Oblivious {
@@ -1181,17 +1355,40 @@ where
                 feature_index,
                 threshold_bin,
                 children,
+                missing_bin,
+                missing_child,
+                missing_probabilities,
             } => {
-                let go_right = usize::from(bin_at(*feature_index) > *threshold_bin);
+                let bin = bin_at(*feature_index);
+                if missing_bin.is_some_and(|expected| expected == bin) {
+                    if let Some(probabilities) = missing_probabilities {
+                        return probabilities;
+                    }
+                    if let Some(child_index) = missing_child {
+                        node_index = *child_index;
+                        continue;
+                    }
+                }
+                let go_right = usize::from(bin > *threshold_bin);
                 node_index = children[go_right];
             }
             OptimizedClassifierNode::Multiway {
                 feature_index,
                 child_lookup,
                 max_bin_index,
+                missing_bin,
+                missing_child,
                 fallback_probabilities,
             } => {
-                let bin = usize::from(bin_at(*feature_index));
+                let bin_value = bin_at(*feature_index);
+                if missing_bin.is_some_and(|expected| expected == bin_value) {
+                    if let Some(child_index) = missing_child {
+                        node_index = *child_index;
+                        continue;
+                    }
+                    return fallback_probabilities;
+                }
+                let bin = usize::from(bin_value);
                 if bin > *max_bin_index {
                     return fallback_probabilities;
                 }
@@ -1222,8 +1419,21 @@ where
                 threshold_bin,
                 jump_index,
                 jump_if_greater,
+                missing_bin,
+                missing_jump_index,
+                missing_probabilities,
             } => {
-                let go_right = bin_at(*feature_index) > *threshold_bin;
+                let bin = bin_at(*feature_index);
+                if missing_bin.is_some_and(|expected| expected == bin) {
+                    if let Some(probabilities) = missing_probabilities {
+                        return probabilities;
+                    }
+                    if let Some(jump_index) = missing_jump_index {
+                        node_index = *jump_index;
+                        continue;
+                    }
+                }
+                let go_right = bin > *threshold_bin;
                 node_index = if go_right == *jump_if_greater {
                     *jump_index
                 } else {
@@ -1248,8 +1458,21 @@ where
                 threshold_bin,
                 jump_index,
                 jump_if_greater,
+                missing_bin,
+                missing_jump_index,
+                missing_value,
             } => {
-                let go_right = bin_at(*feature_index) > *threshold_bin;
+                let bin = bin_at(*feature_index);
+                if missing_bin.is_some_and(|expected| expected == bin) {
+                    if let Some(value) = missing_value {
+                        return *value;
+                    }
+                    if let Some(jump_index) = missing_jump_index {
+                        node_index = *jump_index;
+                        continue;
+                    }
+                }
+                let go_right = bin > *threshold_bin;
                 node_index = if go_right == *jump_if_greater {
                     *jump_index
                 } else {
@@ -1265,6 +1488,16 @@ fn predict_binary_classifier_probabilities_column_major_matrix(
     matrix: &ColumnMajorBinnedMatrix,
     _executor: &InferenceExecutor,
 ) -> Vec<Vec<f64>> {
+    if binary_classifier_nodes_require_rowwise_missing(nodes) {
+        return (0..matrix.n_rows)
+            .map(|row_index| {
+                predict_binary_classifier_probabilities_row(nodes, |feature_index| {
+                    matrix.column(feature_index).value_at(row_index)
+                })
+                .to_vec()
+            })
+            .collect();
+    }
     (0..matrix.n_rows)
         .map(|row_index| {
             predict_binary_classifier_probabilities_row(nodes, |feature_index| {
@@ -1280,6 +1513,15 @@ fn predict_binary_regressor_column_major_matrix(
     matrix: &ColumnMajorBinnedMatrix,
     executor: &InferenceExecutor,
 ) -> Vec<f64> {
+    if binary_regressor_nodes_require_rowwise_missing(nodes) {
+        return (0..matrix.n_rows)
+            .map(|row_index| {
+                predict_binary_regressor_row(nodes, |feature_index| {
+                    matrix.column(feature_index).value_at(row_index)
+                })
+            })
+            .collect();
+    }
     let mut outputs = vec![0.0; matrix.n_rows];
     executor.fill_chunks(
         &mut outputs,
@@ -1310,6 +1552,7 @@ fn predict_binary_regressor_chunk(
                 threshold_bin,
                 jump_index,
                 jump_if_greater,
+                ..
             } => {
                 let fallthrough_index = node_index + 1;
                 if *jump_index == fallthrough_index {
@@ -1359,6 +1602,34 @@ fn predict_binary_regressor_chunk(
             }
         }
     }
+}
+
+fn binary_classifier_nodes_require_rowwise_missing(
+    nodes: &[OptimizedBinaryClassifierNode],
+) -> bool {
+    nodes.iter().any(|node| match node {
+        OptimizedBinaryClassifierNode::Leaf(_) => false,
+        OptimizedBinaryClassifierNode::Branch {
+            missing_bin,
+            missing_jump_index,
+            missing_probabilities,
+            ..
+        } => {
+            missing_bin.is_some() || missing_jump_index.is_some() || missing_probabilities.is_some()
+        }
+    })
+}
+
+fn binary_regressor_nodes_require_rowwise_missing(nodes: &[OptimizedBinaryRegressorNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        OptimizedBinaryRegressorNode::Leaf(_) => false,
+        OptimizedBinaryRegressorNode::Branch {
+            missing_bin,
+            missing_jump_index,
+            missing_value,
+            ..
+        } => missing_bin.is_some() || missing_jump_index.is_some() || missing_value.is_some(),
+    })
 }
 
 #[inline(always)]
@@ -1457,9 +1728,18 @@ fn build_binary_classifier_layout(
     root: usize,
     _class_labels: &[f64],
     feature_index_map: &[usize],
+    preprocessing: &[FeaturePreprocessing],
+    missing_features: Option<&BTreeSet<usize>>,
 ) -> Vec<OptimizedBinaryClassifierNode> {
     let mut layout = Vec::with_capacity(nodes.len());
-    append_binary_classifier_node(nodes, root, &mut layout, feature_index_map);
+    append_binary_classifier_node(
+        nodes,
+        root,
+        &mut layout,
+        feature_index_map,
+        preprocessing,
+        missing_features,
+    );
     layout
 }
 
@@ -1468,6 +1748,8 @@ fn append_binary_classifier_node(
     node_index: usize,
     layout: &mut Vec<OptimizedBinaryClassifierNode>,
     feature_index_map: &[usize],
+    preprocessing: &[FeaturePreprocessing],
+    missing_features: Option<&BTreeSet<usize>>,
 ) -> usize {
     let current_index = layout.len();
     layout.push(OptimizedBinaryClassifierNode::Leaf(Vec::new()));
@@ -1481,8 +1763,10 @@ fn append_binary_classifier_node(
         tree::classifier::TreeNode::BinarySplit {
             feature_index,
             threshold_bin,
+            missing_direction,
             left_child,
             right_child,
+            class_counts,
             ..
         } => {
             let (fallthrough_child, jump_child, jump_if_greater) = if left_child == right_child {
@@ -1497,20 +1781,66 @@ fn append_binary_classifier_node(
                 }
             };
 
-            let fallthrough_index =
-                append_binary_classifier_node(nodes, fallthrough_child, layout, feature_index_map);
+            let fallthrough_index = append_binary_classifier_node(
+                nodes,
+                fallthrough_child,
+                layout,
+                feature_index_map,
+                preprocessing,
+                missing_features,
+            );
             debug_assert_eq!(fallthrough_index, current_index + 1);
             let jump_index = if jump_child == fallthrough_child {
                 fallthrough_index
             } else {
-                append_binary_classifier_node(nodes, jump_child, layout, feature_index_map)
+                append_binary_classifier_node(
+                    nodes,
+                    jump_child,
+                    layout,
+                    feature_index_map,
+                    preprocessing,
+                    missing_features,
+                )
             };
+
+            let missing_bin =
+                optimized_missing_bin(preprocessing, *feature_index, missing_features);
+            let (missing_jump_index, missing_probabilities) =
+                if missing_feature_enabled(*feature_index, missing_features) {
+                    match missing_direction {
+                        tree::shared::MissingBranchDirection::Left => (
+                            Some(if *left_child == fallthrough_child {
+                                fallthrough_index
+                            } else {
+                                jump_index
+                            }),
+                            None,
+                        ),
+                        tree::shared::MissingBranchDirection::Right => (
+                            Some(if *right_child == fallthrough_child {
+                                fallthrough_index
+                            } else {
+                                jump_index
+                            }),
+                            None,
+                        ),
+                        tree::shared::MissingBranchDirection::Node => (
+                            None,
+                            Some(normalized_probabilities_from_counts(class_counts)),
+                        ),
+                    }
+                } else {
+                    (None, None)
+                };
 
             layout[current_index] = OptimizedBinaryClassifierNode::Branch {
                 feature_index: remap_feature_index(*feature_index, feature_index_map),
                 threshold_bin: *threshold_bin,
                 jump_index,
                 jump_if_greater,
+                missing_bin,
+                missing_jump_index,
+                missing_probabilities,
             };
         }
         tree::classifier::TreeNode::MultiwaySplit { .. } => {
@@ -1535,9 +1865,18 @@ fn build_binary_regressor_layout(
     nodes: &[tree::regressor::RegressionNode],
     root: usize,
     feature_index_map: &[usize],
+    preprocessing: &[FeaturePreprocessing],
+    missing_features: Option<&BTreeSet<usize>>,
 ) -> Vec<OptimizedBinaryRegressorNode> {
     let mut layout = Vec::with_capacity(nodes.len());
-    append_binary_regressor_node(nodes, root, &mut layout, feature_index_map);
+    append_binary_regressor_node(
+        nodes,
+        root,
+        &mut layout,
+        feature_index_map,
+        preprocessing,
+        missing_features,
+    );
     layout
 }
 
@@ -1546,6 +1885,8 @@ fn append_binary_regressor_node(
     node_index: usize,
     layout: &mut Vec<OptimizedBinaryRegressorNode>,
     feature_index_map: &[usize],
+    preprocessing: &[FeaturePreprocessing],
+    missing_features: Option<&BTreeSet<usize>>,
 ) -> usize {
     let current_index = layout.len();
     layout.push(OptimizedBinaryRegressorNode::Leaf(0.0));
@@ -1557,6 +1898,8 @@ fn append_binary_regressor_node(
         tree::regressor::RegressionNode::BinarySplit {
             feature_index,
             threshold_bin,
+            missing_direction,
+            missing_value,
             left_child,
             right_child,
             ..
@@ -1573,20 +1916,63 @@ fn append_binary_regressor_node(
                 }
             };
 
-            let fallthrough_index =
-                append_binary_regressor_node(nodes, fallthrough_child, layout, feature_index_map);
+            let fallthrough_index = append_binary_regressor_node(
+                nodes,
+                fallthrough_child,
+                layout,
+                feature_index_map,
+                preprocessing,
+                missing_features,
+            );
             debug_assert_eq!(fallthrough_index, current_index + 1);
             let jump_index = if jump_child == fallthrough_child {
                 fallthrough_index
             } else {
-                append_binary_regressor_node(nodes, jump_child, layout, feature_index_map)
+                append_binary_regressor_node(
+                    nodes,
+                    jump_child,
+                    layout,
+                    feature_index_map,
+                    preprocessing,
+                    missing_features,
+                )
             };
+
+            let missing_bin =
+                optimized_missing_bin(preprocessing, *feature_index, missing_features);
+            let (missing_jump_index, missing_value) =
+                if missing_feature_enabled(*feature_index, missing_features) {
+                    match missing_direction {
+                        tree::shared::MissingBranchDirection::Left => (
+                            Some(if *left_child == fallthrough_child {
+                                fallthrough_index
+                            } else {
+                                jump_index
+                            }),
+                            None,
+                        ),
+                        tree::shared::MissingBranchDirection::Right => (
+                            Some(if *right_child == fallthrough_child {
+                                fallthrough_index
+                            } else {
+                                jump_index
+                            }),
+                            None,
+                        ),
+                        tree::shared::MissingBranchDirection::Node => (None, Some(*missing_value)),
+                    }
+                } else {
+                    (None, None)
+                };
 
             layout[current_index] = OptimizedBinaryRegressorNode::Branch {
                 feature_index: remap_feature_index(*feature_index, feature_index_map),
                 threshold_bin: *threshold_bin,
                 jump_index,
                 jump_if_greater,
+                missing_bin,
+                missing_jump_index,
+                missing_value,
             };
         }
     }

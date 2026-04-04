@@ -6,7 +6,7 @@
 //! formats. That keeps sampling views, inference-time reconstructed tables, and
 //! Arrow-backed tables interoperable.
 
-use arrow::array::{BooleanArray, Float64Array, UInt8Array, UInt16Array};
+use arrow::array::{Array, BooleanArray, Float64Array, UInt8Array, UInt16Array};
 use rand::seq::SliceRandom;
 use rand::{SeedableRng, rngs::StdRng};
 use std::cmp::Ordering;
@@ -15,6 +15,7 @@ use std::fmt::{Display, Formatter};
 
 pub const MAX_NUMERIC_BINS: usize = 128;
 const DEFAULT_CANARIES: usize = 2;
+pub const BINARY_MISSING_BIN: u16 = 2;
 
 type PreprocessedRows = (Vec<Vec<f64>>, Float64Array, usize, usize);
 
@@ -31,6 +32,7 @@ pub trait TableAccess: Sync {
     fn numeric_bin_cap(&self) -> usize;
     fn binned_feature_count(&self) -> usize;
     fn feature_value(&self, feature_index: usize, row_index: usize) -> f64;
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool;
     fn is_binary_feature(&self, index: usize) -> bool;
     fn binned_value(&self, feature_index: usize, row_index: usize) -> u16;
     fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool>;
@@ -346,7 +348,21 @@ impl DenseTable {
     pub fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
         match &self.feature_columns[feature_index] {
             FeatureColumn::Numeric(column) => column.value(row_index),
-            FeatureColumn::Binary(column) => f64::from(u8::from(column.value(row_index))),
+            FeatureColumn::Binary(column) => {
+                if column.is_null(row_index) {
+                    f64::NAN
+                } else {
+                    f64::from(u8::from(column.value(row_index)))
+                }
+            }
+        }
+    }
+
+    #[inline]
+    pub fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        match &self.feature_columns[feature_index] {
+            FeatureColumn::Numeric(column) => column.value(row_index).is_nan(),
+            FeatureColumn::Binary(column) => column.is_null(row_index),
         }
     }
 
@@ -369,14 +385,22 @@ impl DenseTable {
         match &self.binned_feature_columns[feature_index] {
             BinnedFeatureColumn::NumericU8(column) => u16::from(column.value(row_index)),
             BinnedFeatureColumn::NumericU16(column) => column.value(row_index),
-            BinnedFeatureColumn::Binary(column) => u16::from(u8::from(column.value(row_index))),
+            BinnedFeatureColumn::Binary(column) => {
+                if column.is_null(row_index) {
+                    BINARY_MISSING_BIN
+                } else {
+                    u16::from(u8::from(column.value(row_index)))
+                }
+            }
         }
     }
 
     #[inline]
     pub fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
         match &self.binned_feature_columns[feature_index] {
-            BinnedFeatureColumn::Binary(column) => Some(column.value(row_index)),
+            BinnedFeatureColumn::Binary(column) => {
+                (!column.is_null(row_index)).then(|| column.value(row_index))
+            }
             BinnedFeatureColumn::NumericU8(_) | BinnedFeatureColumn::NumericU16(_) => None,
         }
     }
@@ -607,6 +631,11 @@ impl SparseTable {
     }
 
     #[inline]
+    pub fn is_missing(&self, _feature_index: usize, _row_index: usize) -> bool {
+        false
+    }
+
+    #[inline]
     pub fn is_binary_feature(&self, _index: usize) -> bool {
         true
     }
@@ -668,7 +697,10 @@ impl Table {
     ) -> Result<Self, DenseTableError> {
         let (columns, target, n_rows, n_features) = preprocess_rows(&x, y)?;
 
-        if columns.iter().all(|column| is_binary_column(column)) {
+        if columns
+            .iter()
+            .all(|column| is_sparse_binary_eligible_column(column))
+        {
             Ok(Self::Sparse(SparseTable::from_columns(
                 &columns,
                 target,
@@ -736,6 +768,10 @@ impl TableAccess for DenseTable {
         self.feature_value(feature_index, row_index)
     }
 
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.is_missing(feature_index, row_index)
+    }
+
     fn is_binary_feature(&self, index: usize) -> bool {
         self.is_binary_feature(index)
     }
@@ -784,6 +820,10 @@ impl TableAccess for SparseTable {
 
     fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
         self.feature_value(feature_index, row_index)
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.is_missing(feature_index, row_index)
     }
 
     fn is_binary_feature(&self, index: usize) -> bool {
@@ -851,6 +891,13 @@ impl TableAccess for Table {
         match self {
             Table::Dense(table) => table.feature_value(feature_index, row_index),
             Table::Sparse(table) => table.feature_value(feature_index, row_index),
+        }
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        match self {
+            Table::Dense(table) => table.is_missing(feature_index, row_index),
+            Table::Sparse(table) => table.is_missing(feature_index, row_index),
         }
     }
 
@@ -935,7 +982,7 @@ fn collect_columns(x: &[Vec<f64>], n_features: usize) -> Vec<Vec<f64>> {
 
 fn validate_binary_columns(columns: &[Vec<f64>]) -> Result<(), DenseTableError> {
     for (column_idx, column) in columns.iter().enumerate() {
-        if !is_binary_column(column) {
+        if !is_sparse_binary_eligible_column(column) {
             return Err(DenseTableError::NonBinaryColumn { column: column_idx });
         }
     }
@@ -970,15 +1017,29 @@ fn build_binned_feature_column(values: &[f64], numeric_bins: NumericBins) -> Bin
 
 fn is_binary_column(values: &[f64]) -> bool {
     values.iter().all(|value| {
+        value.is_nan()
+            || matches!(value.total_cmp(&0.0), Ordering::Equal)
+            || matches!(value.total_cmp(&1.0), Ordering::Equal)
+    })
+}
+
+fn is_sparse_binary_eligible_column(values: &[f64]) -> bool {
+    values.iter().all(|value| {
         matches!(value.total_cmp(&0.0), Ordering::Equal)
             || matches!(value.total_cmp(&1.0), Ordering::Equal)
     })
 }
 
-fn to_binary_values(values: &[f64]) -> Vec<bool> {
+fn to_binary_values(values: &[f64]) -> Vec<Option<bool>> {
     values
         .iter()
-        .map(|value| value.total_cmp(&1.0) == Ordering::Equal)
+        .map(|value| {
+            if value.is_nan() {
+                None
+            } else {
+                Some(value.total_cmp(&1.0) == Ordering::Equal)
+            }
+        })
         .collect()
 }
 
@@ -999,7 +1060,15 @@ pub fn numeric_bin_boundaries(values: &[f64], numeric_bins: NumericBins) -> Vec<
         return Vec::new();
     }
 
-    let mut ranked_values: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+    let mut ranked_values: Vec<(usize, f64)> = values
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, value)| !value.is_nan())
+        .collect();
+    if ranked_values.is_empty() {
+        return Vec::new();
+    }
     ranked_values.sort_by(|left, right| left.1.total_cmp(&right.1));
 
     let unique_value_count = ranked_values
@@ -1016,7 +1085,8 @@ pub fn numeric_bin_boundaries(values: &[f64], numeric_bins: NumericBins) -> Vec<
         })
         .len();
 
-    let bin_count = resolved_numeric_bin_count(values.len(), unique_value_count, numeric_bins);
+    let bin_count =
+        resolved_numeric_bin_count(ranked_values.len(), unique_value_count, numeric_bins);
     let mut unique_rank = 0usize;
     let mut start = 0usize;
     let mut boundaries = Vec::new();
@@ -1029,7 +1099,7 @@ pub fn numeric_bin_boundaries(values: &[f64], numeric_bins: NumericBins) -> Vec<
             .map_or(ranked_values.len(), |offset| start + offset);
 
         let bin = match numeric_bins {
-            NumericBins::Auto => ((start * bin_count) / values.len()) as u16,
+            NumericBins::Auto => ((start * bin_count) / ranked_values.len()) as u16,
             NumericBins::Fixed(_) => {
                 let max_bin = (bin_count - 1) as u16;
                 if unique_value_count == 1 {
@@ -1062,7 +1132,17 @@ fn bin_numeric_column(values: &[f64], numeric_bins: NumericBins) -> Vec<u16> {
         return Vec::new();
     }
 
-    let mut ranked_values: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+    let missing_bin = numeric_missing_bin(numeric_bins);
+    let mut bins = vec![missing_bin; values.len()];
+    let mut ranked_values: Vec<(usize, f64)> = values
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, value)| !value.is_nan())
+        .collect();
+    if ranked_values.is_empty() {
+        return bins;
+    }
     ranked_values.sort_by(|left, right| left.1.total_cmp(&right.1));
 
     let unique_value_count = ranked_values
@@ -1079,8 +1159,8 @@ fn bin_numeric_column(values: &[f64], numeric_bins: NumericBins) -> Vec<u16> {
         })
         .len();
 
-    let mut bins = vec![0u16; values.len()];
-    let bin_count = resolved_numeric_bin_count(values.len(), unique_value_count, numeric_bins);
+    let bin_count =
+        resolved_numeric_bin_count(ranked_values.len(), unique_value_count, numeric_bins);
     let mut unique_rank = 0usize;
     let mut start = 0usize;
 
@@ -1092,7 +1172,7 @@ fn bin_numeric_column(values: &[f64], numeric_bins: NumericBins) -> Vec<u16> {
             .map_or(ranked_values.len(), |offset| start + offset);
 
         let bin = match numeric_bins {
-            NumericBins::Auto => ((start * bin_count) / values.len()) as u16,
+            NumericBins::Auto => ((start * bin_count) / ranked_values.len()) as u16,
             NumericBins::Fixed(_) => {
                 let max_bin = (bin_count - 1) as u16;
                 if unique_value_count == 1 {
@@ -1130,6 +1210,10 @@ fn resolved_numeric_bin_count(
         }
         NumericBins::Fixed(requested) => requested.min(unique_value_count).max(1),
     }
+}
+
+pub fn numeric_missing_bin(numeric_bins: NumericBins) -> u16 {
+    numeric_bins.cap() as u16
 }
 
 fn highest_power_of_two_at_most(value: usize) -> usize {

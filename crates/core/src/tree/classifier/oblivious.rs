@@ -1,4 +1,5 @@
 use super::*;
+use crate::tree::shared::MissingBranchDirection;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone)]
@@ -106,6 +107,7 @@ pub(super) fn train_oblivious_structure(
         splits.push(ObliviousSplit {
             feature_index: best_split.feature_index,
             threshold_bin: best_split.threshold_bin,
+            missing_directions: Vec::new(),
             sample_count: table.n_rows(),
             impurity: total_impurity,
             gain: best_split.score,
@@ -219,6 +221,7 @@ fn split_oblivious_leaves_in_place(
             table,
             feature_index,
             threshold_bin,
+            MissingBranchDirection::Right,
             &mut row_indices[leaf.start..leaf.end],
         );
         let mid = leaf.start + left_count;

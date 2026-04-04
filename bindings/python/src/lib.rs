@@ -9,8 +9,9 @@
 //!   train/predict/optimize calls
 
 use forestfire_core::{
-    Criterion, IntrospectionError, MaxFeatures, Model, OptimizedModel as CoreOptimizedModel, Task,
-    TrainAlgorithm, TrainConfig, TreeType, train as train_model,
+    Criterion, IntrospectionError, MaxFeatures, MissingValueStrategy, MissingValueStrategyConfig,
+    Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType,
+    train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -335,10 +336,11 @@ fn optimize_model_detached(
     py: Python<'_>,
     model: &Model,
     physical_cores: Option<usize>,
+    missing_features: Option<Vec<usize>>,
 ) -> PyResult<CoreOptimizedModel> {
     py.detach(|| {
         model
-            .optimize_inference(physical_cores)
+            .optimize_inference_with_missing_features(physical_cores, missing_features)
             .map_err(|err| err.to_string())
     })
     .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
@@ -1604,6 +1606,10 @@ fn encode_string_labels(labels: Vec<String>) -> PyResult<TrainingTargets> {
 }
 
 fn extract_scalar(value: &Bound<PyAny>) -> PyResult<f64> {
+    if value.is_none() {
+        return Ok(f64::NAN);
+    }
+
     if let Ok(value) = value.extract::<bool>() {
         return Ok(f64::from(u8::from(value)));
     }
@@ -1749,6 +1755,73 @@ fn parse_criterion(criterion: &str) -> PyResult<Criterion> {
     }
 }
 
+fn parse_missing_value_strategy_value(value: &str) -> PyResult<MissingValueStrategy> {
+    match value {
+        "heuristic" => Ok(MissingValueStrategy::Heuristic),
+        "optimal" => Ok(MissingValueStrategy::Optimal),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported missing_value_strategy '{}'. Expected 'heuristic' or 'optimal'.",
+            value
+        ))),
+    }
+}
+
+fn parse_missing_value_strategy_key(key: &str) -> PyResult<usize> {
+    if let Some(index) = key.strip_prefix('f') {
+        return index.parse::<usize>().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!(
+                    "Invalid missing_value_strategy feature key '{}'. Expected names like 'f0' or 'col_1'.",
+                    key
+                ),
+            )
+        });
+    }
+    if let Some(index) = key.strip_prefix("col_") {
+        let parsed = index.parse::<usize>().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!(
+                    "Invalid missing_value_strategy feature key '{}'. Expected names like 'f0' or 'col_1'.",
+                    key
+                ),
+            )
+        })?;
+        return Ok(parsed.saturating_sub(1));
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        "Invalid missing_value_strategy feature key '{}'. Expected names like 'f0' or 'col_1'.",
+        key
+    )))
+}
+
+fn parse_missing_value_strategy(
+    missing_value_strategy: Option<&Bound<'_, PyAny>>,
+) -> PyResult<MissingValueStrategyConfig> {
+    let Some(missing_value_strategy) = missing_value_strategy else {
+        return Ok(MissingValueStrategyConfig::heuristic());
+    };
+    if let Ok(strategy) = missing_value_strategy.extract::<String>() {
+        return Ok(MissingValueStrategyConfig::Global(
+            parse_missing_value_strategy_value(&strategy)?,
+        ));
+    }
+    if let Ok(strategy_map) = missing_value_strategy.cast::<PyDict>() {
+        let mut resolved = BTreeMap::new();
+        for (key, value) in strategy_map.iter() {
+            let key = key.extract::<String>()?;
+            let value = value.extract::<String>()?;
+            resolved.insert(
+                parse_missing_value_strategy_key(&key)?,
+                parse_missing_value_strategy_value(&value)?,
+            );
+        }
+        return Ok(MissingValueStrategyConfig::PerFeature(resolved));
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "missing_value_strategy must be 'heuristic', 'optimal', or a dict like {'col_1': 'optimal'}.",
+    ))
+}
+
 fn parse_max_features(value: Option<&Bound<PyAny>>) -> PyResult<MaxFeatures> {
     let Some(value) = value else {
         return Ok(MaxFeatures::Auto);
@@ -1880,7 +1953,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -1892,6 +1965,7 @@ fn train(
     criterion: &str,
     canaries: usize,
     bins: Option<&Bound<PyAny>>,
+    histogram_bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
     max_depth: Option<usize>,
     min_samples_split: Option<usize>,
@@ -1904,6 +1978,7 @@ fn train(
     bootstrap: bool,
     top_gradient_fraction: Option<f64>,
     other_gradient_fraction: Option<f64>,
+    missing_value_strategy: Option<&Bound<PyAny>>,
 ) -> PyResult<PyModel> {
     let task_was_auto = task == "auto";
     let resolved_task = resolve_task(x, y, task)?;
@@ -1931,6 +2006,10 @@ fn train(
             other_gradient_fraction,
             "other_gradient_fraction",
         )?,
+        missing_value_strategy: parse_missing_value_strategy(missing_value_strategy)?,
+        histogram_bins: histogram_bins
+            .map(|value| parse_bins(Some(value)))
+            .transpose()?,
     };
     let model = train_model_detached(py, table, config)?;
 
@@ -2076,13 +2155,14 @@ impl PyModel {
         )
     }
 
-    #[pyo3(signature = (physical_cores=None))]
+    #[pyo3(signature = (physical_cores=None, missing_features=None))]
     fn optimize_inference(
         &self,
         py: Python<'_>,
         physical_cores: Option<usize>,
+        missing_features: Option<Vec<usize>>,
     ) -> PyResult<PyOptimizedModel> {
-        let inner = optimize_model_detached(py, &self.inner, physical_cores)?;
+        let inner = optimize_model_detached(py, &self.inner, physical_cores, missing_features)?;
         Ok(PyOptimizedModel {
             inner,
             string_class_labels: self.string_class_labels.clone(),

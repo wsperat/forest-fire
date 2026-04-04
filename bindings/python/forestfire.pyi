@@ -26,6 +26,7 @@ def train(
     criterion: str = "auto",
     canaries: int = 2,
     bins: str | int = "auto",
+    histogram_bins: str | int | None = None,
     physical_cores: int | None = None,
     max_depth: int | None = None,
     min_samples_split: int | None = None,
@@ -38,6 +39,7 @@ def train(
     bootstrap: bool = False,
     top_gradient_fraction: float | None = None,
     other_gradient_fraction: float | None = None,
+    missing_value_strategy: str | dict[str, str] | None = None,
 ) -> "Model": ...
 
 class OptimizedModel:
@@ -107,6 +109,7 @@ class Model:
     def optimize_inference(
         self,
         physical_cores: int | None = None,
+        missing_features: list[int] | None = None,
     ) -> "OptimizedModel": ...
     def predict(self, x: Table | Any) -> Any: ...
     def predict_proba(self, x: Table | Any) -> NDArray[np.float64]: ...

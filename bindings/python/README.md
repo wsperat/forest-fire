@@ -46,8 +46,12 @@ The detailed Python documentation now lives in the docs site:
 That includes:
 
 - training parameters
+- `bins=...` vs `histogram_bins=...`
 - supported input types
+- missing-value handling semantics
+- `missing_value_strategy="heuristic" | "optimal" | {...}`
 - optimized inference
+- selective missing checks via `optimize_inference(..., missing_features=...)`
 - used-feature projection in optimized models
 - serialization
 - tree introspection

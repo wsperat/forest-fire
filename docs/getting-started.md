@@ -15,6 +15,10 @@ print(model.predict(X))
 print(model.predict_proba(X))
 ```
 
+ForestFire also accepts common missing-value markers such as `None`,
+`np.nan`, pandas/NumPy `NaN`, and `polars` nulls during both training and
+prediction.
+
 Install:
 
 ```bash
@@ -88,3 +92,10 @@ The most important conceptual distinction is:
 - `Table` is primarily for training-time normalization and preprocessing
 - inference should usually consume raw user-facing inputs directly
 - optimized inference derives its own projected runtime representation from the trained model
+
+One more behavioral detail matters in practice:
+
+- missing values are assigned to a separate training bin per feature
+- candidate splits are chosen from the non-missing bins
+- after the best observed split is found, the learner evaluates routing missing rows left vs right and stores the better choice
+- if a split feature had no missing values at training time, a later missing value falls back to the node prediction: majority class for classification and node mean for regression

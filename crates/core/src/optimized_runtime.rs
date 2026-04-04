@@ -57,11 +57,16 @@ pub(crate) enum OptimizedClassifierNode {
         feature_index: usize,
         threshold_bin: u16,
         children: [usize; 2],
+        missing_bin: Option<u16>,
+        missing_child: Option<usize>,
+        missing_probabilities: Option<Vec<f64>>,
     },
     Multiway {
         feature_index: usize,
         child_lookup: Vec<usize>,
         max_bin_index: usize,
+        missing_bin: Option<u16>,
+        missing_child: Option<usize>,
         fallback_probabilities: Vec<f64>,
     },
 }
@@ -74,6 +79,9 @@ pub(crate) enum OptimizedBinaryClassifierNode {
         threshold_bin: u16,
         jump_index: usize,
         jump_if_greater: bool,
+        missing_bin: Option<u16>,
+        missing_jump_index: Option<usize>,
+        missing_probabilities: Option<Vec<f64>>,
     },
 }
 
@@ -85,6 +93,9 @@ pub(crate) enum OptimizedBinaryRegressorNode {
         threshold_bin: u16,
         jump_index: usize,
         jump_if_greater: bool,
+        missing_bin: Option<u16>,
+        missing_jump_index: Option<usize>,
+        missing_value: Option<f64>,
     },
 }
 

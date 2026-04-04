@@ -20,9 +20,13 @@ use crate::ir::{
     tree_type_name,
 };
 use crate::tree::shared::{
-    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    MissingBranchDirection, candidate_feature_indices, choose_random_threshold, node_seed,
+    partition_rows_for_binary_split,
 };
-use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
+use crate::{
+    Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
+    capture_feature_preprocessing,
+};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -63,13 +67,14 @@ pub enum DecisionTreeAlgorithm {
 /// The defaults are intentionally modest rather than "grow until pure", because
 /// ForestFire wants trees to be a stable building block for ensembles and
 /// interpretable standalone models.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DecisionTreeOptions {
     pub max_depth: usize,
     pub min_samples_split: usize,
     pub min_samples_leaf: usize,
     pub max_features: Option<usize>,
     pub random_seed: u64,
+    pub missing_value_strategies: Vec<MissingValueStrategy>,
 }
 
 impl Default for DecisionTreeOptions {
@@ -80,6 +85,7 @@ impl Default for DecisionTreeOptions {
             min_samples_leaf: 1,
             max_features: None,
             random_seed: 0,
+            missing_value_strategies: Vec::new(),
         }
     }
 }
@@ -132,10 +138,12 @@ pub(crate) enum TreeStructure {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct ObliviousSplit {
     pub(crate) feature_index: usize,
     pub(crate) threshold_bin: u16,
+    #[allow(dead_code)]
+    pub(crate) missing_directions: Vec<MissingBranchDirection>,
     pub(crate) sample_count: usize,
     pub(crate) impurity: f64,
     pub(crate) gain: f64,
@@ -152,6 +160,7 @@ pub(crate) enum TreeNode {
         feature_index: usize,
         fallback_class_index: usize,
         branches: Vec<(u16, usize)>,
+        missing_child: Option<usize>,
         sample_count: usize,
         impurity: f64,
         gain: f64,
@@ -160,6 +169,7 @@ pub(crate) enum TreeNode {
     BinarySplit {
         feature_index: usize,
         threshold_bin: u16,
+        missing_direction: MissingBranchDirection,
         left_child: usize,
         right_child: usize,
         sample_count: usize,
@@ -174,6 +184,7 @@ struct BinarySplitChoice {
     feature_index: usize,
     score: f64,
     threshold_bin: u16,
+    missing_direction: MissingBranchDirection,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +192,7 @@ struct MultiwaySplitChoice {
     feature_index: usize,
     score: f64,
     branch_bins: Vec<u16>,
+    missing_branch_bin: Option<u16>,
 }
 
 pub fn train_id3(train_set: &dyn TableAccess) -> Result<DecisionTreeClassifier, DecisionTreeError> {
@@ -403,7 +415,7 @@ fn train_classifier(
             &class_labels,
             criterion,
             parallelism,
-            options,
+            options.clone(),
         ),
         DecisionTreeAlgorithm::Cart | DecisionTreeAlgorithm::Randomized => {
             let mut nodes = Vec::new();
@@ -415,7 +427,7 @@ fn train_classifier(
                 algorithm,
                 criterion,
                 parallelism,
-                options,
+                options: options.clone(),
             };
             let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
             TreeStructure::Standard { nodes, root }
@@ -430,7 +442,7 @@ fn train_classifier(
                 algorithm,
                 criterion,
                 parallelism,
-                options,
+                options: options.clone(),
             };
             let root = build_multiway_node_in_place(&context, &mut nodes, &mut all_rows, 0);
             TreeStructure::Standard { nodes, root }
@@ -483,8 +495,17 @@ impl DecisionTreeClassifier {
                             feature_index,
                             fallback_class_index,
                             branches,
+                            missing_child,
                             ..
                         } => {
+                            if table.is_missing(*feature_index, row_idx) {
+                                if let Some(child_index) = missing_child {
+                                    node_index = *child_index;
+                                } else {
+                                    return self.class_labels[*fallback_class_index];
+                                }
+                                continue;
+                            }
                             let bin = table.binned_value(*feature_index, row_idx);
                             if let Some((_, child_index)) =
                                 branches.iter().find(|(branch_bin, _)| *branch_bin == bin)
@@ -497,10 +518,27 @@ impl DecisionTreeClassifier {
                         TreeNode::BinarySplit {
                             feature_index,
                             threshold_bin,
+                            missing_direction,
                             left_child,
                             right_child,
+                            class_counts,
                             ..
                         } => {
+                            if table.is_missing(*feature_index, row_idx) {
+                                match missing_direction {
+                                    MissingBranchDirection::Left => {
+                                        node_index = *left_child;
+                                    }
+                                    MissingBranchDirection::Right => {
+                                        node_index = *right_child;
+                                    }
+                                    MissingBranchDirection::Node => {
+                                        return self.class_labels
+                                            [majority_class_from_counts(class_counts)];
+                                    }
+                                }
+                                continue;
+                            }
                             let bin = table.binned_value(*feature_index, row_idx);
                             node_index = if bin <= *threshold_bin {
                                 *left_child
@@ -539,9 +577,18 @@ impl DecisionTreeClassifier {
                         TreeNode::MultiwaySplit {
                             feature_index,
                             branches,
+                            missing_child,
                             class_counts,
                             ..
                         } => {
+                            if table.is_missing(*feature_index, row_idx) {
+                                if let Some(child_index) = missing_child {
+                                    node_index = *child_index;
+                                } else {
+                                    return normalized_class_probabilities(class_counts);
+                                }
+                                continue;
+                            }
                             let bin = table.binned_value(*feature_index, row_idx);
                             if let Some((_, child_index)) =
                                 branches.iter().find(|(branch_bin, _)| *branch_bin == bin)
@@ -554,10 +601,26 @@ impl DecisionTreeClassifier {
                         TreeNode::BinarySplit {
                             feature_index,
                             threshold_bin,
+                            missing_direction,
                             left_child,
                             right_child,
+                            class_counts,
                             ..
                         } => {
+                            if table.is_missing(*feature_index, row_idx) {
+                                match missing_direction {
+                                    MissingBranchDirection::Left => {
+                                        node_index = *left_child;
+                                    }
+                                    MissingBranchDirection::Right => {
+                                        node_index = *right_child;
+                                    }
+                                    MissingBranchDirection::Node => {
+                                        return normalized_class_probabilities(class_counts);
+                                    }
+                                }
+                                continue;
+                            }
                             let bin = table.binned_value(*feature_index, row_idx);
                             node_index = if bin <= *threshold_bin {
                                 *left_child
@@ -661,6 +724,7 @@ impl DecisionTreeClassifier {
                             TreeNode::BinarySplit {
                                 feature_index,
                                 threshold_bin,
+                                missing_direction,
                                 left_child,
                                 right_child,
                                 sample_count,
@@ -673,6 +737,7 @@ impl DecisionTreeClassifier {
                                 split: binary_split_ir(
                                     *feature_index,
                                     *threshold_bin,
+                                    *missing_direction,
                                     &self.feature_preprocessing,
                                 ),
                                 children: BinaryChildren {
@@ -691,6 +756,7 @@ impl DecisionTreeClassifier {
                                 feature_index,
                                 fallback_class_index,
                                 branches,
+                                missing_child: _,
                                 sample_count,
                                 impurity,
                                 gain,
@@ -846,6 +912,7 @@ fn build_binary_node_in_place_with_hist(
         num_classes: context.class_labels.len(),
         criterion: context.criterion,
         min_samples_leaf: context.options.min_samples_leaf,
+        missing_value_strategies: &context.options.missing_value_strategies,
     };
     let histograms = histograms.unwrap_or_else(|| {
         build_classification_node_histograms(
@@ -910,6 +977,7 @@ fn build_binary_node_in_place_with_hist(
                 context.table,
                 best_split.feature_index,
                 best_split.threshold_bin,
+                best_split.missing_direction,
                 rows,
             );
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
@@ -954,6 +1022,7 @@ fn build_binary_node_in_place_with_hist(
                 TreeNode::BinarySplit {
                     feature_index: best_split.feature_index,
                     threshold_bin: best_split.threshold_bin,
+                    missing_direction: best_split.missing_direction,
                     left_child,
                     right_child,
                     sample_count: rows.len(),
@@ -1007,6 +1076,7 @@ fn build_multiway_node_in_place(
         num_classes: context.class_labels.len(),
         criterion: context.criterion,
         min_samples_leaf: context.options.min_samples_leaf,
+        missing_value_strategies: &context.options.missing_value_strategies,
     };
     let feature_indices = candidate_feature_indices(
         context.table.binned_feature_count(),
@@ -1049,12 +1119,17 @@ fn build_multiway_node_in_place(
                 context.table,
                 best_split.feature_index,
                 &best_split.branch_bins,
+                best_split.missing_branch_bin,
                 rows,
             );
             let mut branch_nodes = Vec::with_capacity(branch_ranges.len());
+            let mut missing_child = None;
             for (bin, start, end) in branch_ranges {
                 let child =
                     build_multiway_node_in_place(context, nodes, &mut rows[start..end], depth + 1);
+                if best_split.missing_branch_bin == Some(bin) {
+                    missing_child = Some(child);
+                }
                 branch_nodes.push((bin, child));
             }
 
@@ -1064,6 +1139,7 @@ fn build_multiway_node_in_place(
                     feature_index: best_split.feature_index,
                     fallback_class_index: majority_class_index,
                     branches: branch_nodes,
+                    missing_child,
                     sample_count: rows.len(),
                     impurity,
                     gain: best_split.score,

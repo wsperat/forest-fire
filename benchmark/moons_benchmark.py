@@ -1,3 +1,5 @@
+# mypy: disable-error-code="import-not-found,import-untyped"
+
 from __future__ import annotations
 
 import argparse
@@ -22,9 +24,9 @@ from common import (
 )
 from matplotlib.colors import Normalize
 from numpy.typing import NDArray
-from sklearn.datasets import make_moons  # type: ignore[import-not-found]
-from sklearn.metrics import accuracy_score, log_loss  # type: ignore[import-not-found]
-from sklearn.model_selection import train_test_split  # type: ignore[import-not-found]
+from sklearn.datasets import make_moons
+from sklearn.metrics import accuracy_score, log_loss
+from sklearn.model_selection import train_test_split
 
 
 @dataclass(frozen=True)

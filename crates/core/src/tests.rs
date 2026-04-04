@@ -57,6 +57,8 @@ fn unified_train_dispatches_regression_cart() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -154,6 +156,8 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap_err();
@@ -210,6 +214,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Mean,
         ),
@@ -234,6 +240,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Mean,
         ),
@@ -258,6 +266,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Mean,
         ),
@@ -282,6 +292,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Entropy,
         ),
@@ -306,6 +318,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Entropy,
         ),
@@ -330,6 +344,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Gini,
         ),
@@ -354,6 +370,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Gini,
         ),
@@ -378,6 +396,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Gini,
         ),
@@ -438,6 +458,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -458,6 +480,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -478,9 +502,11 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     ] {
-        let single_core = train(&regression_table, config).unwrap();
+        let single_core = train(&regression_table, config.clone()).unwrap();
         let parallel = train(
             &regression_table,
             TrainConfig {
@@ -520,6 +546,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -540,6 +568,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -560,6 +590,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -580,6 +612,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -600,9 +634,11 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     ] {
-        let single_core = train(&classification_table, config).unwrap();
+        let single_core = train(&classification_table, config.clone()).unwrap();
         let parallel = train(
             &classification_table,
             TrainConfig {
@@ -681,6 +717,8 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -705,6 +743,8 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -750,6 +790,8 @@ fn ir_exports_regression_tree_with_training_binning() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -813,6 +855,8 @@ fn ir_exports_classifier_with_multiway_postprocessing() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -871,6 +915,8 @@ fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -931,6 +977,8 @@ fn serialized_model_round_trips_through_deserialize() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -979,6 +1027,8 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1036,6 +1086,8 @@ fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1089,6 +1141,8 @@ fn optimized_oblivious_model_matches_base_on_large_batch() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1133,6 +1187,8 @@ fn optimized_cart_model_batch_and_single_row_predictions_match() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1180,6 +1236,8 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1230,6 +1288,8 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1331,6 +1391,8 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1450,6 +1512,8 @@ fn optimized_model_rejects_zero_physical_cores() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1496,6 +1560,8 @@ fn model_predicts_from_raw_rows_without_building_a_training_table() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1546,6 +1612,8 @@ fn model_predicts_from_named_columns() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1594,6 +1662,8 @@ fn model_rejects_missing_named_feature() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1603,6 +1673,150 @@ fn model_rejects_missing_named_feature() {
         .unwrap_err();
 
     assert!(matches!(err, PredictError::MissingFeature(feature) if feature == "f1"));
+}
+
+#[test]
+fn optimized_classifier_preserves_missing_routing() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Gini,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
+        },
+    )
+    .unwrap();
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let rows = vec![vec![0.0], vec![1.0], vec![f64::NAN]];
+
+    assert_eq!(
+        model.predict_rows(rows.clone()).unwrap(),
+        optimized.predict_rows(rows).unwrap()
+    );
+}
+
+#[test]
+fn optimized_regressor_preserves_missing_routing() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 10.0, 10.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Mean,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
+        },
+    )
+    .unwrap();
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let rows = vec![vec![0.0], vec![1.0], vec![f64::NAN]];
+
+    assert_eq!(
+        model.predict_rows(rows.clone()).unwrap(),
+        optimized.predict_rows(rows).unwrap()
+    );
+}
+
+#[test]
+fn optimized_missing_feature_configuration_can_skip_missing_checks() {
+    let table = DenseTable::with_canaries(
+        vec![vec![0.0], vec![0.0], vec![1.0]],
+        vec![0.0, 0.0, 1.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Gini,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
+        },
+    )
+    .unwrap();
+
+    let missing_aware = model.optimize_inference(Some(1)).unwrap();
+    let missing_disabled = model
+        .optimize_inference_with_missing_features(Some(1), Some(Vec::new()))
+        .unwrap();
+
+    assert_eq!(
+        missing_aware.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        vec![0.0]
+    );
+    assert_ne!(
+        missing_aware.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        missing_disabled.predict_rows(vec![vec![f64::NAN]]).unwrap()
+    );
 }
 
 #[test]
@@ -1639,6 +1853,8 @@ fn model_rejects_unexpected_named_feature() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1688,6 +1904,8 @@ fn model_rejects_invalid_binary_value_during_inference() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1738,6 +1956,8 @@ fn model_predicts_from_sparse_binary_columns() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1784,6 +2004,8 @@ fn model_predicts_from_polars_dataframe() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1833,6 +2055,8 @@ fn model_predicts_from_polars_lazyframe() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1882,6 +2106,8 @@ fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1953,6 +2179,8 @@ fn model_rejects_polars_nulls() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -2003,6 +2231,8 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap()
@@ -2051,6 +2281,8 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap()

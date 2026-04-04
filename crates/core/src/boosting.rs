@@ -134,10 +134,31 @@ impl GradientBoostedTrees {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn train(
         train_set: &dyn TableAccess,
         config: TrainConfig,
         parallelism: Parallelism,
+    ) -> Result<Self, BoostingError> {
+        let missing_value_strategies = config
+            .missing_value_strategy
+            .resolve_for_feature_count(train_set.binned_feature_count())
+            .unwrap_or_else(|err| {
+                panic!("unexpected training error while resolving missing strategy: {err}")
+            });
+        Self::train_with_missing_value_strategies(
+            train_set,
+            config,
+            parallelism,
+            missing_value_strategies,
+        )
+    }
+
+    pub(crate) fn train_with_missing_value_strategies(
+        train_set: &dyn TableAccess,
+        config: TrainConfig,
+        parallelism: Parallelism,
+        missing_value_strategies: Vec<crate::MissingValueStrategy>,
     ) -> Result<Self, BoostingError> {
         let n_trees = config.n_trees.unwrap_or(100);
         let learning_rate = config.learning_rate.unwrap_or(0.1);
@@ -161,6 +182,7 @@ impl GradientBoostedTrees {
             min_samples_leaf: config.min_samples_leaf.unwrap_or(1),
             max_features: Some(max_features),
             random_seed: 0,
+            missing_value_strategies,
         };
         let tree_options = SecondOrderRegressionTreeOptions {
             tree_options,
@@ -241,7 +263,7 @@ impl GradientBoostedTrees {
                 mix_seed(stage_seed, 0x6011_5A11),
             );
             let sampled_table = SampledTable::new(train_set, sampled_rows.row_indices);
-            let mut stage_tree_options = tree_options;
+            let mut stage_tree_options = tree_options.clone();
             stage_tree_options.tree_options.random_seed = stage_seed;
             let stage_result = match config.tree_type {
                 TreeType::Cart => train_cart_regressor_from_gradients_and_hessians_with_status(
@@ -477,6 +499,11 @@ impl TableAccess for SampledTable<'_> {
     fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
         self.base
             .feature_value(feature_index, self.resolve_row(row_index))
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base
+            .is_missing(feature_index, self.resolve_row(row_index))
     }
 
     fn is_binary_feature(&self, index: usize) -> bool {
@@ -806,6 +833,10 @@ mod tests {
 
         fn feature_value(&self, _feature_index: usize, _row_index: usize) -> f64 {
             0.0
+        }
+
+        fn is_missing(&self, _feature_index: usize, _row_index: usize) -> bool {
+            false
         }
 
         fn is_binary_feature(&self, _index: usize) -> bool {

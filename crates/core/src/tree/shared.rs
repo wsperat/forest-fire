@@ -1,5 +1,5 @@
 use crate::sampling::sample_feature_subset;
-use forestfire_data::TableAccess;
+use forestfire_data::{BINARY_MISSING_BIN, TableAccess};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
@@ -13,6 +13,7 @@ pub(crate) enum FeatureHistogram<T> {
     Binary {
         false_bin: T,
         true_bin: T,
+        missing_bin: T,
     },
     Numeric {
         bins: Vec<T>,
@@ -23,6 +24,28 @@ pub(crate) enum FeatureHistogram<T> {
 pub(crate) trait HistogramBin: Clone {
     fn subtract(parent: &Self, child: &Self) -> Self;
     fn is_observed(&self) -> bool;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MissingBranchDirection {
+    Left,
+    Right,
+    Node,
+}
+
+#[inline]
+pub(crate) fn numeric_missing_bin(table: &dyn TableAccess) -> u16 {
+    table.numeric_bin_cap() as u16
+}
+
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn missing_bin_for_feature(table: &dyn TableAccess, feature_index: usize) -> u16 {
+    if table.is_binary_binned_feature(feature_index) {
+        BINARY_MISSING_BIN
+    } else {
+        numeric_missing_bin(table)
+    }
 }
 
 fn build_feature_histogram_for_feature<T, MakeBin, AddRow>(
@@ -40,22 +63,21 @@ where
     if table.is_binary_binned_feature(feature_index) {
         let mut false_bin = make_bin(feature_index);
         let mut true_bin = make_bin(feature_index);
+        let mut missing_bin = make_bin(feature_index);
         for &row_idx in rows {
-            if !table
-                .binned_boolean_value(feature_index, row_idx)
-                .expect("binary feature must expose boolean values")
-            {
-                add_row(feature_index, &mut false_bin, row_idx);
-            } else {
-                add_row(feature_index, &mut true_bin, row_idx);
+            match table.binned_boolean_value(feature_index, row_idx) {
+                Some(false) => add_row(feature_index, &mut false_bin, row_idx),
+                Some(true) => add_row(feature_index, &mut true_bin, row_idx),
+                None => add_row(feature_index, &mut missing_bin, row_idx),
             }
         }
         FeatureHistogram::Binary {
             false_bin,
             true_bin,
+            missing_bin,
         }
     } else {
-        let bin_cap = table.numeric_bin_cap();
+        let bin_cap = table.numeric_bin_cap() + 1;
         let mut bins = vec![make_bin(feature_index); bin_cap];
         for &row_idx in rows {
             let bin = table.binned_value(feature_index, row_idx) as usize;
@@ -123,14 +145,17 @@ pub(crate) fn subtract_feature_histograms<T: HistogramBin>(
                     FeatureHistogram::Binary {
                         false_bin: parent_false,
                         true_bin: parent_true,
+                        missing_bin: parent_missing,
                     },
                     FeatureHistogram::Binary {
                         false_bin: child_false,
                         true_bin: child_true,
+                        missing_bin: child_missing,
                     },
                 ) => FeatureHistogram::Binary {
                     false_bin: T::subtract(parent_false, child_false),
                     true_bin: T::subtract(parent_true, child_true),
+                    missing_bin: T::subtract(parent_missing, child_missing),
                 },
                 (
                     FeatureHistogram::Numeric {
@@ -185,14 +210,17 @@ pub(crate) fn partition_rows_for_binary_split(
     table: &dyn TableAccess,
     feature_index: usize,
     threshold_bin: u16,
+    missing_direction: MissingBranchDirection,
     rows: &mut [usize],
 ) -> usize {
     let mut left = 0usize;
     for index in 0..rows.len() {
-        let go_left = if table.is_binary_binned_feature(feature_index) {
+        let go_left = if table.is_missing(feature_index, rows[index]) {
+            matches!(missing_direction, MissingBranchDirection::Left)
+        } else if table.is_binary_binned_feature(feature_index) {
             !table
                 .binned_boolean_value(feature_index, rows[index])
-                .expect("binary feature must expose boolean values")
+                .expect("observed binary feature must expose boolean values")
         } else {
             table.binned_value(feature_index, rows[index]) <= threshold_bin
         };

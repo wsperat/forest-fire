@@ -816,6 +816,114 @@ def test_predict_rejects_missing_named_feature(
         model.predict({"f0": [0.0, 1.0]})
 
 
+def test_train_and_predict_handle_python_none_missing_values() -> None:
+    X = [[0.0], [1.0], [None], [None]]
+    y = np.array([0.0, 1.0, 0.0, 0.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+
+    preds = model.predict([[None], [0.0], [1.0]])
+
+    assert np.array_equal(preds, np.array([0.0, 0.0, 1.0]))
+
+
+def test_train_accepts_string_missing_value_strategy() -> None:
+    X = [[0.0], [1.0], [None], [None]]
+    y = np.array([0.0, 1.0, 0.0, 0.0])
+
+    heuristic = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        missing_value_strategy="heuristic",
+    )
+    optimal = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        missing_value_strategy="optimal",
+    )
+
+    assert np.array_equal(
+        heuristic.predict([[None], [0.0], [1.0]]), np.array([0.0, 0.0, 1.0])
+    )
+    assert np.array_equal(
+        optimal.predict([[None], [0.0], [1.0]]), np.array([0.0, 0.0, 1.0])
+    )
+
+
+def test_train_accepts_per_column_missing_value_strategy_dict() -> None:
+    X = [
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [None, 1.0],
+        [None, 1.0],
+    ]
+    y = np.array([0.0, 1.0, 0.0, 0.0])
+
+    model = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        missing_value_strategy={"col_1": "optimal", "f1": "heuristic"},
+    )
+
+    assert np.array_equal(
+        model.predict([[None, 1.0], [1.0, 0.0]]), np.array([0.0, 1.0])
+    )
+
+
+def test_train_rejects_invalid_missing_value_strategy_string() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Unsupported missing_value_strategy"):
+        train(
+            X,
+            y,
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            missing_value_strategy="fast",
+        )
+
+
+def test_train_rejects_invalid_missing_value_strategy_dict_key() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Invalid missing_value_strategy feature key"):
+        train(
+            X,
+            y,
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            missing_value_strategy={"feature_a": "optimal"},
+        )
+
+
+def test_train_rejects_invalid_missing_value_strategy_dict_value() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Unsupported missing_value_strategy"):
+        train(
+            X,
+            y,
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            missing_value_strategy={"col_1": "fast"},
+        )
+
+
 def test_predict_rejects_unexpected_named_feature(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:
@@ -865,6 +973,21 @@ def test_optimize_inference_preserves_predictions_and_ir(
         model.predict(X_with_unused),
         atol=PREDICTION_TOLERANCE,
         rtol=PREDICTION_TOLERANCE,
+    )
+
+
+def test_optimize_inference_missing_features_option_changes_missing_checks() -> None:
+    X = np.array([[0.0], [0.0], [1.0]])
+    y = np.array([0.0, 0.0, 1.0])
+
+    model = train(X, y, task="classification", tree_type="cart", canaries=0)
+    missing_aware = model.optimize_inference(physical_cores=1)
+    missing_disabled = model.optimize_inference(physical_cores=1, missing_features=[])
+
+    assert np.array_equal(missing_aware.predict([[np.nan]]), np.array([0.0]))
+    assert not np.array_equal(
+        missing_aware.predict([[np.nan]]),
+        missing_disabled.predict([[np.nan]]),
     )
 
 
@@ -1679,12 +1802,54 @@ def test_train_accepts_fixed_bins() -> None:
     assert preds.shape == (4,)
 
 
+def test_train_accepts_histogram_bins() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0])
+
+    model = train(
+        X,
+        y,
+        task="regression",
+        tree_type="cart",
+        bins=64,
+        histogram_bins=8,
+        canaries=0,
+    )
+
+    preds = model.predict(X)
+    assert preds.shape == (4,)
+
+
+def test_train_accepts_histogram_bins_for_prebuilt_table(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    table = Table(X, y, canaries=0, bins=64)
+
+    model = train(
+        table,
+        task="classification",
+        tree_type="cart",
+        histogram_bins=8,
+    )
+
+    assert np.array_equal(model.predict(table), y)
+
+
 def test_train_rejects_invalid_bins() -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
 
     with pytest.raises(ValueError, match="between 1 and 128"):
         train(X, y, bins=256)
+
+
+def test_train_rejects_invalid_histogram_bins() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="between 1 and 128"):
+        train(X, y, histogram_bins=256)
 
 
 def test_train_rejects_y_when_x_is_already_a_table(

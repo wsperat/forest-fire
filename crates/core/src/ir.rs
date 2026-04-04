@@ -603,7 +603,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                     criterion,
                     feature_preprocessing.clone(),
                     num_features,
-                    options,
+                    options.clone(),
                     training_canaries,
                     deserialized_class_labels.clone(),
                     tree,
@@ -639,7 +639,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                     criterion,
                     feature_preprocessing.clone(),
                     num_features,
-                    options,
+                    options.clone(),
                     training_canaries,
                     tree,
                 )
@@ -721,6 +721,7 @@ fn boosted_tree_model_from_ir_parts(
                     min_samples_leaf: options.min_samples_leaf,
                     max_features: None,
                     random_seed: 0,
+                    missing_value_strategies: Vec::new(),
                 },
                 num_features,
                 feature_preprocessing,
@@ -746,6 +747,7 @@ fn boosted_tree_model_from_ir_parts(
                         min_samples_leaf: options.min_samples_leaf,
                         max_features: None,
                         random_seed: 0,
+                        missing_value_strategies: Vec::new(),
                     },
                     num_features,
                     feature_preprocessing,
@@ -860,6 +862,7 @@ fn single_model_from_ir_parts(
                     min_samples_leaf: options.min_samples_leaf,
                     max_features: None,
                     random_seed: 0,
+                    missing_value_strategies: Vec::new(),
                 },
                 num_features,
                 feature_preprocessing,
@@ -889,6 +892,7 @@ fn single_model_from_ir_parts(
                         min_samples_leaf: options.min_samples_leaf,
                         max_features: None,
                         random_seed: 0,
+                        missing_value_strategies: Vec::new(),
                     },
                     num_features,
                     feature_preprocessing,
@@ -989,6 +993,7 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         min_samples_leaf: training.min_samples_leaf.unwrap_or(1),
         max_features: None,
         random_seed: 0,
+        missing_value_strategies: Vec::new(),
     }
 }
 
@@ -1011,6 +1016,11 @@ fn feature_preprocessing_from_ir(
                 })?;
                 *slot = Some(FeaturePreprocessing::Numeric {
                     bin_boundaries: boundaries.clone(),
+                    missing_bin: boundaries
+                        .iter()
+                        .map(|boundary| boundary.bin)
+                        .max()
+                        .map_or(0, |bin| bin.saturating_add(1)),
                 });
             }
             FeatureBinning::Binary { feature_index } => {
@@ -1118,6 +1128,7 @@ fn rebuild_classifier_nodes(
                     ClassifierTreeNode::BinarySplit {
                         feature_index,
                         threshold_bin,
+                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
                         left_child: children.left,
                         right_child: children.right,
                         sample_count: stats.sample_count,
@@ -1148,6 +1159,7 @@ fn rebuild_classifier_nodes(
                             .into_iter()
                             .map(|branch| (branch.bin, branch.child))
                             .collect(),
+                        missing_child: None,
                         sample_count: stats.sample_count,
                         impurity: stats.impurity.unwrap_or(0.0),
                         gain: stats.gain.unwrap_or(0.0),
@@ -1201,6 +1213,8 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
                     RegressionNode::BinarySplit {
                         feature_index,
                         threshold_bin,
+                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
+                        missing_value: 0.0,
                         left_child: children.left,
                         right_child: children.right,
                         sample_count: stats.sample_count,
@@ -1233,6 +1247,7 @@ fn rebuild_classifier_oblivious_splits(
             } => ClassifierObliviousSplit {
                 feature_index,
                 threshold_bin,
+                missing_directions: Vec::new(),
                 sample_count: level.stats.sample_count,
                 impurity: level.stats.impurity.unwrap_or(0.0),
                 gain: level.stats.gain.unwrap_or(0.0),
@@ -1240,6 +1255,7 @@ fn rebuild_classifier_oblivious_splits(
             ObliviousSplit::BooleanTest { feature_index, .. } => ClassifierObliviousSplit {
                 feature_index,
                 threshold_bin: 0,
+                missing_directions: Vec::new(),
                 sample_count: level.stats.sample_count,
                 impurity: level.stats.impurity.unwrap_or(0.0),
                 gain: level.stats.gain.unwrap_or(0.0),
@@ -1468,7 +1484,7 @@ fn preprocessing(model: &Model) -> PreprocessingSection {
         .iter()
         .enumerate()
         .map(|(feature_index, preprocessing)| match preprocessing {
-            FeaturePreprocessing::Numeric { bin_boundaries } => FeatureBinning::Numeric {
+            FeaturePreprocessing::Numeric { bin_boundaries, .. } => FeatureBinning::Numeric {
                 feature_index,
                 boundaries: bin_boundaries.clone(),
             },
@@ -1585,7 +1601,7 @@ pub(crate) fn threshold_upper_bound(
     threshold_bin: u16,
 ) -> Option<f64> {
     match preprocessing.get(feature_index)? {
-        FeaturePreprocessing::Numeric { bin_boundaries } => bin_boundaries
+        FeaturePreprocessing::Numeric { bin_boundaries, .. } => bin_boundaries
             .iter()
             .find(|boundary| boundary.bin == threshold_bin)
             .map(|boundary| boundary.upper_bound),

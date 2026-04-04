@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "forestfire"
-version = "0.1.4"
+version = "0.1.5"
 description = "Tree-based learning in Rust with a Python API."
 readme = "PYPI.md"
 license = "MIT"
@@ -25,7 +25,6 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=2,<3",
-  "pyarrow>=19,<20",
 ]
 
 [project.urls]
@@ -36,6 +35,9 @@ Issues = "https://github.com/wsperat/forest-fire/issues"
 [project.optional-dependencies]
 polars = [
   "polars>=1,<2",
+]
+pyarrow = [
+  "pyarrow>=19,<20",
 ]
 
 [tool.maturin]

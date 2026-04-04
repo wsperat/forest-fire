@@ -12,9 +12,9 @@ use crate::tree::regressor::{
     RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::tree::shared::{
-    FeatureHistogram, HistogramBin, build_feature_histograms, build_feature_histograms_parallel,
-    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
-    subtract_feature_histograms,
+    FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
+    build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
+    node_seed, partition_rows_for_binary_split, subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
@@ -23,7 +23,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 /// Extra controls required by second-order tree training.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SecondOrderRegressionTreeOptions {
     pub tree_options: RegressionTreeOptions,
     pub l2_regularization: f64,
@@ -113,7 +113,7 @@ impl Display for SecondOrderRegressionTreeError {
 
 impl Error for SecondOrderRegressionTreeError {}
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct BuildContext<'a> {
     table: &'a dyn TableAccess,
     gradients: &'a [f64],
@@ -186,7 +186,7 @@ impl ObliviousLeafState {
         self.end - self.start
     }
 
-    fn prediction(&self, options: SecondOrderRegressionTreeOptions) -> f64 {
+    fn prediction(&self, options: &SecondOrderRegressionTreeOptions) -> f64 {
         leaf_value(
             self.gradient_sum,
             self.hessian_sum,
@@ -305,7 +305,7 @@ fn train_second_order_regressor(
     parallelism: Parallelism,
     options: SecondOrderRegressionTreeOptions,
 ) -> Result<SecondOrderRegressionTreeTrainingResult, SecondOrderRegressionTreeError> {
-    validate_inputs(train_set, gradients, hessians, options)?;
+    validate_inputs(train_set, gradients, hessians, &options)?;
 
     let (structure, root_canary_selected) = match algorithm {
         RegressionTreeAlgorithm::Cart | RegressionTreeAlgorithm::Randomized => {
@@ -317,7 +317,7 @@ fn train_second_order_regressor(
                 hessians,
                 parallelism,
                 algorithm,
-                options,
+                options: options.clone(),
             };
             let mut root_canary_selected = false;
             // This path mirrors the first-order standard-tree builders: one
@@ -339,7 +339,7 @@ fn train_second_order_regressor(
         RegressionTreeAlgorithm::Oblivious => {
             // Oblivious trees are grown a level at a time because every node at
             // the same depth shares the same feature/threshold pair.
-            train_oblivious_structure(train_set, gradients, hessians, parallelism, options)
+            train_oblivious_structure(train_set, gradients, hessians, parallelism, options.clone())
         }
     };
 
@@ -361,7 +361,7 @@ fn validate_inputs(
     train_set: &dyn TableAccess,
     gradients: &[f64],
     hessians: &[f64],
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
 ) -> Result<(), SecondOrderRegressionTreeError> {
     if train_set.n_rows() == 0 {
         return Err(SecondOrderRegressionTreeError::EmptyRows);
@@ -457,7 +457,7 @@ fn train_oblivious_structure(
                         hessians,
                         feature_index,
                         &leaves,
-                        options,
+                        &options,
                     )
                 })
                 .max_by(|left, right| left.gain.total_cmp(&right.gain))
@@ -472,7 +472,7 @@ fn train_oblivious_structure(
                         hessians,
                         feature_index,
                         &leaves,
-                        options,
+                        &options,
                     )
                 })
                 .max_by(|left, right| left.gain.total_cmp(&right.gain))
@@ -520,7 +520,10 @@ fn train_oblivious_structure(
     (
         RegressionTreeStructure::Oblivious {
             splits,
-            leaf_values: leaves.iter().map(|leaf| leaf.prediction(options)).collect(),
+            leaf_values: leaves
+                .iter()
+                .map(|leaf| leaf.prediction(&options))
+                .collect(),
             leaf_sample_counts: leaves.iter().map(ObliviousLeafState::len).collect(),
             leaf_variances: vec![None; leaves.len()],
         },
@@ -550,6 +553,7 @@ fn build_standard_node(
                 context.table,
                 split.feature_index,
                 split.threshold_bin,
+                MissingBranchDirection::Right,
                 rows,
             );
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
@@ -614,6 +618,8 @@ fn build_standard_node(
                 RegressionNode::BinarySplit {
                     feature_index: split.feature_index,
                     threshold_bin: split.threshold_bin,
+                    missing_direction: MissingBranchDirection::Node,
+                    missing_value: evaluation.leaf_prediction,
                     left_child,
                     right_child,
                     sample_count: evaluation.sample_count,
@@ -798,6 +804,7 @@ fn score_feature_from_hist(
         FeatureHistogram::Binary {
             false_bin,
             true_bin,
+            ..
         } => score_binary_split_from_stats(
             context,
             feature_index,
@@ -839,7 +846,7 @@ fn score_binary_split_from_stats(
     right_hessian_sum: f64,
 ) -> Option<SplitChoice> {
     if !children_are_splittable(
-        context.options,
+        &context.options,
         left_count,
         left_hessian_sum,
         right_count,
@@ -892,7 +899,7 @@ fn score_numeric_split_from_hist(
         let right_hessian_sum = total_hessian_sum - left_hessian_sum;
 
         if !children_are_splittable(
-            context.options,
+            &context.options,
             left_count,
             left_hessian_sum,
             right_count,
@@ -955,7 +962,7 @@ fn score_randomized_split_from_hist(
     let right_gradient_sum = total_gradient_sum - left_gradient_sum;
     let right_hessian_sum = total_hessian_sum - left_hessian_sum;
     if !children_are_splittable(
-        context.options,
+        &context.options,
         left_count,
         left_hessian_sum,
         right_count,
@@ -986,7 +993,7 @@ fn score_oblivious_split(
     hessians: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
 ) -> Option<SplitChoice> {
     if table.is_binary_binned_feature(feature_index) {
         return score_binary_oblivious_split(
@@ -1087,7 +1094,7 @@ fn score_binary_oblivious_split(
     hessians: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
 ) -> Option<SplitChoice> {
     let mut gain = 0.0;
     let mut found_valid = false;
@@ -1152,6 +1159,7 @@ fn split_oblivious_leaves_in_place(
             table,
             feature_index,
             threshold_bin,
+            MissingBranchDirection::Right,
             &mut row_indices[leaf.start..leaf.end],
         );
         let mid = leaf.start + left_count;
@@ -1176,7 +1184,7 @@ fn split_oblivious_leaves_in_place(
 }
 
 fn children_are_splittable(
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
     left_count: usize,
     left_hessian_sum: f64,
     right_count: usize,
@@ -1378,7 +1386,7 @@ mod tests {
             &gradients,
             &hessians,
             Parallelism::sequential(),
-            options,
+            options.clone(),
         )
         .unwrap();
         let parallel = train_cart_regressor_from_gradients_and_hessians(
@@ -1386,7 +1394,7 @@ mod tests {
             &gradients,
             &hessians,
             Parallelism::with_threads(2),
-            options,
+            options.clone(),
         )
         .unwrap();
 
@@ -1420,7 +1428,7 @@ mod tests {
             &gradients,
             &hessians,
             Parallelism::sequential(),
-            options,
+            options.clone(),
         )
         .unwrap();
         let parallel = train_randomized_regressor_from_gradients_and_hessians(

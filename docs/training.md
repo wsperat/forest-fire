@@ -63,6 +63,68 @@ This keeps the common path ergonomic without hiding the important distinction th
 - the valid tree families
 - the prediction API surface, especially `predict_proba(...)`
 
+## Missing values during training
+
+ForestFire treats missing values as first-class training inputs rather than as
+rows that must be dropped beforehand.
+
+Accepted missing markers include:
+
+- Python `None`
+- floating-point `NaN`
+- pandas/NumPy `NaN`
+- `polars` null values
+
+The training contract is:
+
+- every feature gets a dedicated missing bin
+- observed split search ignores that missing bin
+- missing rows are then routed according to the configured
+  `missing_value_strategy`
+
+The public strategies are:
+
+- `"heuristic"`: choose the best split from observed values first, then decide whether missing rows should go left or right for that split
+- `"optimal"`: for every candidate split, evaluate missing-left and missing-right, then choose the best full combination
+- per-column dictionary: assign `"heuristic"` or `"optimal"` feature by feature, with unspecified features defaulting to `"heuristic"`
+
+Python examples:
+
+```python
+train(X, y, missing_value_strategy="heuristic")
+train(X, y, missing_value_strategy="optimal")
+train(X, y, missing_value_strategy={"col_1": "optimal", "col_2": "heuristic"})
+train(X, y, missing_value_strategy={"f0": "optimal", "f1": "heuristic"})
+```
+
+The feature-name forms are aliases for semantic column indices:
+
+- `"col_1"` and `"f0"` both mean feature index `0`
+- `"col_2"` and `"f1"` both mean feature index `1`
+
+Why both strategies exist:
+
+- `"heuristic"` is the practical default and keeps training cost closer to ordinary split search
+- `"optimal"` can be much slower because it expands the search to all candidate split and missing-routing combinations
+
+That design matters because it separates two questions that are often muddled
+together:
+
+- what is the best split among observed values?
+- given that split, where should the missing rows go?
+
+When a node never saw missing values for its split feature during training, the
+model does not invent a learned missing branch. A later missing value at
+prediction time falls back to the node prediction instead:
+
+- majority class for classification
+- node mean for regression
+
+Current implementation note:
+
+- the strategy toggle is implemented for the standard first-order tree builders
+- the second-order boosting path currently uses the existing missing-value behavior rather than a separate heuristic-vs-optimal toggle
+
 ## Stopping and control parameters
 
 - `max_depth`
@@ -169,7 +231,9 @@ That choice reflects the project’s general design preference: use explicit tra
 ForestFire training is optimized around a compact binned core and shared row-index buffers rather than row copies.
 
 - numeric features are pre-binned into compact integer ranks, capped at `512` bins
+- each feature reserves one extra missing bin alongside the observed bins
 - `bins="auto"` chooses the highest populated power-of-two count per feature while keeping at least two rows in every realized bin
+- `histogram_bins=...` can override the numeric resolution used during split search without requiring callers to rebuild the source `Table`
 - long-running training and prediction release the Python GIL before entering the Rust hot path
 - CART and randomized trees use histogram-based numeric split search
 - standard binary trees partition row indices in place
