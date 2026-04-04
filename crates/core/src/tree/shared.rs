@@ -38,6 +38,7 @@ pub(crate) fn numeric_missing_bin(table: &dyn TableAccess) -> u16 {
     table.numeric_bin_cap() as u16
 }
 
+#[allow(dead_code)]
 #[inline]
 pub(crate) fn missing_bin_for_feature(table: &dyn TableAccess, feature_index: usize) -> u16 {
     if table.is_binary_binned_feature(feature_index) {

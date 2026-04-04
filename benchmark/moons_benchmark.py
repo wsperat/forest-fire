@@ -22,9 +22,9 @@ from common import (
 )
 from matplotlib.colors import Normalize
 from numpy.typing import NDArray
-from sklearn.datasets import make_moons  # type: ignore[import-not-found]
-from sklearn.metrics import accuracy_score, log_loss  # type: ignore[import-not-found]
-from sklearn.model_selection import train_test_split  # type: ignore[import-not-found]
+from sklearn.datasets import make_moons  # type: ignore[import-untyped]
+from sklearn.metrics import accuracy_score, log_loss  # type: ignore[import-untyped]
+from sklearn.model_selection import train_test_split  # type: ignore[import-untyped]
 
 
 @dataclass(frozen=True)

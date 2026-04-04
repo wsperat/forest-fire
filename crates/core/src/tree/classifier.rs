@@ -137,6 +137,7 @@ pub(crate) enum TreeStructure {
 pub(crate) struct ObliviousSplit {
     pub(crate) feature_index: usize,
     pub(crate) threshold_bin: u16,
+    #[allow(dead_code)]
     pub(crate) missing_directions: Vec<MissingBranchDirection>,
     pub(crate) sample_count: usize,
     pub(crate) impurity: f64,

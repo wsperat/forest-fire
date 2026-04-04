@@ -1856,6 +1856,7 @@ fn feature_has_missing(table: &dyn TableAccess, feature_index: usize, rows: &[us
         .any(|row_idx| table.is_missing(feature_index, *row_idx))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_regression_missing_assignment(
     table: &dyn TableAccess,
     targets: &[f64],

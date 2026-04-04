@@ -213,6 +213,7 @@ pub(super) fn score_binary_split_choice_from_hist(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_binary_cart_split_choice_from_counts(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
@@ -292,13 +293,11 @@ fn score_numeric_cart_split_choice_from_hist(
             right_size.saturating_sub(missing_size),
             &missing_counts,
             missing_size,
-        ) {
-            if best
-                .as_ref()
-                .is_none_or(|current: &BinarySplitChoice| candidate.score > current.score)
-            {
-                best = Some(candidate);
-            }
+        ) && best
+            .as_ref()
+            .is_none_or(|current: &BinarySplitChoice| candidate.score > current.score)
+        {
+            best = Some(candidate);
         }
     }
 

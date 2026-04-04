@@ -628,22 +628,20 @@ fn polars_column_values(column: &Column) -> Result<Vec<f64>, PredictError> {
     let name = column.name().to_string();
     let series = column.as_materialized_series();
     match series.dtype() {
-        DataType::Boolean => series
+        DataType::Boolean => Ok(series
             .bool()?
             .into_iter()
-            .enumerate()
-            .map(|(_row_index, value)| {
+            .map(|value| {
                 value
                     .map(|value| f64::from(u8::from(value)))
                     .unwrap_or(f64::NAN)
             })
-            .collect(),
-        DataType::Float64 => series
+            .collect()),
+        DataType::Float64 => Ok(series
             .f64()?
             .into_iter()
-            .enumerate()
-            .map(|(_row_index, value)| value.unwrap_or(f64::NAN))
-            .collect(),
+            .map(|value| value.unwrap_or(f64::NAN))
+            .collect()),
         DataType::Float32
         | DataType::Int8
         | DataType::Int16
@@ -654,12 +652,11 @@ fn polars_column_values(column: &Column) -> Result<Vec<f64>, PredictError> {
         | DataType::UInt32
         | DataType::UInt64 => {
             let casted = series.cast(&DataType::Float64)?;
-            casted
+            Ok(casted
                 .f64()?
                 .into_iter()
-                .enumerate()
-                .map(|(_row_index, value)| value.unwrap_or(f64::NAN))
-                .collect()
+                .map(|value| value.unwrap_or(f64::NAN))
+                .collect())
         }
         dtype => Err(PredictError::UnsupportedFeatureType {
             feature: name,
