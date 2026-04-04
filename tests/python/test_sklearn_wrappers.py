@@ -1,10 +1,13 @@
 # mypy: disable-error-code="import-not-found,import-untyped"
 
 import numpy as np
+import pytest
 from forestfire.forest import CARTRandomForestRegressor, ExtraRandomForestClassifier
 from forestfire.gbm import CARTGBMRegressor, ExtraGBMClassifier, ObliviousGBMRegressor
 from forestfire.tree import CARTClassifier, ExtraRegressor, ObliviousRegressor
-from sklearn.base import clone
+
+sklearn = pytest.importorskip("sklearn")
+clone = sklearn.base.clone
 
 
 def test_tree_wrapper_uses_expected_backend_defaults() -> None:
