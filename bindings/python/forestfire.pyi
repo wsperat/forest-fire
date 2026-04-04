@@ -38,6 +38,7 @@ def train(
     bootstrap: bool = False,
     top_gradient_fraction: float | None = None,
     other_gradient_fraction: float | None = None,
+    missing_value_strategy: str | dict[str, str] | None = None,
 ) -> "Model": ...
 
 class OptimizedModel:

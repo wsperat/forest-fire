@@ -827,6 +827,103 @@ def test_train_and_predict_handle_python_none_missing_values() -> None:
     assert np.array_equal(preds, np.array([0.0, 0.0, 1.0]))
 
 
+def test_train_accepts_string_missing_value_strategy() -> None:
+    X = [[0.0], [1.0], [None], [None]]
+    y = np.array([0.0, 1.0, 0.0, 0.0])
+
+    heuristic = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        missing_value_strategy="heuristic",
+    )
+    optimal = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        missing_value_strategy="optimal",
+    )
+
+    assert np.array_equal(
+        heuristic.predict([[None], [0.0], [1.0]]), np.array([0.0, 0.0, 1.0])
+    )
+    assert np.array_equal(
+        optimal.predict([[None], [0.0], [1.0]]), np.array([0.0, 0.0, 1.0])
+    )
+
+
+def test_train_accepts_per_column_missing_value_strategy_dict() -> None:
+    X = [
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [None, 1.0],
+        [None, 1.0],
+    ]
+    y = np.array([0.0, 1.0, 0.0, 0.0])
+
+    model = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        missing_value_strategy={"col_1": "optimal", "f1": "heuristic"},
+    )
+
+    assert np.array_equal(
+        model.predict([[None, 1.0], [1.0, 0.0]]), np.array([0.0, 1.0])
+    )
+
+
+def test_train_rejects_invalid_missing_value_strategy_string() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Unsupported missing_value_strategy"):
+        train(
+            X,
+            y,
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            missing_value_strategy="fast",
+        )
+
+
+def test_train_rejects_invalid_missing_value_strategy_dict_key() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Invalid missing_value_strategy feature key"):
+        train(
+            X,
+            y,
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            missing_value_strategy={"feature_a": "optimal"},
+        )
+
+
+def test_train_rejects_invalid_missing_value_strategy_dict_value() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="Unsupported missing_value_strategy"):
+        train(
+            X,
+            y,
+            task="classification",
+            tree_type="cart",
+            canaries=0,
+            missing_value_strategy={"col_1": "fast"},
+        )
+
+
 def test_predict_rejects_unexpected_named_feature(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:

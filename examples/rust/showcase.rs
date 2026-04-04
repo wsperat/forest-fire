@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::error::Error;
 
 use forestfire_core::{
-    Criterion, MaxFeatures, Model, OptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType,
-    train,
+    Criterion, MaxFeatures, MissingValueStrategyConfig, Model, OptimizedModel, Task,
+    TrainAlgorithm, TrainConfig, TreeType, train,
 };
 use forestfire_data::{NumericBins, Table};
 
@@ -64,6 +64,7 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -106,6 +107,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -153,6 +155,7 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -213,6 +216,7 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
         },
     )?;
 

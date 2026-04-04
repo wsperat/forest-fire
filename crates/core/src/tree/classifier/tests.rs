@@ -196,7 +196,7 @@ fn cart_can_choose_between_gini_and_entropy() {
         DecisionTreeAlgorithm::Cart,
         Criterion::Gini,
         Parallelism::sequential(),
-        options,
+        options.clone(),
     )
     .unwrap();
     let entropy_model = train_classifier(
@@ -204,7 +204,7 @@ fn cart_can_choose_between_gini_and_entropy() {
         DecisionTreeAlgorithm::Cart,
         Criterion::Entropy,
         Parallelism::sequential(),
-        options,
+        options.clone(),
     )
     .unwrap();
 
@@ -305,7 +305,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,
@@ -339,7 +339,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,
@@ -374,7 +374,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,
@@ -409,7 +409,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,

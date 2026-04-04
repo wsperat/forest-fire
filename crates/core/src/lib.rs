@@ -203,12 +203,56 @@ pub enum FeaturePreprocessing {
     Binary,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingValueStrategy {
+    Heuristic,
+    Optimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MissingValueStrategyConfig {
+    Global(MissingValueStrategy),
+    PerFeature(BTreeMap<usize, MissingValueStrategy>),
+}
+
+impl MissingValueStrategyConfig {
+    pub fn heuristic() -> Self {
+        Self::Global(MissingValueStrategy::Heuristic)
+    }
+
+    pub fn optimal() -> Self {
+        Self::Global(MissingValueStrategy::Optimal)
+    }
+
+    pub fn resolve_for_feature_count(
+        &self,
+        feature_count: usize,
+    ) -> Result<Vec<MissingValueStrategy>, TrainError> {
+        match self {
+            MissingValueStrategyConfig::Global(strategy) => Ok(vec![*strategy; feature_count]),
+            MissingValueStrategyConfig::PerFeature(strategies) => {
+                let mut resolved = vec![MissingValueStrategy::Heuristic; feature_count];
+                for (&feature_index, &strategy) in strategies {
+                    if feature_index >= feature_count {
+                        return Err(TrainError::InvalidMissingValueStrategyFeature {
+                            feature_index,
+                            feature_count,
+                        });
+                    }
+                    resolved[feature_index] = strategy;
+                }
+                Ok(resolved)
+            }
+        }
+    }
+}
+
 /// Unified training configuration shared by the Rust and Python entry points.
 ///
 /// The crate keeps one normalized config type so the binding layer only has to
 /// perform input validation and type conversion; all semantic decisions happen
 /// from this one structure downward.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TrainConfig {
     /// High-level training family.
     pub algorithm: TrainAlgorithm,
@@ -242,6 +286,8 @@ pub struct TrainConfig {
     pub top_gradient_fraction: Option<f64>,
     /// Fraction of the remaining rows randomly retained by GOSS sampling.
     pub other_gradient_fraction: Option<f64>,
+    /// Strategy used to evaluate missing-value routing during split search.
+    pub missing_value_strategy: MissingValueStrategyConfig,
 }
 
 impl Default for TrainConfig {
@@ -263,6 +309,7 @@ impl Default for TrainConfig {
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
         }
     }
 }
@@ -300,6 +347,10 @@ pub enum TrainError {
     InvalidMinSamplesLeaf(usize),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
+    InvalidMissingValueStrategyFeature {
+        feature_index: usize,
+        feature_count: usize,
+    },
 }
 
 impl Display for TrainError {
@@ -359,6 +410,14 @@ impl Display for TrainError {
                     count
                 )
             }
+            TrainError::InvalidMissingValueStrategyFeature {
+                feature_index,
+                feature_count,
+            } => write!(
+                f,
+                "missing_value_strategy references feature {}, but the training table only has {} features.",
+                feature_index, feature_count
+            ),
         }
     }
 }

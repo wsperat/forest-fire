@@ -1,5 +1,6 @@
 use super::histogram::ClassificationHistogramBin;
 use super::*;
+use crate::MissingValueStrategy;
 use crate::tree::shared::{MissingBranchDirection, numeric_missing_bin};
 
 pub(super) struct SplitScoringContext<'a> {
@@ -8,6 +9,7 @@ pub(super) struct SplitScoringContext<'a> {
     pub(super) num_classes: usize,
     pub(super) criterion: Criterion,
     pub(super) min_samples_leaf: usize,
+    pub(super) missing_value_strategies: &'a [MissingValueStrategy],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -225,6 +227,26 @@ fn score_binary_cart_split_choice_from_counts(
     missing_counts: &[usize],
     missing_size: usize,
 ) -> Option<BinarySplitChoice> {
+    if matches!(
+        context
+            .missing_value_strategies
+            .get(feature_index)
+            .copied()
+            .unwrap_or(MissingValueStrategy::Heuristic),
+        MissingValueStrategy::Heuristic
+    ) {
+        return score_binary_observed_split_then_assign_missing(
+            context,
+            feature_index,
+            0,
+            left_counts.to_vec(),
+            left_size,
+            right_counts.to_vec(),
+            right_size,
+            missing_counts,
+            missing_size,
+        );
+    }
     score_binary_missing_assignment(
         context,
         feature_index,
@@ -247,6 +269,23 @@ fn score_numeric_cart_split_choice_from_hist(
     bin_class_counts: &[ClassificationHistogramBin],
     observed_bins: &[usize],
 ) -> Option<BinarySplitChoice> {
+    if matches!(
+        context
+            .missing_value_strategies
+            .get(feature_index)
+            .copied()
+            .unwrap_or(MissingValueStrategy::Heuristic),
+        MissingValueStrategy::Heuristic
+    ) {
+        return score_numeric_cart_split_choice_from_hist_heuristic(
+            context,
+            feature_index,
+            parent_counts,
+            row_count,
+            bin_class_counts,
+            observed_bins,
+        );
+    }
     let missing_bin = usize::from(numeric_missing_bin(context.table));
     let observed_bins = observed_bins
         .iter()
@@ -302,6 +341,87 @@ fn score_numeric_cart_split_choice_from_hist(
     }
 
     best
+}
+
+fn score_numeric_cart_split_choice_from_hist_heuristic(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    parent_counts: &[usize],
+    row_count: usize,
+    bin_class_counts: &[ClassificationHistogramBin],
+    observed_bins: &[usize],
+) -> Option<BinarySplitChoice> {
+    let missing_bin = usize::from(numeric_missing_bin(context.table));
+    let observed_bins = observed_bins
+        .iter()
+        .copied()
+        .filter(|bin| *bin != missing_bin)
+        .collect::<Vec<_>>();
+    if observed_bins.len() <= 1 {
+        return None;
+    }
+    let missing_counts = bin_class_counts
+        .get(missing_bin)
+        .map(|bin| bin.counts.clone())
+        .unwrap_or_else(|| vec![0usize; context.num_classes]);
+    let missing_size = bin_class_counts
+        .get(missing_bin)
+        .map_or(0usize, ClassificationHistogramBin::size);
+    let observed_parent_counts = parent_counts
+        .iter()
+        .zip(missing_counts.iter())
+        .map(|(parent, missing)| parent - missing)
+        .collect::<Vec<_>>();
+    let observed_total = row_count.saturating_sub(missing_size);
+    let parent_impurity =
+        classification_impurity(&observed_parent_counts, observed_total, context.criterion);
+    let mut left_counts = vec![0usize; context.num_classes];
+    let mut left_size = 0usize;
+    let mut best_threshold = None;
+    let mut best_observed_score = f64::NEG_INFINITY;
+
+    for bin in observed_bins {
+        for (left_count, bin_count) in left_counts
+            .iter_mut()
+            .zip(bin_class_counts[bin].counts.iter())
+        {
+            *left_count += *bin_count;
+        }
+        left_size += bin_class_counts[bin].size();
+        let right_size = observed_total.saturating_sub(left_size);
+        if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+            continue;
+        }
+        let right_counts = observed_parent_counts
+            .iter()
+            .zip(left_counts.iter())
+            .map(|(parent, left)| parent - left)
+            .collect::<Vec<_>>();
+        let weighted_impurity = (left_size as f64 / observed_total as f64)
+            * classification_impurity(&left_counts, left_size, context.criterion)
+            + (right_size as f64 / observed_total as f64)
+                * classification_impurity(&right_counts, right_size, context.criterion);
+        let observed_score = parent_impurity - weighted_impurity;
+        if observed_score > best_observed_score {
+            best_observed_score = observed_score;
+            best_threshold = Some((bin as u16, left_counts.clone(), left_size, right_counts));
+        }
+    }
+
+    let (threshold_bin, left_counts, left_size, right_counts) = best_threshold?;
+    let right_size = observed_total.saturating_sub(left_size);
+    score_binary_missing_assignment(
+        context,
+        feature_index,
+        threshold_bin,
+        parent_counts,
+        left_counts,
+        left_size,
+        right_counts,
+        right_size,
+        &missing_counts,
+        missing_size,
+    )
 }
 
 fn score_numeric_randomized_split_choice_from_hist(
@@ -480,4 +600,55 @@ fn score_binary_missing_assignment(
             .filter_map(evaluate)
             .max_by(|left, right| left.score.total_cmp(&right.score))
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_binary_observed_split_then_assign_missing(
+    context: &SplitScoringContext<'_>,
+    feature_index: usize,
+    threshold_bin: u16,
+    left_counts: Vec<usize>,
+    left_size: usize,
+    right_counts: Vec<usize>,
+    right_size: usize,
+    missing_counts: &[usize],
+    missing_size: usize,
+) -> Option<BinarySplitChoice> {
+    if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+        return None;
+    }
+    let parent_counts = left_counts
+        .iter()
+        .zip(right_counts.iter())
+        .map(|(left, right)| left + right)
+        .collect::<Vec<_>>();
+    let parent_impurity =
+        classification_impurity(&parent_counts, left_size + right_size, context.criterion);
+    let weighted_impurity = (left_size as f64 / (left_size + right_size) as f64)
+        * classification_impurity(&left_counts, left_size, context.criterion)
+        + (right_size as f64 / (left_size + right_size) as f64)
+            * classification_impurity(&right_counts, right_size, context.criterion);
+    let observed_score = parent_impurity - weighted_impurity;
+    if !observed_score.is_finite() {
+        return None;
+    }
+
+    let parent_counts_with_missing = parent_counts
+        .iter()
+        .zip(missing_counts.iter())
+        .map(|(observed, missing)| observed + missing)
+        .collect::<Vec<_>>();
+
+    score_binary_missing_assignment(
+        context,
+        feature_index,
+        threshold_bin,
+        &parent_counts_with_missing,
+        left_counts,
+        left_size,
+        right_counts,
+        right_size,
+        missing_counts,
+        missing_size,
+    )
 }

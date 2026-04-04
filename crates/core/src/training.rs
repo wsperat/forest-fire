@@ -21,6 +21,9 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
         config.tree_type,
         config.criterion,
     )?;
+    let missing_value_strategies = config
+        .missing_value_strategy
+        .resolve_for_feature_count(train_set.binned_feature_count())?;
     let parallelism = resolve_parallelism(config.physical_cores)?;
     let max_depth = config.max_depth.unwrap_or(8);
     if max_depth == 0 {
@@ -48,6 +51,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 max_depth,
                 min_samples_split,
                 min_samples_leaf,
+                missing_value_strategies: missing_value_strategies.clone(),
             },
         ),
         TrainAlgorithm::Rf => train_random_forest(
@@ -61,6 +65,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 max_depth,
                 min_samples_split,
                 min_samples_leaf,
+                missing_value_strategies: missing_value_strategies.clone(),
                 max_features: config.max_features,
                 seed: config.seed,
                 compute_oob: config.compute_oob,
@@ -73,6 +78,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 ..config
             },
             parallelism,
+            missing_value_strategies,
         ),
     })
 }
@@ -85,6 +91,7 @@ pub(crate) struct SingleModelConfig {
     pub(crate) max_depth: usize,
     pub(crate) min_samples_split: usize,
     pub(crate) min_samples_leaf: usize,
+    pub(crate) missing_value_strategies: Vec<crate::MissingValueStrategy>,
 }
 
 /// Internal single-tree config with optional per-node feature subsampling.
@@ -98,18 +105,20 @@ pub(crate) struct SingleModelFeatureSubsetConfig {
     pub(crate) random_seed: u64,
 }
 
-struct RandomForestConfig {
-    task: Task,
-    tree_type: TreeType,
-    criterion: Criterion,
-    parallelism: Parallelism,
-    n_trees: usize,
-    max_depth: usize,
-    min_samples_split: usize,
-    min_samples_leaf: usize,
-    max_features: crate::MaxFeatures,
-    seed: Option<u64>,
-    compute_oob: bool,
+#[derive(Clone)]
+pub(crate) struct RandomForestConfig {
+    pub(crate) task: Task,
+    pub(crate) tree_type: TreeType,
+    pub(crate) criterion: Criterion,
+    pub(crate) parallelism: Parallelism,
+    pub(crate) n_trees: usize,
+    pub(crate) max_depth: usize,
+    pub(crate) min_samples_split: usize,
+    pub(crate) min_samples_leaf: usize,
+    pub(crate) missing_value_strategies: Vec<crate::MissingValueStrategy>,
+    pub(crate) max_features: crate::MaxFeatures,
+    pub(crate) seed: Option<u64>,
+    pub(crate) compute_oob: bool,
 }
 
 pub(crate) fn train_single_model(
@@ -140,6 +149,7 @@ pub(crate) fn train_single_model_with_feature_subset(
                 max_depth,
                 min_samples_split,
                 min_samples_leaf,
+                missing_value_strategies,
             },
         max_features,
         random_seed,
@@ -150,6 +160,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         min_samples_leaf,
         max_features,
         random_seed,
+        missing_value_strategies: missing_value_strategies.clone(),
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -157,6 +168,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         min_samples_leaf,
         max_features,
         random_seed,
+        missing_value_strategies,
     };
 
     match (task, tree_type, criterion) {
@@ -262,24 +274,7 @@ fn train_random_forest(
 ) -> Result<Model, TrainError> {
     RandomForest::train(
         train_set,
-        TrainConfig {
-            algorithm: TrainAlgorithm::Rf,
-            task: config.task,
-            tree_type: config.tree_type,
-            criterion: config.criterion,
-            max_depth: Some(config.max_depth),
-            min_samples_split: Some(config.min_samples_split),
-            min_samples_leaf: Some(config.min_samples_leaf),
-            physical_cores: None,
-            n_trees: Some(config.n_trees),
-            max_features: config.max_features,
-            seed: config.seed,
-            compute_oob: config.compute_oob,
-            learning_rate: None,
-            bootstrap: false,
-            top_gradient_fraction: None,
-            other_gradient_fraction: None,
-        },
+        config.clone(),
         config.criterion,
         config.parallelism,
     )
@@ -290,10 +285,16 @@ fn train_gradient_boosting(
     train_set: &dyn TableAccess,
     config: TrainConfig,
     parallelism: Parallelism,
+    missing_value_strategies: Vec<crate::MissingValueStrategy>,
 ) -> Result<Model, TrainError> {
-    GradientBoostedTrees::train(train_set, config, parallelism)
-        .map(Model::GradientBoostedTrees)
-        .map_err(TrainError::Boosting)
+    GradientBoostedTrees::train_with_missing_value_strategies(
+        train_set,
+        config,
+        parallelism,
+        missing_value_strategies,
+    )
+    .map(Model::GradientBoostedTrees)
+    .map_err(TrainError::Boosting)
 }
 
 fn resolve_criterion(

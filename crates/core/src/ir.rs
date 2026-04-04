@@ -603,7 +603,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                     criterion,
                     feature_preprocessing.clone(),
                     num_features,
-                    options,
+                    options.clone(),
                     training_canaries,
                     deserialized_class_labels.clone(),
                     tree,
@@ -639,7 +639,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                     criterion,
                     feature_preprocessing.clone(),
                     num_features,
-                    options,
+                    options.clone(),
                     training_canaries,
                     tree,
                 )
@@ -721,6 +721,7 @@ fn boosted_tree_model_from_ir_parts(
                     min_samples_leaf: options.min_samples_leaf,
                     max_features: None,
                     random_seed: 0,
+                    missing_value_strategies: Vec::new(),
                 },
                 num_features,
                 feature_preprocessing,
@@ -746,6 +747,7 @@ fn boosted_tree_model_from_ir_parts(
                         min_samples_leaf: options.min_samples_leaf,
                         max_features: None,
                         random_seed: 0,
+                        missing_value_strategies: Vec::new(),
                     },
                     num_features,
                     feature_preprocessing,
@@ -860,6 +862,7 @@ fn single_model_from_ir_parts(
                     min_samples_leaf: options.min_samples_leaf,
                     max_features: None,
                     random_seed: 0,
+                    missing_value_strategies: Vec::new(),
                 },
                 num_features,
                 feature_preprocessing,
@@ -889,6 +892,7 @@ fn single_model_from_ir_parts(
                         min_samples_leaf: options.min_samples_leaf,
                         max_features: None,
                         random_seed: 0,
+                        missing_value_strategies: Vec::new(),
                     },
                     num_features,
                     feature_preprocessing,
@@ -989,6 +993,7 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         min_samples_leaf: training.min_samples_leaf.unwrap_or(1),
         max_features: None,
         random_seed: 0,
+        missing_value_strategies: Vec::new(),
     }
 }
 

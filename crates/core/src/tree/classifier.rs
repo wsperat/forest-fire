@@ -23,7 +23,10 @@ use crate::tree::shared::{
     MissingBranchDirection, candidate_feature_indices, choose_random_threshold, node_seed,
     partition_rows_for_binary_split,
 };
-use crate::{Criterion, FeaturePreprocessing, Parallelism, capture_feature_preprocessing};
+use crate::{
+    Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
+    capture_feature_preprocessing,
+};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -64,13 +67,14 @@ pub enum DecisionTreeAlgorithm {
 /// The defaults are intentionally modest rather than "grow until pure", because
 /// ForestFire wants trees to be a stable building block for ensembles and
 /// interpretable standalone models.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DecisionTreeOptions {
     pub max_depth: usize,
     pub min_samples_split: usize,
     pub min_samples_leaf: usize,
     pub max_features: Option<usize>,
     pub random_seed: u64,
+    pub missing_value_strategies: Vec<MissingValueStrategy>,
 }
 
 impl Default for DecisionTreeOptions {
@@ -81,6 +85,7 @@ impl Default for DecisionTreeOptions {
             min_samples_leaf: 1,
             max_features: None,
             random_seed: 0,
+            missing_value_strategies: Vec::new(),
         }
     }
 }
@@ -410,7 +415,7 @@ fn train_classifier(
             &class_labels,
             criterion,
             parallelism,
-            options,
+            options.clone(),
         ),
         DecisionTreeAlgorithm::Cart | DecisionTreeAlgorithm::Randomized => {
             let mut nodes = Vec::new();
@@ -422,7 +427,7 @@ fn train_classifier(
                 algorithm,
                 criterion,
                 parallelism,
-                options,
+                options: options.clone(),
             };
             let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
             TreeStructure::Standard { nodes, root }
@@ -437,7 +442,7 @@ fn train_classifier(
                 algorithm,
                 criterion,
                 parallelism,
-                options,
+                options: options.clone(),
             };
             let root = build_multiway_node_in_place(&context, &mut nodes, &mut all_rows, 0);
             TreeStructure::Standard { nodes, root }
@@ -907,6 +912,7 @@ fn build_binary_node_in_place_with_hist(
         num_classes: context.class_labels.len(),
         criterion: context.criterion,
         min_samples_leaf: context.options.min_samples_leaf,
+        missing_value_strategies: &context.options.missing_value_strategies,
     };
     let histograms = histograms.unwrap_or_else(|| {
         build_classification_node_histograms(
@@ -1070,6 +1076,7 @@ fn build_multiway_node_in_place(
         num_classes: context.class_labels.len(),
         criterion: context.criterion,
         min_samples_leaf: context.options.min_samples_leaf,
+        missing_value_strategies: &context.options.missing_value_strategies,
     };
     let feature_indices = candidate_feature_indices(
         context.table.binned_feature_count(),
