@@ -28,6 +28,7 @@ nav:
   - Getting Started: getting-started.md
   - Design:
       - Architecture: design.md
+      - Missing Values: missing-values.md
       - Canary Strategy: canaries.md
       - Runtime And Serialization: runtime.md
       - Intermediate Representation: ir.md
