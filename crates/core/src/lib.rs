@@ -288,6 +288,12 @@ pub struct TrainConfig {
     pub other_gradient_fraction: Option<f64>,
     /// Strategy used to evaluate missing-value routing during split search.
     pub missing_value_strategy: MissingValueStrategyConfig,
+    /// Optional numeric histogram bin configuration for training-time split search.
+    ///
+    /// `None` preserves the incoming table's existing numeric bins. `Some(...)`
+    /// rebuilds the numeric training view at the requested resolution before
+    /// fitting, while leaving the caller's source table unchanged.
+    pub histogram_bins: Option<NumericBins>,
 }
 
 impl Default for TrainConfig {
@@ -310,6 +316,7 @@ impl Default for TrainConfig {
             top_gradient_fraction: None,
             other_gradient_fraction: None,
             missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         }
     }
 }

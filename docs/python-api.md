@@ -19,6 +19,7 @@ train(
     criterion="auto",
     canaries=2,
     bins="auto",
+    histogram_bins=None,
     physical_cores=None,
     max_depth=None,
     min_samples_split=None,
@@ -96,6 +97,35 @@ Current `auto` behavior:
 - per numeric feature, ForestFire picks the highest power of two up to `512`
 - each realized bin must contain at least two rows
 - the chosen count is capped by the number of distinct observed values
+
+`bins` applies when ForestFire is preprocessing raw training data into a
+`Table`. It controls the stored numeric representation of that table.
+
+#### `histogram_bins`
+
+Current values:
+
+- `None`
+- `"auto"`
+- integer `1..=128`
+
+Semantics:
+
+- `None`: reuse the numeric bins already present in the input training table
+- `"auto"` or an integer: rebuild the numeric training view at that resolution
+  before split search
+
+This is the estimator-facing control for histogram width. It is separate from
+`bins`:
+
+- `bins` controls how a raw Python input is preprocessed into a training table
+- `histogram_bins` controls the numeric resolution used by split-search histograms
+
+That distinction matters when:
+
+- you pass an already-built `Table` to `train(...)`
+- you want one stored table representation but a different histogram resolution
+  during fitting
 
 #### `physical_cores`
 

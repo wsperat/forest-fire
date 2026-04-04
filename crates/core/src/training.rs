@@ -9,10 +9,258 @@ use crate::{
     Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest, Task, TrainAlgorithm,
     TrainConfig, TrainError, TreeType, tree,
 };
-use forestfire_data::TableAccess;
+use forestfire_data::{
+    BinnedColumnKind, NumericBins, TableAccess, numeric_bin_boundaries, numeric_missing_bin,
+};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use rayon::ThreadPoolBuilder;
 
+enum TrainingTableRef<'a> {
+    Borrowed(&'a dyn TableAccess),
+    Rebinned(HistogramBinnedTable<'a>),
+}
+
+impl TableAccess for TrainingTableRef<'_> {
+    fn n_rows(&self) -> usize {
+        match self {
+            Self::Borrowed(table) => table.n_rows(),
+            Self::Rebinned(table) => table.n_rows(),
+        }
+    }
+
+    fn n_features(&self) -> usize {
+        match self {
+            Self::Borrowed(table) => table.n_features(),
+            Self::Rebinned(table) => table.n_features(),
+        }
+    }
+
+    fn canaries(&self) -> usize {
+        match self {
+            Self::Borrowed(table) => table.canaries(),
+            Self::Rebinned(table) => table.canaries(),
+        }
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        match self {
+            Self::Borrowed(table) => table.numeric_bin_cap(),
+            Self::Rebinned(table) => table.numeric_bin_cap(),
+        }
+    }
+
+    fn binned_feature_count(&self) -> usize {
+        match self {
+            Self::Borrowed(table) => table.binned_feature_count(),
+            Self::Rebinned(table) => table.binned_feature_count(),
+        }
+    }
+
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        match self {
+            Self::Borrowed(table) => table.feature_value(feature_index, row_index),
+            Self::Rebinned(table) => table.feature_value(feature_index, row_index),
+        }
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        match self {
+            Self::Borrowed(table) => table.is_missing(feature_index, row_index),
+            Self::Rebinned(table) => table.is_missing(feature_index, row_index),
+        }
+    }
+
+    fn is_binary_feature(&self, index: usize) -> bool {
+        match self {
+            Self::Borrowed(table) => table.is_binary_feature(index),
+            Self::Rebinned(table) => table.is_binary_feature(index),
+        }
+    }
+
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        match self {
+            Self::Borrowed(table) => table.binned_value(feature_index, row_index),
+            Self::Rebinned(table) => table.binned_value(feature_index, row_index),
+        }
+    }
+
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        match self {
+            Self::Borrowed(table) => table.binned_boolean_value(feature_index, row_index),
+            Self::Rebinned(table) => table.binned_boolean_value(feature_index, row_index),
+        }
+    }
+
+    fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        match self {
+            Self::Borrowed(table) => table.binned_column_kind(index),
+            Self::Rebinned(table) => table.binned_column_kind(index),
+        }
+    }
+
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        match self {
+            Self::Borrowed(table) => table.is_binary_binned_feature(index),
+            Self::Rebinned(table) => table.is_binary_binned_feature(index),
+        }
+    }
+
+    fn target_value(&self, row_index: usize) -> f64 {
+        match self {
+            Self::Borrowed(table) => table.target_value(row_index),
+            Self::Rebinned(table) => table.target_value(row_index),
+        }
+    }
+}
+
+struct HistogramBinnedTable<'a> {
+    base: &'a dyn TableAccess,
+    numeric_bins: NumericBins,
+    rebinned_numeric_columns: Vec<Option<Vec<u16>>>,
+}
+
+impl<'a> HistogramBinnedTable<'a> {
+    fn new(base: &'a dyn TableAccess, numeric_bins: NumericBins) -> Self {
+        let mut rebinned_numeric_columns = vec![None; base.binned_feature_count()];
+
+        for (feature_index, rebinned_column) in rebinned_numeric_columns
+            .iter_mut()
+            .enumerate()
+            .take(base.n_features())
+        {
+            if base.is_binary_feature(feature_index) {
+                continue;
+            }
+            let values = (0..base.n_rows())
+                .map(|row_index| base.feature_value(feature_index, row_index))
+                .collect::<Vec<_>>();
+            *rebinned_column = Some(rebin_numeric_column(&values, numeric_bins));
+        }
+
+        for feature_index in base.n_features()..base.binned_feature_count() {
+            let BinnedColumnKind::Canary {
+                source_index,
+                copy_index,
+            } = base.binned_column_kind(feature_index)
+            else {
+                continue;
+            };
+            let Some(source_column) = rebinned_numeric_columns[source_index].as_ref() else {
+                continue;
+            };
+            let mut shuffled = source_column.clone();
+            shuffle_values(&mut shuffled, copy_index, source_index);
+            rebinned_numeric_columns[feature_index] = Some(shuffled);
+        }
+
+        Self {
+            base,
+            numeric_bins,
+            rebinned_numeric_columns,
+        }
+    }
+}
+
+impl TableAccess for HistogramBinnedTable<'_> {
+    fn n_rows(&self) -> usize {
+        self.base.n_rows()
+    }
+
+    fn n_features(&self) -> usize {
+        self.base.n_features()
+    }
+
+    fn canaries(&self) -> usize {
+        self.base.canaries()
+    }
+
+    fn numeric_bin_cap(&self) -> usize {
+        self.numeric_bins.cap()
+    }
+
+    fn binned_feature_count(&self) -> usize {
+        self.base.binned_feature_count()
+    }
+
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        self.base.feature_value(feature_index, row_index)
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base.is_missing(feature_index, row_index)
+    }
+
+    fn is_binary_feature(&self, index: usize) -> bool {
+        self.base.is_binary_feature(index)
+    }
+
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        self.rebinned_numeric_columns[feature_index]
+            .as_ref()
+            .map_or_else(
+                || self.base.binned_value(feature_index, row_index),
+                |column| column[row_index],
+            )
+    }
+
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        self.base.binned_boolean_value(feature_index, row_index)
+    }
+
+    fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        self.base.binned_column_kind(index)
+    }
+
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        self.base.is_binary_binned_feature(index)
+    }
+
+    fn target_value(&self, row_index: usize) -> f64 {
+        self.base.target_value(row_index)
+    }
+}
+
+fn rebin_numeric_column(values: &[f64], numeric_bins: NumericBins) -> Vec<u16> {
+    let missing_bin = numeric_missing_bin(numeric_bins);
+    let boundaries = numeric_bin_boundaries(values, numeric_bins);
+    values
+        .iter()
+        .map(|value| infer_numeric_bin(*value, &boundaries, missing_bin))
+        .collect()
+}
+
+fn infer_numeric_bin(value: f64, boundaries: &[(u16, f64)], missing_bin: u16) -> u16 {
+    if value.is_nan() {
+        return missing_bin;
+    }
+    boundaries
+        .iter()
+        .find(|(_, upper_bound)| value <= *upper_bound)
+        .map_or_else(
+            || boundaries.last().map_or(0, |(bin, _)| *bin),
+            |(bin, _)| *bin,
+        )
+}
+
+fn shuffle_values<T>(values: &mut [T], copy_index: usize, source_index: usize) {
+    let seed = 0xA11CE5EED_u64
+        ^ ((copy_index as u64) << 32)
+        ^ (source_index as u64)
+        ^ ((values.len() as u64) << 16);
+    let mut rng = StdRng::seed_from_u64(seed);
+    values.shuffle(&mut rng);
+}
+
 pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, TrainError> {
+    let train_table = config.histogram_bins.map_or_else(
+        || TrainingTableRef::Borrowed(train_set),
+        |numeric_bins| {
+            TrainingTableRef::Rebinned(HistogramBinnedTable::new(train_set, numeric_bins))
+        },
+    );
+
     // Criterion resolution happens once here so the downstream trainers can
     // operate on explicit semantics instead of carrying `Auto` branches.
     let criterion = resolve_criterion(
@@ -23,7 +271,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     )?;
     let missing_value_strategies = config
         .missing_value_strategy
-        .resolve_for_feature_count(train_set.binned_feature_count())?;
+        .resolve_for_feature_count(train_table.binned_feature_count())?;
     let parallelism = resolve_parallelism(config.physical_cores)?;
     let max_depth = config.max_depth.unwrap_or(8);
     if max_depth == 0 {
@@ -42,7 +290,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     // can use rayon consistently without rebuilding pools at every split.
     run_with_parallelism(parallelism, || match config.algorithm {
         TrainAlgorithm::Dt => train_single_model(
-            train_set,
+            &train_table,
             SingleModelConfig {
                 task: config.task,
                 tree_type: config.tree_type,
@@ -55,7 +303,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             },
         ),
         TrainAlgorithm::Rf => train_random_forest(
-            train_set,
+            &train_table,
             RandomForestConfig {
                 task: config.task,
                 tree_type: config.tree_type,
@@ -72,7 +320,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             },
         ),
         TrainAlgorithm::Gbm => train_gradient_boosting(
-            train_set,
+            &train_table,
             TrainConfig {
                 criterion,
                 ..config

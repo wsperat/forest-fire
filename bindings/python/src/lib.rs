@@ -1953,7 +1953,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -1965,6 +1965,7 @@ fn train(
     criterion: &str,
     canaries: usize,
     bins: Option<&Bound<PyAny>>,
+    histogram_bins: Option<&Bound<PyAny>>,
     physical_cores: Option<usize>,
     max_depth: Option<usize>,
     min_samples_split: Option<usize>,
@@ -2006,6 +2007,9 @@ fn train(
             "other_gradient_fraction",
         )?,
         missing_value_strategy: parse_missing_value_strategy(missing_value_strategy)?,
+        histogram_bins: histogram_bins
+            .map(|value| parse_bins(Some(value)))
+            .transpose()?,
     };
     let model = train_model_detached(py, table, config)?;
 

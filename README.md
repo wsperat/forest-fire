@@ -62,6 +62,10 @@ Missing values are handled automatically from common Python inputs such as
 Training can also choose between a fast missing-value split heuristic and a
 slower optimal search through `missing_value_strategy=...`.
 
+Histogram resolution is configurable through `histogram_bins=...`. That is
+separate from `bins=...`, which controls how an explicit training `Table` is
+preprocessed.
+
 Install from PyPI:
 
 ```bash

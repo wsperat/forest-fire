@@ -15,6 +15,11 @@ let model = train(&table, TrainConfig::default())?;
 let optimized = model.optimize_inference(Some(1))?;
 ```
 
+`TrainConfig::histogram_bins` controls the numeric histogram resolution used
+during fitting. Leave it as `None` to reuse the incoming table bins, or set
+`Some(NumericBins::Auto)` / `Some(NumericBins::Fixed(...))` to rebin the
+training view before split search.
+
 The intended Rust lifecycle is:
 
 1. build a training table through `forestfire-data`

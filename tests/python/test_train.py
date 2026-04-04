@@ -1802,12 +1802,54 @@ def test_train_accepts_fixed_bins() -> None:
     assert preds.shape == (4,)
 
 
+def test_train_accepts_histogram_bins() -> None:
+    X = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 1.0, 4.0, 9.0])
+
+    model = train(
+        X,
+        y,
+        task="regression",
+        tree_type="cart",
+        bins=64,
+        histogram_bins=8,
+        canaries=0,
+    )
+
+    preds = model.predict(X)
+    assert preds.shape == (4,)
+
+
+def test_train_accepts_histogram_bins_for_prebuilt_table(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+    table = Table(X, y, canaries=0, bins=64)
+
+    model = train(
+        table,
+        task="classification",
+        tree_type="cart",
+        histogram_bins=8,
+    )
+
+    assert np.array_equal(model.predict(table), y)
+
+
 def test_train_rejects_invalid_bins() -> None:
     X = np.array([[0.0], [1.0]])
     y = np.array([0.0, 1.0])
 
     with pytest.raises(ValueError, match="between 1 and 128"):
         train(X, y, bins=256)
+
+
+def test_train_rejects_invalid_histogram_bins() -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="between 1 and 128"):
+        train(X, y, histogram_bins=256)
 
 
 def test_train_rejects_y_when_x_is_already_a_table(

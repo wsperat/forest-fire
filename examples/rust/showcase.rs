@@ -65,6 +65,7 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
                 missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -108,6 +109,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
                 missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -156,6 +158,7 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             top_gradient_fraction: None,
             other_gradient_fraction: None,
             missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -217,6 +220,7 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             top_gradient_fraction: None,
             other_gradient_fraction: None,
             missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )?;
 
