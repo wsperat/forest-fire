@@ -31,6 +31,7 @@ train(
     bootstrap=False,
     top_gradient_fraction=None,
     other_gradient_fraction=None,
+    missing_value_strategy=None,
 )
 ```
 
@@ -130,6 +131,40 @@ Only meaningful for `algorithm="gbm"`.
 - `top_gradient_fraction` keeps the largest-gradient rows
 - `other_gradient_fraction` samples additional rows from the remainder
 
+#### `missing_value_strategy`
+
+Controls how split search handles features with missing values.
+
+Accepted forms:
+
+- `"heuristic"`
+- `"optimal"`
+- `{"col_1": "heuristic", "col_2": "optimal", ...}`
+- `{"f0": "heuristic", "f1": "optimal", ...}`
+
+Semantics:
+
+- `"heuristic"`: choose the best split using only observed values first, then evaluate whether the missing rows should go left or right for that chosen split
+- `"optimal"`: evaluate missing-left vs missing-right while scoring every candidate split, then choose the overall best combination of split plus missing routing
+- dictionary form: apply the chosen strategy per feature, defaulting unspecified features to `"heuristic"`
+
+The dictionary keys use semantic feature indices:
+
+- `"col_1"` means feature index `0`
+- `"col_2"` means feature index `1`
+- `"f0"` means feature index `0`
+- `"f1"` means feature index `1`
+
+Tradeoff:
+
+- `"heuristic"` is much faster and is the default
+- `"optimal"` can be substantially slower because it expands the split search
+
+Current implementation note:
+
+- the strategy setting is implemented for the standard first-order tree training paths
+- the second-order boosting path still follows the existing missing-value implementation
+
 ## Supported input types
 
 - NumPy arrays
@@ -168,9 +203,19 @@ them.
 The split semantics are:
 
 - each feature reserves a separate missing bin
-- split search ignores that bin when choosing the best observed threshold or branch grouping
-- once the best observed split has been found, the learner evaluates sending missing rows left vs right and stores the better routing decision
+- split search ignores that bin when choosing observed thresholds or branch groupings
+- the exact missing-row search behavior then depends on `missing_value_strategy`
 - if a feature had no missing rows at a learned split, a later missing value falls back to the node prediction instead of pretending that the feature had seen a trained missing branch
+
+Under `missing_value_strategy="heuristic"`:
+
+- choose the split from observed values first
+- then decide whether missing rows should go left or right for that chosen split
+
+Under `missing_value_strategy="optimal"`:
+
+- for each candidate split, evaluate both missing-left and missing-right
+- keep the best joint combination of split and missing routing
 
 That fallback is:
 

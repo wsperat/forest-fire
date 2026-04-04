@@ -78,10 +78,34 @@ Accepted missing markers include:
 The training contract is:
 
 - every feature gets a dedicated missing bin
-- split search chooses the best split from the non-missing bins only
-- after that observed split is chosen, the learner evaluates routing the
-  missing rows to the left or right child and keeps whichever assignment
-  produces the better split score
+- observed split search ignores that missing bin
+- missing rows are then routed according to the configured
+  `missing_value_strategy`
+
+The public strategies are:
+
+- `"heuristic"`: choose the best split from observed values first, then decide whether missing rows should go left or right for that split
+- `"optimal"`: for every candidate split, evaluate missing-left and missing-right, then choose the best full combination
+- per-column dictionary: assign `"heuristic"` or `"optimal"` feature by feature, with unspecified features defaulting to `"heuristic"`
+
+Python examples:
+
+```python
+train(X, y, missing_value_strategy="heuristic")
+train(X, y, missing_value_strategy="optimal")
+train(X, y, missing_value_strategy={"col_1": "optimal", "col_2": "heuristic"})
+train(X, y, missing_value_strategy={"f0": "optimal", "f1": "heuristic"})
+```
+
+The feature-name forms are aliases for semantic column indices:
+
+- `"col_1"` and `"f0"` both mean feature index `0`
+- `"col_2"` and `"f1"` both mean feature index `1`
+
+Why both strategies exist:
+
+- `"heuristic"` is the practical default and keeps training cost closer to ordinary split search
+- `"optimal"` can be much slower because it expands the search to all candidate split and missing-routing combinations
 
 That design matters because it separates two questions that are often muddled
 together:
@@ -95,6 +119,11 @@ prediction time falls back to the node prediction instead:
 
 - majority class for classification
 - node mean for regression
+
+Current implementation note:
+
+- the strategy toggle is implemented for the standard first-order tree builders
+- the second-order boosting path currently uses the existing missing-value behavior rather than a separate heuristic-vs-optimal toggle
 
 ## Stopping and control parameters
 

@@ -59,6 +59,9 @@ print(model.predict_proba(X))
 Missing values are handled automatically from common Python inputs such as
 `None`, `np.nan`, pandas/NumPy `NaN`, and `polars` nulls.
 
+Training can also choose between a fast missing-value split heuristic and a
+slower optimal search through `missing_value_strategy=...`.
+
 Install from PyPI:
 
 ```bash
