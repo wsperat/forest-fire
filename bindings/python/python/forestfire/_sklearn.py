@@ -1,4 +1,4 @@
-# mypy: disable-error-code="import-untyped,misc,no-redef,attr-defined"
+# mypy: disable-error-code="import-not-found,import-untyped,misc,no-redef,attr-defined"
 
 from __future__ import annotations
 

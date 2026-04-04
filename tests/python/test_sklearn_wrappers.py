@@ -1,4 +1,4 @@
-# mypy: disable-error-code="import-untyped"
+# mypy: disable-error-code="import-not-found,import-untyped"
 
 import numpy as np
 from forestfire.forest import CARTRandomForestRegressor, ExtraRandomForestClassifier
