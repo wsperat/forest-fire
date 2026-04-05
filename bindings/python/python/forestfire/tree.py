@@ -13,11 +13,11 @@ class CARTClassifier(_TreeClassifierBase):
     _tree_type = "cart"
 
 
-class ExtraClassifier(_TreeClassifierBase):
+class ExtraTreeClassifier(_TreeClassifierBase):
     _tree_type = "randomized"
 
 
-class ObliviousClassifier(_TreeClassifierBase):
+class ObliviousTreeClassifier(_TreeClassifierBase):
     _tree_type = "oblivious"
 
 
@@ -25,11 +25,11 @@ class CARTRegressor(_TreeRegressorBase):
     _tree_type = "cart"
 
 
-class ExtraRegressor(_TreeRegressorBase):
+class ExtraTreeRegressor(_TreeRegressorBase):
     _tree_type = "randomized"
 
 
-class ObliviousRegressor(_TreeRegressorBase):
+class ObliviousTreeRegressor(_TreeRegressorBase):
     _tree_type = "oblivious"
 
 
@@ -37,9 +37,9 @@ __all__ = [
     "ID3Classifier",
     "C45Classifier",
     "CARTClassifier",
-    "ExtraClassifier",
-    "ObliviousClassifier",
+    "ExtraTreeClassifier",
+    "ObliviousTreeClassifier",
     "CARTRegressor",
-    "ExtraRegressor",
-    "ObliviousRegressor",
+    "ExtraTreeRegressor",
+    "ObliviousTreeRegressor",
 ]

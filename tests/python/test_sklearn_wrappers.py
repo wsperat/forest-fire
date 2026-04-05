@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from forestfire.forest import CARTRandomForestRegressor, ExtraRandomForestClassifier
 from forestfire.gbm import CARTGBMRegressor, ExtraGBMClassifier, ObliviousGBMRegressor
-from forestfire.tree import CARTClassifier, ExtraRegressor, ObliviousRegressor
+from forestfire.tree import CARTClassifier, ExtraTreeRegressor, ObliviousTreeRegressor
 
 sklearn = pytest.importorskip("sklearn")
 clone = sklearn.base.clone
@@ -28,7 +28,7 @@ def test_tree_regressor_wrapper_exposes_requested_import_path() -> None:
     x = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 1.0, 4.0, 9.0])
 
-    model = ObliviousRegressor(max_depth=3).fit(x, y)
+    model = ObliviousTreeRegressor(max_depth=3).fit(x, y)
 
     assert model.model_.algorithm == "dt"
     assert model.model_.tree_type == "oblivious"
@@ -84,6 +84,6 @@ def test_wrapper_modules_cover_requested_names() -> None:
     x = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 1.0, 4.0, 9.0])
 
-    assert ExtraRegressor().fit(x, y).model_.tree_type == "randomized"
+    assert ExtraTreeRegressor().fit(x, y).model_.tree_type == "randomized"
     assert CARTRandomForestRegressor().fit(x, y).model_.tree_type == "cart"
     assert CARTGBMRegressor().fit(x, y).model_.tree_type == "cart"
