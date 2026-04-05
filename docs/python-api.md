@@ -247,11 +247,11 @@ Available wrappers:
 - `ID3Classifier`
 - `C45Classifier`
 - `CARTClassifier`
-- `ExtraClassifier`
-- `ObliviousClassifier`
+- `ExtraTreeClassifier`
+- `ObliviousTreeClassifier`
 - `CARTRegressor`
-- `ExtraRegressor`
-- `ObliviousRegressor`
+- `ExtraTreeRegressor`
+- `ObliviousTreeRegressor`
 
 - `forestfire.forest`
 - `ID3RandomForestClassifier`
