@@ -103,6 +103,349 @@ useful breakdown to collect on wide RF workloads is:
 The likely root issue is not lack of outer parallelism. It is that per-node
 per-feature work is still too expensive once the width of the table grows.
 
+## Add categorical-feature support for CART, random forests, and boosting
+
+Categorical support is one of the clearest remaining training and model-format
+gaps.
+
+ForestFire already has explicit numeric and binary preprocessing, and IR v1
+still states that categorical encodings are not implemented. That means this is
+not just a trainer tweak. It touches:
+
+- training-time feature representation
+- split-search semantics
+- missing and unknown-category handling
+- optimized runtime execution
+- IR/export metadata
+- Python and Rust API contracts
+
+It is also important to separate this roadmap from the existing `id3` / `c45`
+story. Those tree families already allow multiway branching over
+"categorical-like" binned features. The harder unsolved problem is categorical
+support for the CART-style binary-split learners that also underpin random
+forests and gradient boosting.
+
+There is no single universally correct categorical strategy. In practice, tree
+systems use several different ones depending on:
+
+- whether the feature is nominal or truly ordered
+- how many distinct categories it has
+- whether the learner is a single tree, a forest, or a stage-wise boosted model
+- whether the implementation has native categorical split search
+
+The main strategies worth supporting or documenting are:
+
+### 1. Native categorical subset splits
+
+This is the most direct semantic match for CART-style trees.
+
+For a nominal feature with `k` categories, the natural binary split is not a
+numeric threshold like `x <= t`. It is a set-membership test:
+
+- go left if `x in S`
+- go right if `x not in S`
+
+where `S` is some subset of the observed categories.
+
+That matters because nominal categories do not have a meaningful numeric order.
+If a feature contains `{"red", "blue", "green"}`, the useful question is often
+"should `red` and `green` be grouped together against `blue`?" rather than
+"is the encoded integer less than `1.5`?"
+
+For plain CART and random forests, this native subset-split view is the clean
+ideal because it preserves the true hypothesis class:
+
+- one node can isolate a useful grouping of categories directly
+- there is no fake distance notion between category ids
+- the resulting tree structure matches how users think about categorical rules
+
+The difficulty is split-search cost. A `k`-level categorical feature has
+`2^(k-1) - 1` distinct binary partitions if complements are treated as the same
+split. That is manageable for very small `k`, but it becomes too expensive to
+search exhaustively once cardinality grows.
+
+That means a serious implementation needs more than just a categorical column
+type:
+
+- exact subset search for very low-cardinality features
+- heuristics or restricted search once cardinality becomes moderate
+- minimum-support rules so tiny categories do not generate unstable splits
+- a clear policy for categories never seen during training
+
+For gradient boosting, native categorical support usually becomes
+histogram-based rather than exhaustive. The common pattern is:
+
+1. aggregate per-category gradient/Hessian statistics
+2. order categories by some target-like summary derived from those statistics
+3. scan only contiguous partitions in that ordered list instead of all possible
+   subsets
+
+That is the core idea behind the efficient categorical handling used by systems
+like LightGBM and XGBoost. The important point is that the learner still
+produces a native categorical split semantically, even though the search is
+implemented through an ordering trick that avoids the full combinatorial search.
+
+For ForestFire specifically, native categorical subset splits would require:
+
+- a first-class categorical feature representation in the training table
+- per-node category histograms instead of only numeric-bin histograms
+- split metadata that can express "left category set" rather than only
+  threshold comparisons
+- runtime support for fast category-membership tests
+- IR support for categorical split predicates and category vocabularies
+
+This is likely the strongest long-term end state for medium-cardinality
+categoricals because it gives CART, random forests, and GBM a natural and
+expressive treatment without inflating feature width.
+
+### 2. One-hot encoding
+
+One-hot encoding is the lowest-risk compatibility path when native categorical
+split search does not exist yet.
+
+A categorical feature with levels such as `{"red", "blue", "green"}` is
+expanded into multiple binary indicators:
+
+- `is_red`
+- `is_blue`
+- `is_green`
+
+or sometimes `k - 1` indicators plus an implicit baseline level.
+
+The main reason this is attractive for ForestFire is that the system already
+has explicit binary-feature handling. That means one-hot support could reuse a
+large amount of the existing training and runtime machinery:
+
+- binary features already fit the current split model naturally
+- histogram and partitioning logic for binary columns already exists
+- IR support for booleans is already much closer to complete than IR support for
+  categorical predicates
+
+This makes one-hot encoding the easiest near-term path for low-cardinality
+categoricals.
+
+The costs are equally important:
+
+- feature width grows linearly with the number of categories
+- training cost grows because more columns now compete at each node
+- `max_features` semantics become less intuitive because one original feature
+  may explode into many derived binary columns
+- a grouped category rule may now require several tree levels instead of one
+  native split
+
+That last point is easy to underestimate. Suppose the useful rule is
+"`red` or `green` means left, `blue` means right." A native categorical split
+can represent that in one node. A one-hot representation often needs multiple
+binary decisions across different nodes to express the same logic.
+
+This is why one-hot encoding is usually best viewed as a pragmatic baseline, not
+the ideal long-term representation.
+
+The implementation details also matter:
+
+- low-cardinality features should probably be the only automatic one-hot
+  candidates
+- missing and unseen categories should not silently collapse into ordinary
+  all-zero rows unless that behavior is documented as intentional
+- the model contract should record the category vocabulary and expansion mapping
+  if the encoding happens inside training rather than outside the library
+
+One-hot is therefore attractive as a staged first step:
+
+- it gives users a correct nominal treatment for small category sets
+- it leverages the current binary infrastructure
+- it avoids blocking all categorical support on a larger native-split rewrite
+
+### 3. Ordinal or integer encoding
+
+Integer-coded categories are useful, but only under very specific semantics.
+
+There are two very different situations that are often mistakenly grouped
+together:
+
+- truly ordered categories, such as `{"small", "medium", "large"}`
+- arbitrary category ids, such as `{"red", "blue", "green"}` encoded as
+  `{0, 1, 2}`
+
+For genuinely ordered categories, ordinal encoding is reasonable. A split like
+"`size <= medium`" carries real meaning. In that case, a threshold-based CART
+learner is using a true order already present in the data.
+
+For arbitrary nominal categories, plain ordinal encoding is dangerous. A CART
+split over integer ids imposes a fake geometry:
+
+- category `2` is treated as "greater than" category `1`
+- categories with adjacent ids are treated as more similar than distant ids
+- threshold search is forced to cut the categories into contiguous numeric
+  blocks, even though the useful grouping may be non-contiguous in id space
+
+That means a naïve `OrdinalEncoder` plus ordinary CART thresholding is usually
+the wrong thing for nominal features.
+
+The subtle but important exception is native categorical implementations that
+store categories as integers internally while still treating them as labels
+semantically. LightGBM, XGBoost, and similar systems often expect category ids
+to be integer-coded in memory, but that does not mean they are doing ordinary
+numeric thresholding over those ids. The integer code is only a compact storage
+format for a categorical learner.
+
+That distinction is important for ForestFire:
+
+- integer coding may be the right internal representation for category values
+- it should not automatically imply threshold-based numeric split search
+- user-visible APIs should only allow pure ordinal treatment when the feature is
+  explicitly declared ordered
+
+In practice, ordinal encoding should probably appear in the roadmap in only two
+forms:
+
+- as an explicit feature type for genuinely ordered categories
+- as an internal storage detail for native categorical split search
+
+It should not be the default fallback for arbitrary string or enum-like
+features, because that would silently give incorrect semantics while appearing
+to "support categoricals."
+
+### 4. Target, mean, and CTR-style encodings
+
+Target-based encodings are often the strongest preprocessing option for
+high-cardinality categoricals when native subset-split search is unavailable or
+too expensive.
+
+The idea is to replace each category with a target-derived statistic:
+
+- for regression, a smoothed category mean
+- for binary classification, a smoothed positive-class rate or log-odds
+- for multiclass tasks, per-class or otherwise structured target statistics
+
+This turns a high-cardinality categorical feature into one or a few numeric
+features that the existing CART machinery can consume directly.
+
+Why this works well:
+
+- the representation size no longer grows with cardinality the way one-hot does
+- rare categories can borrow strength from the global target prior through
+  smoothing
+- the learner can often extract strong signal from one numeric statistic rather
+  than many sparse indicators
+
+Why it is risky:
+
+- naïve target encoding leaks label information badly
+- the same category may appear in both the statistic and the row being encoded
+- leakage is especially harmful in boosting, where residual fitting is already
+  sensitive to weak accidental signal
+
+So a credible implementation cannot be "compute category means on the full
+training set and call it done."
+
+It needs one of the standard leakage controls:
+
+- out-of-fold or cross-fitted target statistics
+- ordered or prefix-style statistics of the kind popularized by CatBoost
+- strong smoothing and minimum-frequency rules
+- a global-prior fallback for unseen or extremely rare categories
+
+The CatBoost lesson is especially important. Its categorical handling is not
+just "target encoding plus boosting." The key idea is that the statistics are
+computed in an order-aware way so each row is encoded only from earlier rows,
+which sharply reduces target leakage compared with full-dataset means.
+
+For ForestFire, target-style encodings would be attractive for very
+high-cardinality features because they fit the current numeric histogram stack
+much more naturally than full subset-split search. But they come with model
+contract implications:
+
+- the encoding recipe becomes part of preprocessing semantics
+- exported IR must record the prior, smoothing, category statistics, and
+  unknown-category fallback
+- training/test parity depends on preserving exactly how those encodings were
+  produced
+
+This means target encodings are not just an optional preprocessing helper if
+they live inside the library. They become part of the learned model semantics.
+
+### Strategy-specific fit by model family
+
+The strategies above are not equally attractive for every tree family.
+
+For one standalone CART tree:
+
+- native subset splits are the cleanest nominal treatment
+- one-hot is acceptable for low-cardinality features
+- target encoding can help on very high-cardinality data
+- naïve ordinal encoding should be limited to truly ordered features
+
+For random forests:
+
+- the same categorical choices apply at the tree level
+- but high-cardinality features need extra caution because they offer many more
+  candidate splits and can be over-selected
+- one-hot can also distort `max_features` behavior by letting one source feature
+  dominate the sampled candidate pool after expansion
+
+For gradient boosting:
+
+- native histogram-based categorical search is usually the best medium-card
+  solution
+- target or CTR-style encodings are often the strongest high-card solution
+- leakage control matters much more because stage-wise fitting will exploit even
+  weak spurious signal
+- plain one-hot can still work for low-cardinality features, but it is often
+  less elegant and less efficient than native support
+
+### A caution that applies regardless of strategy
+
+Categorical support is not only about feature representation. It also changes
+the statistical behavior of split search.
+
+High-cardinality features are often favored simply because they create more
+candidate partitions. That can lead to:
+
+- overly optimistic impurity gains
+- unstable deep-tree behavior on rare categories
+- biased feature-importance conclusions
+
+That means any serious categorical roadmap should include guardrails such as:
+
+- minimum category frequency thresholds
+- smoothing or shrinkage for target-style encodings
+- possibly restricted subset search for medium/high-cardinality features
+- benchmarks that specifically vary category cardinality and rare-level
+  frequency
+
+This is especially important for random forests, where split-frequency-based
+importance can become misleading when a high-cardinality feature wins often for
+purely combinatorial reasons.
+
+### The most practical staged plan
+
+The cleanest roadmap is probably not "pick one categorical strategy forever."
+It is to support different strategies for different parts of the problem.
+
+The most practical order is:
+
+1. add low-cardinality one-hot support as a compatibility layer that reuses the
+   current binary-feature pipeline
+2. add explicit ordered-category support so truly ordinal features can use
+   threshold splits honestly
+3. add native categorical subset splits for CART and random forests, with exact
+   search only for very low cardinalities and restricted search beyond that
+4. add histogram-based native categorical split search for the second-order GBM
+   path
+5. add leakage-controlled target / CTR encodings for very high-cardinality
+   features
+6. extend IR, optimized runtime, and tests so categorical semantics survive
+   export, reload, and inference parity checks
+
+That staged plan matches the real shape of the problem:
+
+- one-hot is the easiest short-term unlock
+- native subset splits are the best semantic end state for many categorical
+  features
+- target-style encodings are still necessary once cardinality gets large enough
+  that direct subset search becomes awkward or statistically brittle
+
 ## Document semantic edge-case invariants
 
 There are several API and semantics choices that appear intentional but are
