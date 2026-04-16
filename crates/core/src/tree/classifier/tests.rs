@@ -23,16 +23,16 @@ fn criterion_choice_table() -> DenseTable {
     DenseTable::with_options(
         vec![
             vec![0.0, 1.0],
-            vec![4.0, 1.0],
-            vec![4.0, 0.0],
-            vec![0.0, 1.0],
-            vec![5.0, 2.0],
-            vec![2.0, 4.0],
-            vec![1.0, 2.0],
+            vec![0.0, 0.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
         ],
-        vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        vec![0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         0,
-        NumericBins::Fixed(8),
+        NumericBins::Auto,
     )
     .unwrap()
 }
