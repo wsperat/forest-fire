@@ -6,10 +6,10 @@ Probability plot: `moons_probabilities_gradient_boosting.png`
 
 | backend | train | predict | accuracy | log loss |
 | --- | ---: | ---: | ---: | ---: |
-| `forestfire_cart` | `0.003182s` | `0.001153s` | `0.5000` | `0.6931` |
-  note: No trees were added. The ensemble stayed at its base score, so the probability surface is constant.
-| `forestfire_oblivious` | `0.005469s` | `0.001301s` | `0.8888` | `0.5769` |
-| `sklearn` | `0.133885s` | `0.020901s` | `0.9086` | `0.2355` |
-| `lightgbm` | `0.030878s` | `0.014413s` | `0.9076` | `0.2369` |
-| `xgboost` | `0.019859s` | `0.003688s` | `0.9072` | `0.2373` |
-| `catboost` | `0.386568s` | `0.002678s` | `0.9129` | `0.2297` |
+| `forestfire_cart` | `0.033153s` | `0.003082s` | `0.9448` | `0.1546` |
+| `forestfire_randomized` | `0.033208s` | `0.002609s` | `0.9458` | `0.1910` |
+| `forestfire_oblivious` | `0.054168s` | `0.001101s` | `0.9463` | `0.1559` |
+| `sklearn` | `1.085889s` | `0.013969s` | `0.9429` | `0.1673` |
+| `lightgbm` | `0.031958s` | `0.012658s` | `0.9429` | `0.1652` |
+| `xgboost` | `0.033780s` | `0.011209s` | `0.9453` | `0.1585` |
+| `catboost` | `0.308426s` | `0.002152s` | `0.9429` | `0.1519` |

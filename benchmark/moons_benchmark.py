@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from common import (
     BenchmarkConfig,
-    backend_color,
     catboost_fit,
     ensure_output_dir,
     lightgbm_fit,
@@ -199,51 +198,60 @@ def plot_probability_grid(
     backend_order = [result.backend for result in results]
     n_cols = 3
     n_rows = (len(backend_order) + n_cols - 1) // n_cols
+
+    # layout="constrained" ensures the colorbar doesn't overlap subplots
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
         figsize=(5.4 * n_cols, 4.4 * n_rows),
         squeeze=False,
-        constrained_layout=True,
+        layout="constrained",
     )
     norm = Normalize(vmin=0.0, vmax=1.0)
+    cmap = "RdBu_r"
 
     result_by_backend = {result.backend: result for result in results}
+    last_im = None
+
     for index, backend in enumerate(backend_order):
         ax = axes[index // n_cols][index % n_cols]
         probabilities = mesh_probabilities[backend].reshape(xx.shape)
-        contour = ax.contourf(
-            xx,
-            yy,
-            probabilities,
-            levels=np.linspace(0.0, 1.0, 21),
-            cmap="RdBu_r",
-            alpha=0.85,
-            norm=norm,
+
+        # 1. Background probability fill (bottom layer)
+        last_im = ax.contourf(
+            xx, yy, probabilities, levels=50, cmap=cmap, norm=norm, alpha=0.3, zorder=1
         )
-        ax.contour(
-            xx,
-            yy,
-            probabilities,
-            levels=[0.5],
-            colors=[backend_color(backend)],
-            linewidths=2.0,
-        )
+
+        # 2. Training points (middle layer)
         ax.scatter(
             train_X[:, 0],
             train_X[:, 1],
             c=train_y,
-            cmap="RdBu_r",
+            cmap=cmap,
             norm=norm,
             s=14,
             linewidths=0.2,
             edgecolors="black",
             alpha=0.8,
+            zorder=2,
         )
+
+        # 3. Decision boundary line (top layer, now in black)
+        ax.contour(
+            xx,
+            yy,
+            probabilities,
+            levels=[0.5],
+            colors=["black"],  # Changed to black for high contrast
+            linewidths=2.0,
+            zorder=3,
+        )
+
         result = result_by_backend[backend]
         ax.set_title(
             f"{backend}\nacc={result.accuracy:.3f} | logloss={result.log_loss:.3f}"
         )
+
         if result.note:
             ax.text(
                 0.03,
@@ -258,15 +266,15 @@ def plot_probability_grid(
         ax.set_xticks([])
         ax.set_yticks([])
 
+    # Hide unused axes
     for index in range(len(backend_order), n_rows * n_cols):
         axes[index // n_cols][index % n_cols].axis("off")
 
-    cbar = fig.colorbar(contour, ax=axes, shrink=0.92, pad=0.02)
-    cbar.set_label("P(class=1)")
-    fig.suptitle(
-        f"make_moons probability surfaces | {family.replace('_', ' ')}",
-        y=0.98,
-    )
+    # 4. Global Colorbar on the right
+    if last_im:
+        cbar = fig.colorbar(last_im, ax=axes, location="right", shrink=0.7, aspect=30)
+        cbar.set_label("Probability $P(y=1)$")
+
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
 
@@ -302,13 +310,14 @@ def family_backends(family: str) -> list[str]:
     if family == "random_forest":
         return [
             "forestfire_cart",
-            "forestfire_oblivious",
+            "forestfire_randomized",
             "sklearn",
             "lightgbm",
             "xgboost",
         ]
     return [
         "forestfire_cart",
+        "forestfire_randomized",
         "forestfire_oblivious",
         "sklearn",
         "lightgbm",
@@ -365,6 +374,9 @@ def main() -> None:
         fitters: dict[str, Any] = {
             "forestfire_cart": lambda: forestfire_fit_with_tree_type(
                 family, "cart", train_X, train_y, args
+            ),
+            "forestfire_randomized": lambda: forestfire_fit_with_tree_type(
+                family, "randomized", train_X, train_y, args
             ),
             "forestfire_oblivious": lambda: forestfire_fit_with_tree_type(
                 family, "oblivious", train_X, train_y, args
