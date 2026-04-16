@@ -444,7 +444,7 @@ fn train_oblivious_structure(
         // faithful to their "one split per depth" structure while still allowing
         // forest/boosting-style stochasticity.
         let feature_indices = candidate_feature_indices(
-            table.binned_feature_count(),
+            table,
             options.tree_options.max_features,
             node_seed(options.tree_options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
@@ -686,7 +686,7 @@ fn evaluate_standard_node(
         )
     });
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.tree_options.max_features,
         node_seed(
             context.options.tree_options.random_seed,

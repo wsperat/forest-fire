@@ -822,7 +822,7 @@ fn build_binary_node_in_place_with_hist(
         None
     };
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xA11C_E5E1u64),
     );
@@ -980,7 +980,7 @@ fn train_oblivious_structure(
             break;
         }
         let feature_indices = candidate_feature_indices(
-            table.binned_feature_count(),
+            table,
             options.max_features,
             node_seed(options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );

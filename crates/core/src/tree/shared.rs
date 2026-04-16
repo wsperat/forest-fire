@@ -233,14 +233,32 @@ pub(crate) fn partition_rows_for_binary_split(
 }
 
 pub(crate) fn candidate_feature_indices(
-    feature_count: usize,
+    table: &dyn TableAccess,
     max_features: Option<usize>,
     seed: u64,
 ) -> Vec<usize> {
-    match max_features {
-        Some(count) => sample_feature_subset(feature_count, count, seed),
-        None => (0..feature_count).collect(),
+    let real_feature_count = table.n_features();
+    let sampled_real_features = match max_features {
+        Some(count) => sample_feature_subset(real_feature_count, count, seed),
+        None => (0..real_feature_count).collect(),
+    };
+    if table.canaries() == 0 {
+        return sampled_real_features;
     }
+
+    let sampled_real_features = sampled_real_features
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    (0..table.binned_feature_count())
+        .filter(
+            |&feature_index| match table.binned_column_kind(feature_index) {
+                forestfire_data::BinnedColumnKind::Real { source_index }
+                | forestfire_data::BinnedColumnKind::Canary { source_index, .. } => {
+                    sampled_real_features.contains(&source_index)
+                }
+            },
+        )
+        .collect()
 }
 
 pub(crate) struct CanarySelection<T> {
@@ -333,7 +351,77 @@ fn fingerprint_thresholds(candidate_thresholds: &[u16]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forestfire_data::{BinnedColumnKind, TableAccess};
     use std::collections::BTreeSet;
+
+    struct SamplingTestTable {
+        n_features: usize,
+        canaries: usize,
+    }
+
+    impl TableAccess for SamplingTestTable {
+        fn n_rows(&self) -> usize {
+            0
+        }
+
+        fn n_features(&self) -> usize {
+            self.n_features
+        }
+
+        fn canaries(&self) -> usize {
+            self.canaries
+        }
+
+        fn numeric_bin_cap(&self) -> usize {
+            0
+        }
+
+        fn binned_feature_count(&self) -> usize {
+            self.n_features * (1 + self.canaries)
+        }
+
+        fn feature_value(&self, _feature_index: usize, _row_index: usize) -> f64 {
+            unreachable!()
+        }
+
+        fn is_missing(&self, _feature_index: usize, _row_index: usize) -> bool {
+            unreachable!()
+        }
+
+        fn is_binary_feature(&self, _index: usize) -> bool {
+            unreachable!()
+        }
+
+        fn binned_value(&self, _feature_index: usize, _row_index: usize) -> u16 {
+            unreachable!()
+        }
+
+        fn binned_boolean_value(&self, _feature_index: usize, _row_index: usize) -> Option<bool> {
+            unreachable!()
+        }
+
+        fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+            if index < self.n_features {
+                BinnedColumnKind::Real {
+                    source_index: index,
+                }
+            } else {
+                let canary_index = index - self.n_features;
+                BinnedColumnKind::Canary {
+                    source_index: canary_index % self.n_features,
+                    copy_index: canary_index / self.n_features,
+                }
+            }
+        }
+
+        fn is_binary_binned_feature(&self, _index: usize) -> bool {
+            unreachable!()
+        }
+
+        fn target_value(&self, _row_index: usize) -> f64 {
+            unreachable!()
+        }
+    }
 
     #[test]
     fn mix_seed_is_deterministic_and_unique_across_many_values() {
@@ -384,9 +472,13 @@ mod tests {
         let feature_count = 32usize;
         let sample_size = 6usize;
         let mut counts = vec![0usize; feature_count];
+        let table = SamplingTestTable {
+            n_features: feature_count,
+            canaries: 0,
+        };
 
         for seed in 0..4096u64 {
-            let sample = candidate_feature_indices(feature_count, Some(sample_size), seed);
+            let sample = candidate_feature_indices(&table, Some(sample_size), seed);
             let unique = sample.iter().copied().collect::<BTreeSet<_>>();
 
             assert_eq!(sample.len(), sample_size);
@@ -410,6 +502,34 @@ mod tests {
             max <= expected + 280,
             "max count {max} too far above {expected}"
         );
+    }
+
+    #[test]
+    fn feature_subset_sampling_expands_sampled_reals_to_their_canaries() {
+        let table = SamplingTestTable {
+            n_features: 5,
+            canaries: 2,
+        };
+
+        let sample = candidate_feature_indices(&table, Some(2), 7);
+        let sampled_sources = sample
+            .iter()
+            .map(
+                |&feature_index| match table.binned_column_kind(feature_index) {
+                    BinnedColumnKind::Real { source_index }
+                    | BinnedColumnKind::Canary { source_index, .. } => source_index,
+                },
+            )
+            .collect::<Vec<_>>();
+        let unique_sources = sampled_sources.iter().copied().collect::<BTreeSet<_>>();
+
+        assert_eq!(unique_sources.len(), 2);
+        assert_eq!(sample.len(), 2 * (1 + table.canaries));
+        for source_index in unique_sources {
+            assert!(sample.contains(&source_index));
+            assert!(sample.contains(&(table.n_features + source_index)));
+            assert!(sample.contains(&(table.n_features * 2 + source_index)));
+        }
     }
 
     #[test]

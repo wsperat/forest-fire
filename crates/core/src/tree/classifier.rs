@@ -925,7 +925,7 @@ fn build_binary_node_in_place_with_hist(
         )
     });
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
     );
@@ -1077,7 +1077,7 @@ fn build_multiway_node_in_place(
         missing_value_strategies: &context.options.missing_value_strategies,
     };
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
     );

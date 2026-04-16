@@ -174,7 +174,7 @@ impl GradientBoostedTrees {
 
         let max_features = config
             .max_features
-            .resolve(config.task, train_set.binned_feature_count());
+            .resolve(config.task, train_set.n_features());
         let base_seed = config.seed.unwrap_or(0xB005_7EED_u64);
         let tree_options = crate::RegressionTreeOptions {
             max_depth: config.max_depth.unwrap_or(8),

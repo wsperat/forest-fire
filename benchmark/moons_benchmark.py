@@ -29,6 +29,23 @@ from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import train_test_split
 
 
+def parse_canary_filter(value: str) -> int | float:
+    try:
+        parsed_int = int(value)
+    except ValueError:
+        parsed_int = None
+    else:
+        if str(parsed_int) == value:
+            return parsed_int
+
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--filter must be an integer or float."
+        ) from exc
+
+
 @dataclass(frozen=True)
 class MoonsBenchmarkResult:
     family: str
@@ -58,6 +75,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--noise", type=float, default=0.25)
     parser.add_argument("--n-estimators", type=int, default=200)
     parser.add_argument("--max-features", type=str, default="sqrt")
+    parser.add_argument("--canaries", type=int, default=5)
+    parser.add_argument("--filter", type=parse_canary_filter, default=0.95)
     parser.add_argument("--physical-cores", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--grid-resolution", type=int, default=250)
@@ -81,7 +100,8 @@ def forestfire_fit_with_tree_type(
         "min_samples_split": 2,
         "min_samples_leaf": 1,
         "max_features": args.max_features,
-        "canaries": 2,
+        "canaries": args.canaries,
+        "filter": args.filter,
         "physical_cores": args.physical_cores,
         "seed": args.seed,
     }

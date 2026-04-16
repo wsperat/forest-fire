@@ -50,7 +50,7 @@ pub(super) fn train_oblivious_structure(
             break;
         }
         let feature_indices = candidate_feature_indices(
-            table.binned_feature_count(),
+            table,
             options.max_features,
             node_seed(options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
