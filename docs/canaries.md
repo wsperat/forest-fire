@@ -139,12 +139,111 @@ For ordinary `dt` training, canaries act as a local growth guard.
 
 Effectively:
 
-- if a real feature wins, the tree can continue
-- if the best winner is a canary, that node should stop
+- if an acceptable real feature survives the canary policy, the tree can continue
+- if the allowed competition window contains only canaries, that node should stop
 
 This matters because standalone trees are the most exposed to “keep splitting because you can” behavior.
 
 In that setting, canaries let ForestFire be less dependent on post-hoc pruning.
+
+## The windowed canary policy
+
+The important point is that ForestFire now separates two ideas that used to be fused together:
+
+- how candidates are scored and ranked
+- how strict the canary stopping rule is
+
+Scoring still happens exactly the same way:
+
+- evaluate candidate splits
+- assign each candidate its usual objective score
+- sort candidates from best to worst
+
+What `filter` changes is only the acceptance rule that runs after ranking.
+
+### Default behavior: `filter=None` or `filter=1`
+
+The default policy is intentionally strict.
+
+It means:
+
+- only the single top-ranked candidate is eligible
+- if that candidate is a real feature, training continues with it
+- if that candidate is a canary, the node or stage stops
+
+This is the original “best split must beat noise directly” rule.
+
+### Integer windows: `filter=n`
+
+If you pass an integer `n`, ForestFire allows a slightly softer rule:
+
+- rank all scored candidates as usual
+- inspect only the top `n`
+- choose the highest-ranked real feature inside that window
+
+This means canaries are still allowed to rank ahead of the chosen real feature.
+
+Example:
+
+- `filter=3` means a canary may occupy rank 1
+- another canary may occupy rank 2
+- the best real feature at rank 3 is still allowed to split the node
+
+If every candidate in the top 3 is a canary, the node still stops.
+
+So `filter=n` is not “ignore canaries.”
+
+It is:
+
+- “keep canaries as a guardrail”
+- “but allow the best real split to survive if it is still near the very top”
+
+### Fractional windows: `filter=alpha`
+
+If you pass a float `alpha` in `[0, 1)`, ForestFire interprets it as a top-window fraction of `1 - alpha`.
+
+Concretely:
+
+- let `k` be the number of scored candidates at the current decision point
+- compute `ceil((1 - alpha) * k)`
+- search only that top-ranked window for the first real feature
+
+Example:
+
+- `filter=0.95` means “accept the best real split inside the top 5% of ranked candidates”
+
+That is useful when the number of scored candidates changes from node to node or from algorithm to algorithm and you want the canary rule to scale with the actual competition set rather than with a fixed absolute count.
+
+### What the window is counting
+
+The `filter` window is computed over scored split candidates, not over the original raw columns in isolation.
+
+That distinction matters because the candidate pool depends on context:
+
+- `max_features` may restrict which features are even considered
+- some features may be unavailable or unsplittable at a given node
+- oblivious trees score one shared level-split rather than independent per-node splits
+- boosting applies the same logic only at the root of the next stage
+
+So the meaning of “top 5%” is:
+
+- top 5% of the candidates that were actually scored at that decision point
+
+not:
+
+- top 5% of all features in the original dataset regardless of feasibility
+
+### What happens when the window contains only canaries
+
+The answer is still “stop.”
+
+That is the core invariant ForestFire keeps:
+
+- canaries remain part of the acceptance test
+- the filter only controls how much room a near-top real feature is given to survive
+- if no real feature survives inside that allowed window, growth is rejected
+
+This keeps the canary mechanism meaningful while allowing a less all-or-nothing policy than “rank 1 must already be real.”
 
 ## How canaries affect different tree families
 
@@ -156,7 +255,7 @@ These are multiway classifiers.
 
 Here, canaries matter as a branch-expansion gate:
 
-- if the best split at a node is effectively noise, growth stops there
+- if no real split survives inside the allowed top window, growth stops there
 
 This is useful because multiway branching can create a large structural jump from a single split.
 
@@ -166,7 +265,7 @@ For standard binary trees, the canary acts as the most direct local stop test.
 
 This is the easiest setting to reason about:
 
-- if the best binary split does not beat noise, stop
+- if the allowed top-ranked window contains no real binary split, stop
 
 ### Randomized trees
 
@@ -177,13 +276,15 @@ That makes canaries especially useful, not less useful:
 - randomness can expose different candidate splits
 - canaries help decide whether those candidates are still meaningfully better than noise
 
+The `filter` window is especially useful here because randomized search can move near-tied candidates around more than fully deterministic search does. A slightly wider window lets you keep the same “real split must still be near the top” principle without requiring the real split to win rank 1 every time.
+
 ### Oblivious trees
 
 Oblivious trees grow by level, not by arbitrary node.
 
 That changes the interpretation:
 
-- a canary win does not just say “one node should stop”
+- a canary-only window does not just say “one node should stop”
 - it says “the next shared depth-level split is not justified”
 
 So for oblivious trees, canaries naturally act as a depth-growth stop.
@@ -246,7 +347,7 @@ So in boosting, canaries are not disabled. They become an early-stop signal for 
 In ForestFire’s gradient boosting implementation, training stops when:
 
 1. `n_trees` stages have been trained, or
-2. the root split of the next stage would be a canary
+2. the allowed root-level `filter` window contains no real split and only canaries survive there
 
 That second rule is important.
 
@@ -258,7 +359,7 @@ It means:
 
 This is a strong statement about the residual problem:
 
-- if even the root of the next stage is best explained by noise, continuing to add trees is not justified
+- if even the allowed top-ranked root candidates do not contain a real split that survives canary competition, continuing to add trees is not justified
 
 ## Why the root matters in boosting
 

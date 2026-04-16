@@ -170,10 +170,22 @@ For the full rationale and algorithm-specific behavior, see [Canary Strategy](ca
 
 Behavior:
 
-- standard trees stop at the current node
-- oblivious trees stop further depth growth
-- gradient boosting stops adding stages if the next stage’s root split would be a canary
+- standard trees stop at the current node if no acceptable real split survives canary competition
+- oblivious trees stop further depth growth if no acceptable real level-split survives canary competition
+- gradient boosting stops adding stages if no acceptable real root split survives canary competition
 - random forests ignore canaries during tree training
+
+By default, that competition is strict:
+
+- `filter=None` behaves like `filter=1`
+- the top-ranked candidate must already be a real feature
+
+You can soften that rule with `filter=...`:
+
+- `filter=3` means the chosen real split must appear within the top 3 scored candidates
+- `filter=0.95` means the chosen real split must appear within the top 5% of scored candidates
+
+In both cases, candidates are still scored and sorted in the usual way first. The difference is only which ranked window is allowed to contain the chosen real feature.
 
 Why canaries exist:
 
@@ -222,7 +234,7 @@ It keeps the ideas that matter most:
 But it keeps a ForestFire-specific stopping rule:
 
 - canaries still participate in split selection
-- if the root split of the next stage would be a canary, that stage is discarded and boosting stops
+- if no real root split survives inside the allowed canary `filter` window, that stage is discarded and boosting stops
 
 That choice reflects the project’s general design preference: use explicit training-time noise competition as a stopping signal instead of bolting on a separate pruning or early-stopping layer later.
 

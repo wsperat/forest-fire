@@ -34,6 +34,7 @@ train(
     top_gradient_fraction=None,
     other_gradient_fraction=None,
     missing_value_strategy=None,
+    filter=None,
 )
 ```
 
@@ -82,9 +83,66 @@ Canaries are shuffled copies of already-preprocessed features used for automatic
 
 Current stopping behavior:
 
-- standard trees stop at the current node
-- oblivious trees stop the remaining depth growth
-- `gbm` stops adding new stages when the first/root split that would be taken is a canary
+- standard trees stop at the current node when no acceptable real split survives canary competition
+- oblivious trees stop the remaining depth growth when no acceptable real level-split survives canary competition
+- `gbm` stops adding new stages when no acceptable real root split survives canary competition
+
+Canaries are active for `dt` and `gbm`.
+
+Random forests are the exception:
+
+- `rf` deliberately ignores canaries during tree training
+- so `canaries` and `filter` do not affect random-forest growth policy
+
+#### `filter`
+
+`filter` controls how strict canary competition is once split candidates have been scored and ranked.
+
+Accepted forms:
+
+- `None`
+- positive integer
+- float in `[0, 1)`
+
+The ranking rule is:
+
+1. score split candidates as usual
+2. sort them from best to worst
+3. look only inside the allowed top window
+4. choose the best real feature inside that window
+5. if the window contains only canaries, stop growth under the usual canary rule
+
+`filter=None` is the default strict policy and is equivalent to `filter=1`:
+
+- only the single best-ranked candidate is eligible
+- if that candidate is a canary, the node stops
+
+If `filter` is an integer `n`:
+
+- the chosen real feature must appear within the top `n` scored candidates
+- canaries are still allowed to occupy earlier ranks
+- the selected split is the highest-ranked real split inside that top-`n` window
+
+Example:
+
+- `filter=3` means “after sorting all candidates, ignore canaries if needed, but only within the top 3 ranked candidates”
+
+If `filter` is a float `alpha` in `[0, 1)`:
+
+- ForestFire converts it into a top-window fraction of `1 - alpha`
+- if there are `k` scored candidates, the allowed window size is `ceil((1 - alpha) * k)`
+- the chosen split is again the highest-ranked real split inside that window
+
+Example:
+
+- `filter=0.95` means “look only at the top 5% of ranked candidates”
+
+A few practical details matter:
+
+- the window is computed over scored split candidates, not just over raw input columns
+- the exact candidate count can vary by algorithm and by node because `max_features`, tree type, and node-local feasibility all affect how many candidates are actually scorable
+- for oblivious trees, the competition happens at the next shared level-split
+- for `gbm`, the same logic is applied at the root of the next stage, and if no real split survives inside the allowed window, that whole stage is discarded and boosting stops
 
 #### `bins`
 

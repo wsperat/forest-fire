@@ -149,6 +149,47 @@ def show_inference_inputs_and_optimized_runtime() -> None:
     print("compiled pred ->", restored_optimized.predict(rows).tolist())
 
 
+def show_canary_filter_policy() -> None:
+    rng = np.random.default_rng(23)
+    x = rng.normal(size=(4_000, 6))
+    y = (
+        1.8 * x[:, 0]
+        - 0.9 * x[:, 1]
+        + 0.4 * x[:, 2]
+        + rng.normal(scale=0.8, size=x.shape[0])
+        > 0.0
+    ).astype(float)
+
+    strict = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=2,
+    )
+    top_3 = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=2,
+        filter=3,
+    )
+    top_5_percent = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=2,
+        filter=0.95,
+    )
+
+    print_section("Canary Filter Policy")
+    print("strict root   ->", strict.tree_structure())
+    print("top_3 root    ->", top_3.tree_structure())
+    print("top_5pct root ->", top_5_percent.tree_structure())
+
+
 def show_serialization() -> None:
     x, y = regression_rows()
     model = train(x, y, task="regression", tree_type="cart", canaries=0, bins="auto")
@@ -198,6 +239,7 @@ def main() -> None:
     show_classification_models()
     show_training_tables()
     show_inference_inputs_and_optimized_runtime()
+    show_canary_filter_policy()
     show_serialization()
     show_optional_sparse_input()
 
