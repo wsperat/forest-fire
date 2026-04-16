@@ -311,6 +311,7 @@ def family_backends(family: str) -> list[str]:
         return [
             "forestfire_cart",
             "forestfire_randomized",
+            "forestfire_oblivious",
             "sklearn",
             "lightgbm",
             "xgboost",

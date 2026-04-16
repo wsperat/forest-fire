@@ -270,7 +270,7 @@ The task split is:
 - `task benchmark`: cross-library end-to-end train/predict grids
 - `task benchmark-micro`: ForestFire-only phase breakdowns
 - `task benchmark-moons`: two-dimensional probability-surface comparison on `make_moons`
-- `task benchmark-regression-surface`: two-dimensional prediction-surface comparison on a synthetic regression task
+- `task benchmark-regression-surface`: one-dimensional prediction-curve comparison on a synthetic regression task
 
 ## Output artifacts
 

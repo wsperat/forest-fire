@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from common import (
     BenchmarkConfig,
+    backend_color,
     catboost_fit,
     ensure_output_dir,
     lightgbm_fit,
@@ -21,7 +22,6 @@ from common import (
     sklearn_fit,
     xgboost_fit,
 )
-from matplotlib.colors import Normalize
 from numpy.typing import NDArray
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark and visualize random-forest and gradient-boosting "
-            "regressors on a two-dimensional non-linear synthetic task."
+            "regressors on a one-dimensional non-linear synthetic task."
         )
     )
     parser.add_argument("--output-dir", type=Path, default=Path("docs/benchmarks"))
@@ -81,17 +81,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def generate_regression_surface(
+def generate_regression_curve(
     rows: int, noise: float, seed: int
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     rng = np.random.default_rng(seed)
-    X = rng.uniform(-3.0, 3.0, size=(rows, 2)).astype(np.float64)
+    X = rng.uniform(-4.0, 4.0, size=(rows, 1)).astype(np.float64)
     x0 = X[:, 0]
-    x1 = X[:, 1]
     y = (
-        np.sin(1.35 * x0) * np.cos(0.8 * x1)
-        + 0.35 * (x0 * x1) / (1.0 + x0**2 + x1**2)
-        + 0.2 * np.sin(x0 + x1)
+        0.9 * np.sin(1.4 * x0)
+        + 0.35 * np.cos(0.55 * x0 * x0)
+        + 0.12 * x0
         + noise * rng.normal(size=rows)
     ).astype(np.float64)
     return X, y
@@ -160,17 +159,9 @@ def prediction_column(model: Any, X: NDArray[np.float64]) -> NDArray[np.float64]
     return np.asarray(model.predict(X), dtype=np.float64)
 
 
-def mesh_grid(
-    X: NDArray[np.float64], resolution: int
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    x_min, x_max = X[:, 0].min() - 0.6, X[:, 0].max() + 0.6
-    y_min, y_max = X[:, 1].min() - 0.6, X[:, 1].max() + 0.6
-    xx, yy = np.meshgrid(
-        np.linspace(x_min, x_max, resolution),
-        np.linspace(y_min, y_max, resolution),
-    )
-    mesh = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
-    return xx, yy, mesh
+def prediction_grid(X: NDArray[np.float64], resolution: int) -> NDArray[np.float64]:
+    x_min, x_max = X[:, 0].min() - 0.4, X[:, 0].max() + 0.4
+    return np.linspace(x_min, x_max, resolution, dtype=np.float64).reshape(-1, 1)
 
 
 def fit_timed(fn: Any) -> tuple[Any, float]:
@@ -198,9 +189,8 @@ def plot_prediction_grid(
     family: str,
     train_X: NDArray[np.float64],
     train_y: NDArray[np.float64],
-    xx: NDArray[np.float64],
-    yy: NDArray[np.float64],
-    mesh_predictions: dict[str, NDArray[np.float64]],
+    grid_X: NDArray[np.float64],
+    grid_predictions: dict[str, NDArray[np.float64]],
     results: list[RegressionBenchmarkResult],
     output_path: Path,
 ) -> None:
@@ -210,53 +200,39 @@ def plot_prediction_grid(
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
-        figsize=(5.4 * n_cols, 4.4 * n_rows),
+        figsize=(5.4 * n_cols, 3.8 * n_rows),
         squeeze=False,
         layout="constrained",
     )
-
-    all_values = [train_y]
-    all_values.extend(prediction for prediction in mesh_predictions.values())
-    value_min = min(float(values.min()) for values in all_values)
-    value_max = max(float(values.max()) for values in all_values)
-    norm = Normalize(vmin=value_min, vmax=value_max)
-    cmap = "coolwarm"
     result_by_backend = {result.backend: result for result in results}
+    x_sorted = np.argsort(train_X[:, 0])
+    train_x_sorted = train_X[x_sorted, 0]
+    train_y_sorted = train_y[x_sorted]
+    grid_x = grid_X[:, 0]
 
     for index, backend in enumerate(backend_order):
         ax = axes[index // n_cols][index % n_cols]
-        predictions = mesh_predictions[backend].reshape(xx.shape)
-        ax.contourf(
-            xx,
-            yy,
-            predictions,
-            levels=50,
-            cmap=cmap,
-            norm=norm,
-            alpha=0.35,
-            zorder=1,
-        )
-        ax.contour(
-            xx,
-            yy,
-            predictions,
-            levels=12,
-            colors=["black"],
-            linewidths=0.7,
-            alpha=0.35,
-            zorder=2,
-        )
+        predictions = grid_predictions[backend]
         ax.scatter(
             train_X[:, 0],
-            train_X[:, 1],
-            c=train_y,
-            cmap=cmap,
-            norm=norm,
-            s=14,
+            train_y,
+            s=10,
+            color="#56748f",
             linewidths=0.2,
             edgecolors="black",
-            alpha=0.9,
-            zorder=3,
+            alpha=0.55,
+            zorder=1,
+        )
+        ax.plot(
+            grid_x, predictions, color=backend_color(backend), linewidth=2.0, zorder=2
+        )
+        ax.plot(
+            train_x_sorted,
+            train_y_sorted,
+            color="black",
+            linewidth=0.8,
+            alpha=0.2,
+            zorder=0,
         )
         result = result_by_backend[backend]
         ax.set_title(f"{backend}\nrmse={result.rmse:.3f} | r2={result.r2:.3f}")
@@ -271,8 +247,7 @@ def plot_prediction_grid(
                 ha="left",
                 bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.8},
             )
-        ax.set_xticks([])
-        ax.set_yticks([])
+        ax.tick_params(labelsize=8)
 
     for index in range(len(backend_order), n_rows * n_cols):
         axes[index // n_cols][index % n_cols].axis("off")
@@ -287,10 +262,10 @@ def write_summary(
     output_path: Path,
     plot_name: str,
 ) -> None:
-    lines = [f"# regression surface summary | {family}", ""]
+    lines = [f"# regression curve summary | {family}", ""]
     lines.append(
-        "This benchmark uses a two-dimensional non-linear synthetic regression task "
-        "to compare fitted prediction surfaces."
+        "This benchmark uses a one-dimensional non-linear synthetic regression task "
+        "to compare fitted prediction curves."
     )
     lines.append("")
     lines.append(f"Prediction plot: `{plot_name}`")
@@ -313,6 +288,7 @@ def family_backends(family: str) -> list[str]:
         return [
             "forestfire_cart",
             "forestfire_randomized",
+            "forestfire_oblivious",
             "sklearn",
             "lightgbm",
             "xgboost",
@@ -333,7 +309,7 @@ def main() -> None:
     ensure_output_dir(args.output_dir)
 
     total_rows = args.train_rows + args.test_rows
-    X, y = generate_regression_surface(total_rows, args.noise, args.seed)
+    X, y = generate_regression_curve(total_rows, args.noise, args.seed)
     train_X, test_X, train_y, test_y = train_test_split(
         X,
         y,
@@ -341,12 +317,12 @@ def main() -> None:
         test_size=args.test_rows,
         random_state=args.seed,
     )
-    xx, yy, mesh = mesh_grid(X, args.grid_resolution)
+    grid_X = prediction_grid(X, args.grid_resolution)
 
     benchmark_families = ["random_forest", "gradient_boosting"]
     for family in benchmark_families:
         log(
-            "regression surface benchmark start | "
+            "regression curve benchmark start | "
             f"family={family} | train_rows={args.train_rows} | "
             f"test_rows={args.test_rows} | noise={args.noise}"
         )
@@ -384,12 +360,12 @@ def main() -> None:
             fitters["catboost"] = lambda: catboost_fit(config, train_X, train_y)
 
         results: list[RegressionBenchmarkResult] = []
-        mesh_predictions: dict[str, NDArray[np.float64]] = {}
+        grid_predictions: dict[str, NDArray[np.float64]] = {}
         for backend in family_backends(family):
-            log(f"regression surface fit | family={family} | backend={backend}")
+            log(f"regression curve fit | family={family} | backend={backend}")
             model, train_seconds = fit_timed(fitters[backend])
             predictions, predict_seconds = predict_timed(model, test_X)
-            mesh_predictions[backend] = prediction_column(model, mesh)
+            grid_predictions[backend] = prediction_column(model, grid_X)
             rmse = float(np.sqrt(mean_squared_error(test_y, predictions)))
             results.append(
                 RegressionBenchmarkResult(
@@ -408,9 +384,9 @@ def main() -> None:
                 )
             )
 
-        json_path = args.output_dir / f"regression_surface_results_{family}.json"
-        png_path = args.output_dir / f"regression_surface_{family}.png"
-        md_path = args.output_dir / f"regression_surface_summary_{family}.md"
+        json_path = args.output_dir / f"regression_curve_results_{family}.json"
+        png_path = args.output_dir / f"regression_curve_{family}.png"
+        md_path = args.output_dir / f"regression_curve_summary_{family}.md"
         json_path.write_text(
             json.dumps([asdict(result) for result in results], indent=2) + "\n",
             encoding="utf-8",
@@ -419,14 +395,13 @@ def main() -> None:
             family=family,
             train_X=train_X,
             train_y=train_y,
-            xx=xx,
-            yy=yy,
-            mesh_predictions=mesh_predictions,
+            grid_X=grid_X,
+            grid_predictions=grid_predictions,
             results=results,
             output_path=png_path,
         )
         write_summary(family, results, md_path, png_path.name)
-        log(f"regression surface benchmark complete | family={family}")
+        log(f"regression curve benchmark complete | family={family}")
 
 
 if __name__ == "__main__":

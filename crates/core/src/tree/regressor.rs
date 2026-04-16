@@ -12,8 +12,8 @@ use crate::ir::{
 };
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
-    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
-    select_best_non_canary_candidate, subtract_feature_histograms,
+    candidate_feature_indices, choose_random_threshold, node_seed, oblivious_max_depth_limit,
+    partition_rows_for_binary_split, select_best_non_canary_candidate, subtract_feature_histograms,
 };
 use crate::{
     CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
@@ -972,7 +972,12 @@ fn train_oblivious_structure(
     }];
     let mut splits = Vec::new();
 
-    for depth in 0..options.max_depth {
+    let max_depth = if options.max_depth > 32 {
+        oblivious_max_depth_limit(options.max_depth, table.n_rows(), options.min_samples_leaf)
+    } else {
+        options.max_depth
+    };
+    for depth in 0..max_depth {
         if leaves
             .iter()
             .all(|leaf| leaf.len() < options.min_samples_split)
