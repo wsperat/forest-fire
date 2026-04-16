@@ -31,7 +31,7 @@ def parse_canary_filter(value: str) -> int | float:
     try:
         parsed_int = int(value)
     except ValueError:
-        parsed_int = None
+        pass
     else:
         if str(parsed_int) == value:
             return parsed_int
