@@ -14,14 +14,16 @@ use crate::tree::regressor::{
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
     build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
-    node_seed, partition_rows_for_binary_split, select_best_non_canary_candidate,
-    subtract_feature_histograms,
+    node_seed, oblivious_max_depth_limit, partition_rows_for_binary_split,
+    select_best_non_canary_candidate, subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+
+const OBLIVIOUS_SECOND_ORDER_DEPTH_CAP: usize = 10;
 
 /// Extra controls required by second-order tree training.
 #[derive(Debug, Clone)]
@@ -432,7 +434,13 @@ fn train_oblivious_structure(
     let mut splits = Vec::new();
 
     let mut root_canary_selected = false;
-    for depth in 0..options.tree_options.max_depth {
+    let max_depth = oblivious_max_depth_limit(
+        options.tree_options.max_depth,
+        table.n_rows(),
+        options.tree_options.min_samples_leaf,
+    )
+    .min(OBLIVIOUS_SECOND_ORDER_DEPTH_CAP);
+    for depth in 0..max_depth {
         if leaves
             .iter()
             .all(|leaf| leaf.len() < options.tree_options.min_samples_split)
@@ -1021,14 +1029,18 @@ fn score_oblivious_split(
         return None;
     }
     let mut threshold_gains = vec![0.0; bin_cap];
-    let mut found_valid = vec![false; bin_cap];
-    let mut observed_any = false;
+    let mut threshold_valid = vec![true; bin_cap];
+
+    let mut bin_count = vec![0usize; bin_cap];
+    let mut bin_gradient_sum = vec![0.0; bin_cap];
+    let mut bin_hessian_sum = vec![0.0; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
 
     for leaf in leaves {
-        let mut bin_count = vec![0usize; bin_cap];
-        let mut bin_gradient_sum = vec![0.0; bin_cap];
-        let mut bin_hessian_sum = vec![0.0; bin_cap];
-        let mut observed_bins = vec![false; bin_cap];
+        bin_count.fill(0);
+        bin_gradient_sum.fill(0.0);
+        bin_hessian_sum.fill(0.0);
+        observed_bins.fill(false);
 
         for row_idx in &row_indices[leaf.start..leaf.end] {
             let bin = table.binned_value(feature_index, *row_idx) as usize;
@@ -1039,18 +1051,18 @@ fn score_oblivious_split(
         }
 
         let observed_bins = observed_bins
-            .into_iter()
+            .iter()
             .enumerate()
-            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .filter_map(|(bin, seen)| (*seen).then_some(bin))
             .collect::<Vec<_>>();
         if observed_bins.len() <= 1 {
-            continue;
+            return None;
         }
-        observed_any = true;
 
         let mut left_count = 0usize;
         let mut left_gradient_sum = 0.0;
         let mut left_hessian_sum = 0.0;
+        let mut leaf_valid = vec![false; bin_cap];
         for &bin in &observed_bins {
             left_count += bin_count[bin];
             left_gradient_sum += bin_gradient_sum[bin];
@@ -1067,7 +1079,7 @@ fn score_oblivious_split(
             ) {
                 continue;
             }
-            found_valid[bin] = true;
+            leaf_valid[bin] = true;
             threshold_gains[bin] += split_gain(
                 left_gradient_sum,
                 left_hessian_sum,
@@ -1078,16 +1090,15 @@ fn score_oblivious_split(
                 options.l2_regularization,
             );
         }
-    }
-
-    if !observed_any {
-        return None;
+        for threshold_bin in 0..bin_cap {
+            threshold_valid[threshold_bin] &= leaf_valid[threshold_bin];
+        }
     }
 
     threshold_gains
         .into_iter()
         .enumerate()
-        .filter(|(bin, gain)| found_valid[*bin] && *gain > options.min_gain_to_split)
+        .filter(|(bin, gain)| threshold_valid[*bin] && *gain > options.min_gain_to_split)
         .max_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(threshold_bin, gain)| SplitChoice {
             feature_index,
@@ -1106,7 +1117,6 @@ fn score_binary_oblivious_split(
     options: &SecondOrderRegressionTreeOptions,
 ) -> Option<SplitChoice> {
     let mut gain = 0.0;
-    let mut found_valid = false;
 
     for leaf in leaves {
         let mut left_count = 0usize;
@@ -1132,9 +1142,8 @@ fn score_binary_oblivious_split(
             right_count,
             right_hessian_sum,
         ) {
-            continue;
+            return None;
         }
-        found_valid = true;
         gain += split_gain(
             left_gradient_sum,
             left_hessian_sum,
@@ -1146,7 +1155,7 @@ fn score_binary_oblivious_split(
         );
     }
 
-    (found_valid && gain > options.min_gain_to_split).then_some(SplitChoice {
+    (gain > options.min_gain_to_split).then_some(SplitChoice {
         feature_index,
         threshold_bin: 0,
         gain,

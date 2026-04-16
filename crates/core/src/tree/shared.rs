@@ -261,6 +261,19 @@ pub(crate) fn candidate_feature_indices(
         .collect()
 }
 
+pub(crate) fn oblivious_max_depth_limit(
+    requested_max_depth: usize,
+    row_count: usize,
+    min_samples_leaf: usize,
+) -> usize {
+    if requested_max_depth == 0 || row_count == 0 {
+        return 0;
+    }
+    let leaf_capacity = (row_count / min_samples_leaf.max(1)).max(1);
+    let structural_limit = usize::BITS as usize - 1 - leaf_capacity.leading_zeros() as usize;
+    requested_max_depth.min(structural_limit.max(1))
+}
+
 pub(crate) struct CanarySelection<T> {
     pub(crate) selected: Option<T>,
     pub(crate) blocked_by_canary: bool,

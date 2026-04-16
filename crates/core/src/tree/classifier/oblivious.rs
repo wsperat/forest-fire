@@ -335,9 +335,15 @@ fn score_numeric_oblivious_split_fast(
     let mut threshold_scores = vec![0.0; bin_cap];
     let mut observed_any = false;
 
+    let mut bin_class_counts = vec![vec![0usize; num_classes]; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
+
     for leaf in leaves {
-        let mut bin_class_counts = vec![vec![0usize; num_classes]; bin_cap];
-        let mut observed_bins = vec![false; bin_cap];
+        for counts in &mut bin_class_counts {
+            counts.fill(0);
+        }
+        observed_bins.fill(false);
+
         for row_idx in &row_indices[leaf.start..leaf.end] {
             let bin = table.binned_value(feature_index, *row_idx) as usize;
             if bin >= bin_cap {
@@ -348,9 +354,9 @@ fn score_numeric_oblivious_split_fast(
         }
 
         let observed_bins: Vec<usize> = observed_bins
-            .into_iter()
+            .iter()
             .enumerate()
-            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .filter_map(|(bin, seen)| (*seen).then_some(bin))
             .collect();
         if observed_bins.len() <= 1 {
             continue;

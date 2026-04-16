@@ -2113,11 +2113,16 @@ fn score_numeric_oblivious_split_mean_fast(
     let mut threshold_scores = vec![0.0; bin_cap];
     let mut observed_any = false;
 
+    let mut bin_count = vec![0usize; bin_cap];
+    let mut bin_sum = vec![0.0; bin_cap];
+    let mut bin_sum_sq = vec![0.0; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
+
     for leaf in leaves {
-        let mut bin_count = vec![0usize; bin_cap];
-        let mut bin_sum = vec![0.0; bin_cap];
-        let mut bin_sum_sq = vec![0.0; bin_cap];
-        let mut observed_bins = vec![false; bin_cap];
+        bin_count.fill(0);
+        bin_sum.fill(0.0);
+        bin_sum_sq.fill(0.0);
+        observed_bins.fill(false);
 
         for row_idx in &row_indices[leaf.start..leaf.end] {
             let bin = table.binned_value(feature_index, *row_idx) as usize;
@@ -2132,9 +2137,9 @@ fn score_numeric_oblivious_split_mean_fast(
         }
 
         let observed_bins: Vec<usize> = observed_bins
-            .into_iter()
+            .iter()
             .enumerate()
-            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .filter_map(|(bin, seen)| (*seen).then_some(bin))
             .collect();
         if observed_bins.len() <= 1 {
             continue;
@@ -2189,7 +2194,8 @@ fn score_binary_oblivious_split(
     criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<ObliviousSplitCandidate> {
-    let score = leaves.iter().fold(0.0, |score, leaf| {
+    let mut score = 0.0;
+    for leaf in leaves {
         let leaf_rows = &row_indices[leaf.start..leaf.end];
         let (left_rows, right_rows): (Vec<usize>, Vec<usize>) =
             leaf_rows.iter().copied().partition(|row_idx| {
@@ -2199,13 +2205,13 @@ fn score_binary_oblivious_split(
             });
 
         if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
-            return score;
+            continue;
         }
 
-        score + regression_loss(leaf_rows, targets, criterion)
+        score += regression_loss(leaf_rows, targets, criterion)
             - (regression_loss(&left_rows, targets, criterion)
-                + regression_loss(&right_rows, targets, criterion))
-    });
+                + regression_loss(&right_rows, targets, criterion));
+    }
 
     (score > 0.0).then_some(ObliviousSplitCandidate {
         feature_index,
