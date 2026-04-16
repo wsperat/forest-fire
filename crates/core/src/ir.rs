@@ -722,6 +722,7 @@ fn boosted_tree_model_from_ir_parts(
                     max_features: None,
                     random_seed: 0,
                     missing_value_strategies: Vec::new(),
+                    canary_filter: crate::CanaryFilter::default(),
                 },
                 num_features,
                 feature_preprocessing,
@@ -748,6 +749,7 @@ fn boosted_tree_model_from_ir_parts(
                         max_features: None,
                         random_seed: 0,
                         missing_value_strategies: Vec::new(),
+                        canary_filter: crate::CanaryFilter::default(),
                     },
                     num_features,
                     feature_preprocessing,
@@ -863,6 +865,7 @@ fn single_model_from_ir_parts(
                     max_features: None,
                     random_seed: 0,
                     missing_value_strategies: Vec::new(),
+                    canary_filter: crate::CanaryFilter::default(),
                 },
                 num_features,
                 feature_preprocessing,
@@ -893,6 +896,7 @@ fn single_model_from_ir_parts(
                         max_features: None,
                         random_seed: 0,
                         missing_value_strategies: Vec::new(),
+                        canary_filter: crate::CanaryFilter::default(),
                     },
                     num_features,
                     feature_preprocessing,
@@ -994,6 +998,7 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         max_features: None,
         random_seed: 0,
         missing_value_strategies: Vec::new(),
+        canary_filter: crate::CanaryFilter::default(),
     }
 }
 

@@ -14,7 +14,8 @@ use crate::tree::regressor::{
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
     build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
-    node_seed, partition_rows_for_binary_split, subtract_feature_histograms,
+    node_seed, partition_rows_for_binary_split, select_best_non_canary_candidate,
+    subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
@@ -148,6 +149,7 @@ struct StandardNodeEvaluation {
     parent_strength: f64,
     histograms: Option<Vec<SecondOrderFeatureHistogram>>,
     best_split: Option<SplitChoice>,
+    blocked_by_canary: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -430,7 +432,8 @@ fn train_oblivious_structure(
     let mut splits = Vec::new();
 
     let mut root_canary_selected = false;
-    for depth in 0..options.tree_options.max_depth {
+    let max_depth = options.tree_options.max_depth;
+    for depth in 0..max_depth {
         if leaves
             .iter()
             .all(|leaf| leaf.len() < options.tree_options.min_samples_split)
@@ -442,11 +445,11 @@ fn train_oblivious_structure(
         // faithful to their "one split per depth" structure while still allowing
         // forest/boosting-style stochasticity.
         let feature_indices = candidate_feature_indices(
-            table.binned_feature_count(),
+            table,
             options.tree_options.max_features,
             node_seed(options.tree_options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
-        let best_split = if parallelism.enabled() {
+        let split_candidates = if parallelism.enabled() {
             feature_indices
                 .into_par_iter()
                 .filter_map(|feature_index| {
@@ -460,7 +463,7 @@ fn train_oblivious_structure(
                         &options,
                     )
                 })
-                .max_by(|left, right| left.gain.total_cmp(&right.gain))
+                .collect::<Vec<_>>()
         } else {
             feature_indices
                 .into_iter()
@@ -475,19 +478,24 @@ fn train_oblivious_structure(
                         &options,
                     )
                 })
-                .max_by(|left, right| left.gain.total_cmp(&right.gain))
+                .collect::<Vec<_>>()
         };
-
-        let Some(best_split) = best_split.filter(|split| split.gain > options.min_gain_to_split)
+        let selection = select_best_non_canary_candidate(
+            table,
+            split_candidates,
+            options.tree_options.canary_filter,
+            |candidate| candidate.gain,
+            |candidate| candidate.feature_index,
+        );
+        let Some(best_split) = selection
+            .selected
+            .filter(|split| split.gain > options.min_gain_to_split)
         else {
-            break;
-        };
-        if table.is_canary_binned_feature(best_split.feature_index) {
-            if depth == 0 {
+            if depth == 0 && selection.blocked_by_canary {
                 root_canary_selected = true;
             }
             break;
-        }
+        };
 
         leaves = split_oblivious_leaves_in_place(
             table,
@@ -542,10 +550,7 @@ fn build_standard_node(
     let evaluation = evaluate_standard_node(context, rows, depth, histograms);
 
     match evaluation.best_split {
-        Some(split)
-            if split.gain > context.options.min_gain_to_split
-                && !context.table.is_canary_binned_feature(split.feature_index) =>
-        {
+        Some(split) if split.gain > context.options.min_gain_to_split => {
             let histograms = evaluation
                 .histograms
                 .expect("splittable second-order node must retain histograms");
@@ -629,16 +634,12 @@ fn build_standard_node(
                 },
             )
         }
-        Some(split)
-            if split.gain > context.options.min_gain_to_split
-                && context.table.is_canary_binned_feature(split.feature_index) =>
-        {
-            if depth == 0 {
+        _ => {
+            if depth == 0 && evaluation.blocked_by_canary {
                 *root_canary_selected = true;
             }
             push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count)
         }
-        _ => push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count),
     }
 }
 
@@ -672,6 +673,7 @@ fn evaluate_standard_node(
             parent_strength,
             histograms: None,
             best_split: None,
+            blocked_by_canary: false,
         };
     }
 
@@ -685,7 +687,7 @@ fn evaluate_standard_node(
         )
     });
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.tree_options.max_features,
         node_seed(
             context.options.tree_options.random_seed,
@@ -694,28 +696,36 @@ fn evaluate_standard_node(
             0xA11C_E5E1u64,
         ),
     );
-    let best_split = if context.parallelism.enabled() {
+    let split_candidates = if context.parallelism.enabled() {
         feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
                 score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
             })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+            .collect::<Vec<_>>()
     } else {
         feature_indices
             .into_iter()
             .filter_map(|feature_index| {
                 score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
             })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+            .collect::<Vec<_>>()
     };
+    let selection = select_best_non_canary_candidate(
+        context.table,
+        split_candidates,
+        context.options.tree_options.canary_filter,
+        |candidate| candidate.gain,
+        |candidate| candidate.feature_index,
+    );
 
     StandardNodeEvaluation {
         sample_count,
         leaf_prediction,
         parent_strength,
         histograms: Some(histograms),
-        best_split,
+        best_split: selection.selected,
+        blocked_by_canary: selection.blocked_by_canary,
     }
 }
 
@@ -1012,14 +1022,18 @@ fn score_oblivious_split(
         return None;
     }
     let mut threshold_gains = vec![0.0; bin_cap];
-    let mut found_valid = vec![false; bin_cap];
-    let mut observed_any = false;
+    let mut threshold_valid = vec![true; bin_cap];
+
+    let mut bin_count = vec![0usize; bin_cap];
+    let mut bin_gradient_sum = vec![0.0; bin_cap];
+    let mut bin_hessian_sum = vec![0.0; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
 
     for leaf in leaves {
-        let mut bin_count = vec![0usize; bin_cap];
-        let mut bin_gradient_sum = vec![0.0; bin_cap];
-        let mut bin_hessian_sum = vec![0.0; bin_cap];
-        let mut observed_bins = vec![false; bin_cap];
+        bin_count.fill(0);
+        bin_gradient_sum.fill(0.0);
+        bin_hessian_sum.fill(0.0);
+        observed_bins.fill(false);
 
         for row_idx in &row_indices[leaf.start..leaf.end] {
             let bin = table.binned_value(feature_index, *row_idx) as usize;
@@ -1030,18 +1044,18 @@ fn score_oblivious_split(
         }
 
         let observed_bins = observed_bins
-            .into_iter()
+            .iter()
             .enumerate()
-            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .filter_map(|(bin, seen)| (*seen).then_some(bin))
             .collect::<Vec<_>>();
         if observed_bins.len() <= 1 {
-            continue;
+            return None;
         }
-        observed_any = true;
 
         let mut left_count = 0usize;
         let mut left_gradient_sum = 0.0;
         let mut left_hessian_sum = 0.0;
+        let mut leaf_valid = vec![false; bin_cap];
         for &bin in &observed_bins {
             left_count += bin_count[bin];
             left_gradient_sum += bin_gradient_sum[bin];
@@ -1058,7 +1072,7 @@ fn score_oblivious_split(
             ) {
                 continue;
             }
-            found_valid[bin] = true;
+            leaf_valid[bin] = true;
             threshold_gains[bin] += split_gain(
                 left_gradient_sum,
                 left_hessian_sum,
@@ -1069,16 +1083,15 @@ fn score_oblivious_split(
                 options.l2_regularization,
             );
         }
-    }
-
-    if !observed_any {
-        return None;
+        for threshold_bin in 0..bin_cap {
+            threshold_valid[threshold_bin] &= leaf_valid[threshold_bin];
+        }
     }
 
     threshold_gains
         .into_iter()
         .enumerate()
-        .filter(|(bin, gain)| found_valid[*bin] && *gain > options.min_gain_to_split)
+        .filter(|(bin, gain)| threshold_valid[*bin] && *gain > options.min_gain_to_split)
         .max_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(threshold_bin, gain)| SplitChoice {
             feature_index,
@@ -1097,7 +1110,6 @@ fn score_binary_oblivious_split(
     options: &SecondOrderRegressionTreeOptions,
 ) -> Option<SplitChoice> {
     let mut gain = 0.0;
-    let mut found_valid = false;
 
     for leaf in leaves {
         let mut left_count = 0usize;
@@ -1123,9 +1135,8 @@ fn score_binary_oblivious_split(
             right_count,
             right_hessian_sum,
         ) {
-            continue;
+            return None;
         }
-        found_valid = true;
         gain += split_gain(
             left_gradient_sum,
             left_hessian_sum,
@@ -1137,7 +1148,7 @@ fn score_binary_oblivious_split(
         );
     }
 
-    (found_valid && gain > options.min_gain_to_split).then_some(SplitChoice {
+    (gain > options.min_gain_to_split).then_some(SplitChoice {
         feature_index,
         threshold_bin: 0,
         gain,

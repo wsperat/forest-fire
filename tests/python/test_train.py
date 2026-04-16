@@ -146,6 +146,41 @@ def test_table_rejects_invalid_string_bins() -> None:
         Table(X, y, bins="dynamic")
 
 
+def test_train_accepts_integer_filter_argument(
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = toy_data
+
+    model = train(X, y, canaries=0, filter=3)
+
+    preds = model.predict(X)
+
+    assert preds.shape == y.shape
+    assert np.all(np.isfinite(preds))
+
+
+def test_train_accepts_fractional_filter_argument(
+    toy_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = toy_data
+
+    model = train(X, y, canaries=0, filter=0.5)
+
+    preds = model.predict(X)
+
+    assert preds.shape == y.shape
+    assert np.all(np.isfinite(preds))
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.0, -0.1, 1.1])
+def test_train_rejects_invalid_filter_values(value: int | float) -> None:
+    X = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+
+    with pytest.raises(ValueError, match="filter"):
+        train(X, y, filter=value)
+
+
 def test_train_accepts_prebuilt_table(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:

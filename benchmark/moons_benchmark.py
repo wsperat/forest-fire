@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from common import (
     BenchmarkConfig,
-    backend_color,
     catboost_fit,
     ensure_output_dir,
     lightgbm_fit,
@@ -27,6 +26,23 @@ from numpy.typing import NDArray
 from sklearn.datasets import make_moons
 from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import train_test_split
+
+
+def parse_canary_filter(value: str) -> int | float:
+    try:
+        parsed_int = int(value)
+    except ValueError:
+        pass
+    else:
+        if str(parsed_int) == value:
+            return parsed_int
+
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--filter must be an integer or float."
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -58,9 +74,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--noise", type=float, default=0.25)
     parser.add_argument("--n-estimators", type=int, default=200)
     parser.add_argument("--max-features", type=str, default="sqrt")
+    parser.add_argument("--canaries", type=int, default=5)
+    parser.add_argument("--filter", type=parse_canary_filter, default=0.95)
     parser.add_argument("--physical-cores", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--grid-resolution", type=int, default=250)
+    parser.add_argument("--oblivious-max-depth", type=int, default=10)
     return parser.parse_args()
 
 
@@ -77,11 +96,12 @@ def forestfire_fit_with_tree_type(
         "algorithm": algorithm,
         "tree_type": tree_type,
         "n_trees": args.n_estimators,
-        "max_depth": 64,
+        "max_depth": (args.oblivious_max_depth if tree_type == "oblivious" else 64),
         "min_samples_split": 2,
         "min_samples_leaf": 1,
         "max_features": args.max_features,
-        "canaries": 2,
+        "canaries": args.canaries,
+        "filter": args.filter,
         "physical_cores": args.physical_cores,
         "seed": args.seed,
     }
@@ -179,51 +199,60 @@ def plot_probability_grid(
     backend_order = [result.backend for result in results]
     n_cols = 3
     n_rows = (len(backend_order) + n_cols - 1) // n_cols
+
+    # layout="constrained" ensures the colorbar doesn't overlap subplots
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
         figsize=(5.4 * n_cols, 4.4 * n_rows),
         squeeze=False,
-        constrained_layout=True,
+        layout="constrained",
     )
     norm = Normalize(vmin=0.0, vmax=1.0)
+    cmap = "RdBu_r"
 
     result_by_backend = {result.backend: result for result in results}
+    last_im = None
+
     for index, backend in enumerate(backend_order):
         ax = axes[index // n_cols][index % n_cols]
         probabilities = mesh_probabilities[backend].reshape(xx.shape)
-        contour = ax.contourf(
-            xx,
-            yy,
-            probabilities,
-            levels=np.linspace(0.0, 1.0, 21),
-            cmap="RdBu_r",
-            alpha=0.85,
-            norm=norm,
+
+        # 1. Background probability fill (bottom layer)
+        last_im = ax.contourf(
+            xx, yy, probabilities, levels=50, cmap=cmap, norm=norm, alpha=0.3, zorder=1
         )
-        ax.contour(
-            xx,
-            yy,
-            probabilities,
-            levels=[0.5],
-            colors=[backend_color(backend)],
-            linewidths=2.0,
-        )
+
+        # 2. Training points (middle layer)
         ax.scatter(
             train_X[:, 0],
             train_X[:, 1],
             c=train_y,
-            cmap="RdBu_r",
+            cmap=cmap,
             norm=norm,
             s=14,
             linewidths=0.2,
             edgecolors="black",
             alpha=0.8,
+            zorder=2,
         )
+
+        # 3. Decision boundary line (top layer, now in black)
+        ax.contour(
+            xx,
+            yy,
+            probabilities,
+            levels=[0.5],
+            colors=["black"],  # Changed to black for high contrast
+            linewidths=2.0,
+            zorder=3,
+        )
+
         result = result_by_backend[backend]
         ax.set_title(
             f"{backend}\nacc={result.accuracy:.3f} | logloss={result.log_loss:.3f}"
         )
+
         if result.note:
             ax.text(
                 0.03,
@@ -238,15 +267,15 @@ def plot_probability_grid(
         ax.set_xticks([])
         ax.set_yticks([])
 
+    # Hide unused axes
     for index in range(len(backend_order), n_rows * n_cols):
         axes[index // n_cols][index % n_cols].axis("off")
 
-    cbar = fig.colorbar(contour, ax=axes, shrink=0.92, pad=0.02)
-    cbar.set_label("P(class=1)")
-    fig.suptitle(
-        f"make_moons probability surfaces | {family.replace('_', ' ')}",
-        y=0.98,
-    )
+    # 4. Global Colorbar on the right
+    if last_im:
+        cbar = fig.colorbar(last_im, ax=axes, location="right", shrink=0.7, aspect=30)
+        cbar.set_label("Probability $P(y=1)$")
+
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
 
@@ -282,6 +311,7 @@ def family_backends(family: str) -> list[str]:
     if family == "random_forest":
         return [
             "forestfire_cart",
+            "forestfire_randomized",
             "forestfire_oblivious",
             "sklearn",
             "lightgbm",
@@ -289,6 +319,7 @@ def family_backends(family: str) -> list[str]:
         ]
     return [
         "forestfire_cart",
+        "forestfire_randomized",
         "forestfire_oblivious",
         "sklearn",
         "lightgbm",
@@ -345,6 +376,9 @@ def main() -> None:
         fitters: dict[str, Any] = {
             "forestfire_cart": lambda: forestfire_fit_with_tree_type(
                 family, "cart", train_X, train_y, args
+            ),
+            "forestfire_randomized": lambda: forestfire_fit_with_tree_type(
+                family, "randomized", train_X, train_y, args
             ),
             "forestfire_oblivious": lambda: forestfire_fit_with_tree_type(
                 family, "oblivious", train_X, train_y, args

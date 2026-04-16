@@ -40,6 +40,7 @@ def train(
     top_gradient_fraction: float | None = None,
     other_gradient_fraction: float | None = None,
     missing_value_strategy: str | dict[str, str] | None = None,
+    filter: int | float | None = None,
 ) -> "Model": ...
 
 class OptimizedModel:
