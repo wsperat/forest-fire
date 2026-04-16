@@ -342,6 +342,7 @@ tasks:
         --canaries 3
         --filter 3
         --noise 0.3
+        --oblivious-max-depth 10
   benchmark-regression-surface:
     desc: Benchmark 1D regression curves for RF and GBM regressors
     deps: [python-ext-develop-release]
@@ -354,6 +355,7 @@ tasks:
         --canaries 3
         --filter 3
         --noise 0.08
+        --oblivious-max-depth 10
   benchmark-micro:
     desc: Run ForestFire-only training and prediction micro-benchmarks
     cmds:

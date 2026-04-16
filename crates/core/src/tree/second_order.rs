@@ -14,16 +14,14 @@ use crate::tree::regressor::{
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
     build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
-    node_seed, oblivious_max_depth_limit, partition_rows_for_binary_split,
-    select_best_non_canary_candidate, subtract_feature_histograms,
+    node_seed, partition_rows_for_binary_split, select_best_non_canary_candidate,
+    subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-
-const OBLIVIOUS_SECOND_ORDER_DEPTH_CAP: usize = 10;
 
 /// Extra controls required by second-order tree training.
 #[derive(Debug, Clone)]
@@ -434,12 +432,7 @@ fn train_oblivious_structure(
     let mut splits = Vec::new();
 
     let mut root_canary_selected = false;
-    let max_depth = oblivious_max_depth_limit(
-        options.tree_options.max_depth,
-        table.n_rows(),
-        options.tree_options.min_samples_leaf,
-    )
-    .min(OBLIVIOUS_SECOND_ORDER_DEPTH_CAP);
+    let max_depth = options.tree_options.max_depth;
     for depth in 0..max_depth {
         if leaves
             .iter()

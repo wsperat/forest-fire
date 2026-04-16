@@ -42,15 +42,7 @@ pub(super) fn train_oblivious_structure(
     }];
     let mut splits = Vec::new();
 
-    let max_depth = if options.max_depth > 32 {
-        crate::tree::shared::oblivious_max_depth_limit(
-            options.max_depth,
-            table.n_rows(),
-            options.min_samples_leaf,
-        )
-    } else {
-        options.max_depth
-    };
+    let max_depth = options.max_depth;
     for depth in 0..max_depth {
         if leaves
             .iter()

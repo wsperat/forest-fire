@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physical-cores", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--grid-resolution", type=int, default=250)
+    parser.add_argument("--oblivious-max-depth", type=int, default=10)
     return parser.parse_args()
 
 
@@ -95,7 +96,7 @@ def forestfire_fit_with_tree_type(
         "algorithm": algorithm,
         "tree_type": tree_type,
         "n_trees": args.n_estimators,
-        "max_depth": 64,
+        "max_depth": (args.oblivious_max_depth if tree_type == "oblivious" else 64),
         "min_samples_split": 2,
         "min_samples_leaf": 1,
         "max_features": args.max_features,
