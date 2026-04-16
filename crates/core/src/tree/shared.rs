@@ -1,4 +1,4 @@
-use crate::sampling::sample_feature_subset;
+use crate::{CanaryFilter, sampling::sample_feature_subset};
 use forestfire_data::{BINARY_MISSING_BIN, TableAccess};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -243,6 +243,42 @@ pub(crate) fn candidate_feature_indices(
     }
 }
 
+pub(crate) struct CanarySelection<T> {
+    pub(crate) selected: Option<T>,
+    pub(crate) blocked_by_canary: bool,
+}
+
+pub(crate) fn select_best_non_canary_candidate<T, Score, FeatureIndex>(
+    table: &dyn TableAccess,
+    candidates: Vec<T>,
+    canary_filter: CanaryFilter,
+    score: Score,
+    feature_index: FeatureIndex,
+) -> CanarySelection<T>
+where
+    Score: Fn(&T) -> f64,
+    FeatureIndex: Fn(&T) -> usize,
+{
+    let mut ranked = candidates;
+    ranked.sort_by(|left, right| score(right).total_cmp(&score(left)));
+    let selection_size = canary_filter.selection_size(ranked.len());
+    let mut blocked_by_canary = false;
+    for candidate in ranked.into_iter().take(selection_size) {
+        if table.is_canary_binned_feature(feature_index(&candidate)) {
+            blocked_by_canary = true;
+            continue;
+        }
+        return CanarySelection {
+            selected: Some(candidate),
+            blocked_by_canary: false,
+        };
+    }
+    CanarySelection {
+        selected: None,
+        blocked_by_canary,
+    }
+}
+
 pub(crate) fn mix_seed(base_seed: u64, value: u64) -> u64 {
     base_seed ^ value.wrapping_mul(GOLDEN_GAMMA).rotate_left(17)
 }
@@ -392,5 +428,11 @@ mod tests {
 
         assert!(counts.iter().all(|count| *count > 300));
         assert!(counts.iter().all(|count| *count < 800));
+    }
+
+    #[test]
+    fn top_fraction_selection_size_rounds_up() {
+        assert_eq!(CanaryFilter::TopFraction(0.5).selection_size(3), 2);
+        assert_eq!(CanaryFilter::TopFraction(0.05).selection_size(20), 1);
     }
 }

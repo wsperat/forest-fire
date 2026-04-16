@@ -285,6 +285,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     if min_samples_leaf == 0 {
         return Err(TrainError::InvalidMinSamplesLeaf(min_samples_leaf));
     }
+    config.canary_filter.validate()?;
 
     // Parallelism is installed around the whole training call so nested trainers
     // can use rayon consistently without rebuilding pools at every split.
@@ -300,6 +301,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 min_samples_split,
                 min_samples_leaf,
                 missing_value_strategies: missing_value_strategies.clone(),
+                canary_filter: config.canary_filter,
             },
         ),
         TrainAlgorithm::Rf => train_random_forest(
@@ -340,6 +342,7 @@ pub(crate) struct SingleModelConfig {
     pub(crate) min_samples_split: usize,
     pub(crate) min_samples_leaf: usize,
     pub(crate) missing_value_strategies: Vec<crate::MissingValueStrategy>,
+    pub(crate) canary_filter: crate::CanaryFilter,
 }
 
 /// Internal single-tree config with optional per-node feature subsampling.
@@ -398,6 +401,7 @@ pub(crate) fn train_single_model_with_feature_subset(
                 min_samples_split,
                 min_samples_leaf,
                 missing_value_strategies,
+                canary_filter,
             },
         max_features,
         random_seed,
@@ -409,6 +413,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         max_features,
         random_seed,
         missing_value_strategies: missing_value_strategies.clone(),
+        canary_filter,
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -417,6 +422,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         max_features,
         random_seed,
         missing_value_strategies,
+        canary_filter,
     };
 
     match (task, tree_type, criterion) {

@@ -14,7 +14,8 @@ use crate::tree::regressor::{
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
     build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
-    node_seed, partition_rows_for_binary_split, subtract_feature_histograms,
+    node_seed, partition_rows_for_binary_split, select_best_non_canary_candidate,
+    subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
@@ -148,6 +149,7 @@ struct StandardNodeEvaluation {
     parent_strength: f64,
     histograms: Option<Vec<SecondOrderFeatureHistogram>>,
     best_split: Option<SplitChoice>,
+    blocked_by_canary: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -446,7 +448,7 @@ fn train_oblivious_structure(
             options.tree_options.max_features,
             node_seed(options.tree_options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
-        let best_split = if parallelism.enabled() {
+        let split_candidates = if parallelism.enabled() {
             feature_indices
                 .into_par_iter()
                 .filter_map(|feature_index| {
@@ -460,7 +462,7 @@ fn train_oblivious_structure(
                         &options,
                     )
                 })
-                .max_by(|left, right| left.gain.total_cmp(&right.gain))
+                .collect::<Vec<_>>()
         } else {
             feature_indices
                 .into_iter()
@@ -475,19 +477,24 @@ fn train_oblivious_structure(
                         &options,
                     )
                 })
-                .max_by(|left, right| left.gain.total_cmp(&right.gain))
+                .collect::<Vec<_>>()
         };
-
-        let Some(best_split) = best_split.filter(|split| split.gain > options.min_gain_to_split)
+        let selection = select_best_non_canary_candidate(
+            table,
+            split_candidates,
+            options.tree_options.canary_filter,
+            |candidate| candidate.gain,
+            |candidate| candidate.feature_index,
+        );
+        let Some(best_split) = selection
+            .selected
+            .filter(|split| split.gain > options.min_gain_to_split)
         else {
-            break;
-        };
-        if table.is_canary_binned_feature(best_split.feature_index) {
-            if depth == 0 {
+            if depth == 0 && selection.blocked_by_canary {
                 root_canary_selected = true;
             }
             break;
-        }
+        };
 
         leaves = split_oblivious_leaves_in_place(
             table,
@@ -542,10 +549,7 @@ fn build_standard_node(
     let evaluation = evaluate_standard_node(context, rows, depth, histograms);
 
     match evaluation.best_split {
-        Some(split)
-            if split.gain > context.options.min_gain_to_split
-                && !context.table.is_canary_binned_feature(split.feature_index) =>
-        {
+        Some(split) if split.gain > context.options.min_gain_to_split => {
             let histograms = evaluation
                 .histograms
                 .expect("splittable second-order node must retain histograms");
@@ -629,16 +633,12 @@ fn build_standard_node(
                 },
             )
         }
-        Some(split)
-            if split.gain > context.options.min_gain_to_split
-                && context.table.is_canary_binned_feature(split.feature_index) =>
-        {
-            if depth == 0 {
+        _ => {
+            if depth == 0 && evaluation.blocked_by_canary {
                 *root_canary_selected = true;
             }
             push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count)
         }
-        _ => push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count),
     }
 }
 
@@ -672,6 +672,7 @@ fn evaluate_standard_node(
             parent_strength,
             histograms: None,
             best_split: None,
+            blocked_by_canary: false,
         };
     }
 
@@ -694,28 +695,36 @@ fn evaluate_standard_node(
             0xA11C_E5E1u64,
         ),
     );
-    let best_split = if context.parallelism.enabled() {
+    let split_candidates = if context.parallelism.enabled() {
         feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
                 score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
             })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+            .collect::<Vec<_>>()
     } else {
         feature_indices
             .into_iter()
             .filter_map(|feature_index| {
                 score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
             })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+            .collect::<Vec<_>>()
     };
+    let selection = select_best_non_canary_candidate(
+        context.table,
+        split_candidates,
+        context.options.tree_options.canary_filter,
+        |candidate| candidate.gain,
+        |candidate| candidate.feature_index,
+    );
 
     StandardNodeEvaluation {
         sample_count,
         leaf_prediction,
         parent_strength,
         histograms: Some(histograms),
-        best_split,
+        best_split: selection.selected,
+        blocked_by_canary: selection.blocked_by_canary,
     }
 }
 

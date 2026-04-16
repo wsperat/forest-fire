@@ -9,9 +9,9 @@
 //!   train/predict/optimize calls
 
 use forestfire_core::{
-    Criterion, IntrospectionError, MaxFeatures, MissingValueStrategy, MissingValueStrategyConfig,
-    Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType,
-    train as train_model,
+    CanaryFilter, Criterion, IntrospectionError, MaxFeatures, MissingValueStrategy,
+    MissingValueStrategyConfig, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm,
+    TrainConfig, TreeType, train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -1890,6 +1890,38 @@ fn parse_optional_fraction(value: Option<f64>, name: &str) -> PyResult<Option<f6
     }
 }
 
+fn parse_canary_filter(value: Option<&Bound<PyAny>>) -> PyResult<CanaryFilter> {
+    let Some(value) = value else {
+        return Ok(CanaryFilter::default());
+    };
+
+    if value.is_none() {
+        return Ok(CanaryFilter::default());
+    }
+
+    if let Ok(count) = value.extract::<usize>() {
+        if count == 0 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "filter must be a positive integer when provided as an int.",
+            ));
+        }
+        return Ok(CanaryFilter::TopN(count));
+    }
+
+    if let Ok(alpha) = value.extract::<f64>() {
+        if !alpha.is_finite() || !(0.0..1.0).contains(&alpha) {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "filter must be a finite float in [0, 1) when provided as a float.",
+            ));
+        }
+        return Ok(CanaryFilter::TopFraction(1.0 - alpha));
+    }
+
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "filter must be a positive integer, a float in [0, 1), or None.",
+    ))
+}
+
 fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
     let Some(bins) = bins else {
         return Ok(NumericBins::Auto);
@@ -1953,7 +1985,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -1979,6 +2011,7 @@ fn train(
     top_gradient_fraction: Option<f64>,
     other_gradient_fraction: Option<f64>,
     missing_value_strategy: Option<&Bound<PyAny>>,
+    filter: Option<&Bound<PyAny>>,
 ) -> PyResult<PyModel> {
     let task_was_auto = task == "auto";
     let resolved_task = resolve_task(x, y, task)?;
@@ -1995,6 +2028,7 @@ fn train(
         n_trees,
         max_features: parse_max_features(max_features)?,
         seed,
+        canary_filter: parse_canary_filter(filter)?,
         compute_oob,
         learning_rate: parse_optional_positive_f64(learning_rate, "learning_rate")?,
         bootstrap,

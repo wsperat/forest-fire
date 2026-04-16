@@ -54,7 +54,7 @@ pub(super) fn train_oblivious_structure(
             options.max_features,
             node_seed(options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
-        let best_split = if parallelism.enabled() {
+        let split_candidates = if parallelism.enabled() {
             feature_indices
                 .into_par_iter()
                 .filter_map(|feature_index| {
@@ -69,7 +69,7 @@ pub(super) fn train_oblivious_structure(
                         options.min_samples_leaf,
                     )
                 })
-                .max_by(|left, right| left.score.total_cmp(&right.score))
+                .collect::<Vec<_>>()
         } else {
             feature_indices
                 .into_iter()
@@ -85,15 +85,20 @@ pub(super) fn train_oblivious_structure(
                         options.min_samples_leaf,
                     )
                 })
-                .max_by(|left, right| left.score.total_cmp(&right.score))
+                .collect::<Vec<_>>()
         };
 
-        let Some(best_split) = best_split.filter(|candidate| candidate.score > 0.0) else {
+        let Some(best_split) = select_best_non_canary_candidate(
+            table,
+            split_candidates,
+            options.canary_filter,
+            |candidate| candidate.score,
+            |candidate| candidate.feature_index,
+        )
+        .selected
+        .filter(|candidate| candidate.score > 0.0) else {
             break;
         };
-        if table.is_canary_binned_feature(best_split.feature_index) {
-            break;
-        }
 
         leaves = split_oblivious_leaves_in_place(
             table,

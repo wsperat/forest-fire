@@ -13,10 +13,10 @@ use crate::ir::{
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
     candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
-    subtract_feature_histograms,
+    select_best_non_canary_candidate, subtract_feature_histograms,
 };
 use crate::{
-    Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
+    CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
     capture_feature_preprocessing,
 };
 use forestfire_data::TableAccess;
@@ -41,6 +41,7 @@ pub struct RegressionTreeOptions {
     pub max_features: Option<usize>,
     pub random_seed: u64,
     pub missing_value_strategies: Vec<MissingValueStrategy>,
+    pub canary_filter: CanaryFilter,
 }
 
 impl Default for RegressionTreeOptions {
@@ -52,6 +53,7 @@ impl Default for RegressionTreeOptions {
             max_features: None,
             random_seed: 0,
             missing_value_strategies: Vec::new(),
+            canary_filter: CanaryFilter::default(),
         }
     }
 }
@@ -824,7 +826,7 @@ fn build_binary_node_in_place_with_hist(
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xA11C_E5E1u64),
     );
-    let best_split = if context.parallelism.enabled() {
+    let split_candidates = if context.parallelism.enabled() {
         feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
@@ -839,7 +841,7 @@ fn build_binary_node_in_place_with_hist(
                     score_binary_split_choice(context, feature_index, rows)
                 }
             })
-            .max_by(|left, right| left.score.total_cmp(&right.score))
+            .collect::<Vec<_>>()
     } else {
         feature_indices
             .into_iter()
@@ -855,17 +857,18 @@ fn build_binary_node_in_place_with_hist(
                     score_binary_split_choice(context, feature_index, rows)
                 }
             })
-            .max_by(|left, right| left.score.total_cmp(&right.score))
+            .collect::<Vec<_>>()
     };
+    let best_split = select_best_non_canary_candidate(
+        context.table,
+        split_candidates,
+        context.options.canary_filter,
+        |candidate| candidate.score,
+        |candidate| candidate.feature_index,
+    )
+    .selected;
 
     match best_split {
-        Some(best_split)
-            if context
-                .table
-                .is_canary_binned_feature(best_split.feature_index) =>
-        {
-            push_leaf(nodes, leaf_value, rows.len(), leaf_variance)
-        }
         Some(best_split) if best_split.score > 0.0 => {
             let impurity = regression_loss(rows, context.targets, context.criterion);
             let left_count = partition_rows_for_binary_split(
@@ -981,7 +984,7 @@ fn train_oblivious_structure(
             options.max_features,
             node_seed(options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
-        let best_split = if parallelism.enabled() {
+        let split_candidates = if parallelism.enabled() {
             feature_indices
                 .into_par_iter()
                 .filter_map(|feature_index| {
@@ -995,7 +998,7 @@ fn train_oblivious_structure(
                         options.min_samples_leaf,
                     )
                 })
-                .max_by(|left, right| left.score.total_cmp(&right.score))
+                .collect::<Vec<_>>()
         } else {
             feature_indices
                 .into_iter()
@@ -1010,15 +1013,20 @@ fn train_oblivious_structure(
                         options.min_samples_leaf,
                     )
                 })
-                .max_by(|left, right| left.score.total_cmp(&right.score))
+                .collect::<Vec<_>>()
         };
 
-        let Some(best_split) = best_split.filter(|candidate| candidate.score > 0.0) else {
+        let Some(best_split) = select_best_non_canary_candidate(
+            table,
+            split_candidates,
+            options.canary_filter,
+            |candidate| candidate.score,
+            |candidate| candidate.feature_index,
+        )
+        .selected
+        .filter(|candidate| candidate.score > 0.0) else {
             break;
         };
-        if table.is_canary_binned_feature(best_split.feature_index) {
-            break;
-        }
 
         leaves = split_oblivious_leaves_in_place(
             table,
@@ -2316,7 +2324,7 @@ fn push_node(nodes: &mut Vec<RegressionNode>, node: RegressionNode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FeaturePreprocessing, Model, NumericBinBoundary};
+    use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary};
     use forestfire_data::{DenseTable, NumericBins};
 
     fn quadratic_table() -> DenseTable {
@@ -2340,6 +2348,20 @@ mod tests {
 
     fn canary_target_table() -> DenseTable {
         let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
+        let probe =
+            DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
+        let canary_index = probe.n_features();
+        let y = (0..probe.n_rows())
+            .map(|row_idx| probe.binned_value(canary_index, row_idx) as f64)
+            .collect();
+
+        DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
+    }
+
+    fn canary_target_table_with_noise_feature() -> DenseTable {
+        let x: Vec<Vec<f64>> = (0..8)
+            .map(|value| vec![value as f64, (value % 2) as f64])
+            .collect();
         let probe =
             DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
         let canary_index = probe.n_features();
@@ -2524,6 +2546,42 @@ mod tests {
 
         assert!(preds.iter().all(|pred| *pred == preds[0]));
         assert_ne!(preds, table_targets(&table));
+    }
+
+    #[test]
+    fn top_n_canary_filter_can_choose_real_regression_split() {
+        let table = canary_target_table();
+        let model = train_cart_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            RegressionTreeOptions {
+                canary_filter: CanaryFilter::TopN(2),
+                ..RegressionTreeOptions::default()
+            },
+        )
+        .unwrap();
+        let preds = model.predict_table(&table);
+
+        assert!(preds.iter().any(|pred| *pred != preds[0]));
+    }
+
+    #[test]
+    fn top_fraction_canary_filter_can_choose_real_regression_split() {
+        let table = canary_target_table_with_noise_feature();
+        let model = train_cart_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            RegressionTreeOptions {
+                canary_filter: CanaryFilter::TopFraction(0.5),
+                ..RegressionTreeOptions::default()
+            },
+        )
+        .unwrap();
+        let preds = model.predict_table(&table);
+
+        assert!(preds.iter().any(|pred| *pred != preds[0]));
     }
 
     #[test]
