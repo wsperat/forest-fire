@@ -54,12 +54,18 @@ Some groundwork for that plan is now in place:
 - the second-order tree path has an explicit “evaluate one node” step separate
   from the recursive child-building step, which is the structural prerequisite
   for level-wise active-node batching
+- standard second-order CART/randomized trees now use an active-node frontier,
+  so a whole depth is evaluated before any node at that depth partitions the
+  shared row-index buffer
 - second-order histogram construction now has a parallel-capable shared helper
   instead of forcing the GBM path through a purely sequential per-feature build
 
-The next concrete implementation step should be introducing an active-node
-frontier for standard second-order trees so a whole level can be scored before
-any node at that level mutates the shared row-index buffer.
+That changes the next concrete implementation step. The structural batching
+boundary now exists, so the next work should focus on using it:
+
+- parallelize histogram construction across batches of active nodes
+- parallelize split scoring across features within those node batches
+- keep row partitioning as the later mutation step after split selection
 
 ## Random-forest training on wide data
 
