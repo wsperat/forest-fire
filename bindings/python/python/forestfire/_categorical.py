@@ -206,13 +206,13 @@ class EncodedCategoricalPreprocessor(CategoricalPreprocessor):
         self,
         column_names: list[str],
         numeric_features: list[int],
-        one_hot_specs: list[OneHotSpec],
+        dummy_specs: list[OneHotSpec],
         target_specs: list[TargetEncodingSpec],
         fisher_specs: list[FisherEncodingSpec],
     ) -> None:
         self.column_names = column_names
         self.numeric_features = numeric_features
-        self.one_hot_specs = one_hot_specs
+        self.dummy_specs = dummy_specs
         self.target_specs = target_specs
         self.fisher_specs = fisher_specs
 
@@ -225,7 +225,7 @@ class EncodedCategoricalPreprocessor(CategoricalPreprocessor):
             encoded: list[float] = []
             for feature_index in self.numeric_features:
                 encoded.append(_as_float(row[feature_index]))
-            for spec in self.one_hot_specs:
+            for spec in self.dummy_specs:
                 category = _to_category_key(row[spec.feature_index])
                 for known in spec.categories:
                     encoded.append(float(category == known))
@@ -258,7 +258,9 @@ def fit_categorical_preprocessor(
         )
 
     resolved_strategy = strategy.lower()
-    supported = {"one_hot", "target", "fisher"}
+    if resolved_strategy == "one_hot":
+        resolved_strategy = "dummy"
+    supported = {"dummy", "target", "fisher"}
     if resolved_strategy not in supported:
         raise ValueError(
             f"Unsupported categorical_strategy '{strategy}'. Expected one of {sorted(supported)}."
@@ -273,7 +275,7 @@ def fit_categorical_preprocessor(
 
     numeric_features = [i for i in range(data.n_features) if i not in categorical]
     y_encoded, target_kind, classes = encode_target_for_categorical(y)
-    one_hot_specs: list[OneHotSpec] = []
+    dummy_specs: list[OneHotSpec] = []
     target_specs: list[TargetEncodingSpec] = []
     fisher_specs: list[FisherEncodingSpec] = []
 
@@ -284,8 +286,8 @@ def fit_categorical_preprocessor(
             for category in dict.fromkeys(_to_category_key(value) for value in column)
             if category is not None
         ]
-        if resolved_strategy == "one_hot":
-            one_hot_specs.append(
+        if resolved_strategy == "dummy":
+            dummy_specs.append(
                 OneHotSpec(feature_index=feature_index, categories=observed_categories)
             )
             continue
@@ -317,7 +319,7 @@ def fit_categorical_preprocessor(
     preprocessor = EncodedCategoricalPreprocessor(
         column_names=data.column_names,
         numeric_features=numeric_features,
-        one_hot_specs=one_hot_specs,
+        dummy_specs=dummy_specs,
         target_specs=target_specs,
         fisher_specs=fisher_specs,
     )

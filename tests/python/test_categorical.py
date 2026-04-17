@@ -14,7 +14,7 @@ def categorical_rows() -> list[list[object]]:
     ]
 
 
-def test_train_supports_one_hot_categorical_strategy() -> None:
+def test_train_supports_dummy_categorical_strategy() -> None:
     x = categorical_rows()
     y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
 
@@ -24,7 +24,7 @@ def test_train_supports_one_hot_categorical_strategy() -> None:
         task="classification",
         tree_type="cart",
         canaries=0,
-        categorical_strategy="one_hot",
+        categorical_strategy="dummy",
     )
 
     preds = np.asarray(model.predict(x), dtype=np.float64)
@@ -91,7 +91,7 @@ def test_gbm_wrapper_accepts_categorical_strategy() -> None:
 
     model = ExtraGBMClassifier(
         n_estimators=5,
-        categorical_strategy="one_hot",
+        categorical_strategy="dummy",
     ).fit(x, y)
 
     proba = model.predict_proba([["red", 0.0], ["blue", 1.0]])
