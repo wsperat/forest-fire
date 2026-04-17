@@ -319,6 +319,18 @@ That separation is the architectural point of the frontier:
   occupy contiguous ranges"
 - child creation is "record those new ranges as the next active frontier"
 
+The standard second-order path now uses that boundary in three explicit phases
+for each depth:
+
+1. evaluate the current frontier in parallel
+2. partition row ranges for the nodes that actually split in parallel across
+   disjoint row-buffer slices
+3. build child histograms for the next frontier in parallel
+
+That means the frontier is no longer only a structural preparation for future
+parallelism. It is now the execution model used by the standard second-order
+builder.
+
 ### What is evaluated for each active node
 
 For every active node, the builder computes:
@@ -346,6 +358,17 @@ the next frontier.
 If it does split, the builder retains enough information to mutate the row
 buffer afterward without rescoring the node.
 
+When training parallelism is enabled, that evaluation phase runs across the
+whole active frontier at once. Each node still scores its own candidate
+features using the same histogram-based split logic as before, but same-depth
+nodes can now do that work concurrently.
+
+The later mutation phase is now parallel too. Pending same-depth splits are
+sorted by their owned row ranges, then partitioned through a recursive
+divide-and-conquer pass over disjoint slices of the shared row-index buffer.
+That keeps the in-place row-buffer model intact while allowing non-overlapping
+partitions to run concurrently.
+
 ### Histograms and child reuse
 
 The second-order tree path is histogram-based.
@@ -370,10 +393,15 @@ That matters because histogram construction is one of the dominant training
 costs. Reusing the parent histogram avoids paying that full cost twice per
 split.
 
+That reuse now happens inside the frontier pipeline as well. After partitioning
+has produced the child row ranges for every winning split at the current depth,
+the builder constructs the next frontier’s histograms in parallel across those
+splitting nodes.
+
 ### Why the frontier matters for parallelism
 
-The frontier does not by itself make the whole tree fit fully parallel, but it
-creates the right execution boundary for that work.
+The frontier now provides both the execution boundary and part of the actual
+parallel work for standard second-order trees.
 
 Without a frontier, same-depth siblings are entangled with mutation order:
 
@@ -390,8 +418,11 @@ With a frontier, every node at a depth is evaluated against the same stable
 view of the current row ownership. That makes several future steps much cleaner:
 
 - scoring active nodes in parallel
-- building histograms across active nodes in batches
-- running feature-parallel split search across those node batches
+- feature-parallel split search inside each node evaluation
+- partitioning disjoint same-depth row ranges in parallel once split choices
+  are known
+- building child histograms across splitting nodes in parallel after
+  partitioning
 - postponing row partitioning until after split selection is complete
 
 The stage loop of gradient boosting still remains serial. The frontier only
@@ -434,8 +465,9 @@ ForestFire training is optimized around a compact binned core and shared row-ind
 - oblivious split scoring reuses cached per-leaf counts or `sum`/`sum_sq`
 - random forests parallelize across trees while limiting intra-tree parallelism
 - standard second-order CART/randomized trees now grow through a level-wise
-  active-node frontier, so one depth can be evaluated before any node at that
-  depth mutates the shared row-index buffer
+  active-node frontier, with parallel frontier evaluation, feature-parallel
+  split scoring, parallel row partitioning over disjoint slices, and parallel
+  child-histogram construction separated by explicit frontier phases
 - binary sparse inputs stay sparse through training and inference
 - classifier, regressor, and second-order tree builders now share the same core
   histogram/partitioning/randomization helpers instead of carrying separate

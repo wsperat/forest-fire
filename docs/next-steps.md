@@ -57,15 +57,25 @@ Some groundwork for that plan is now in place:
 - standard second-order CART/randomized trees now use an active-node frontier,
   so a whole depth is evaluated before any node at that depth partitions the
   shared row-index buffer
+- same-depth frontier evaluation now runs in parallel, so standard
+  second-order trees already batch node work at one depth
+- same-depth row partitioning now also runs in parallel across disjoint
+  row-buffer slices after split choices have been fixed
+- child histogram construction for the next frontier now also runs in parallel
+  across the nodes that split at the current depth
 - second-order histogram construction now has a parallel-capable shared helper
   instead of forcing the GBM path through a purely sequential per-feature build
 
 That changes the next concrete implementation step. The structural batching
-boundary now exists, so the next work should focus on using it:
+boundary now exists and is partially exercised, so the next work should focus
+on pushing it further:
 
-- parallelize histogram construction across batches of active nodes
-- parallelize split scoring across features within those node batches
-- keep row partitioning as the later mutation step after split selection
+- reduce overhead in the frontier batch path so same-depth parallelism scales
+  better on larger trees
+- add more aggressive SIMD work in histogram accumulation and reduction hot
+  paths
+- profile whether frontier-level work scheduling should become more adaptive on
+  small trees where synchronization overhead can outweigh gains
 
 ## Random-forest training on wide data
 
