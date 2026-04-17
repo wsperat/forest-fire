@@ -323,7 +323,8 @@ The standard second-order path now uses that boundary in three explicit phases
 for each depth:
 
 1. evaluate the current frontier in parallel
-2. partition row ranges for the nodes that actually split
+2. partition row ranges for the nodes that actually split in parallel across
+   disjoint row-buffer slices
 3. build child histograms for the next frontier in parallel
 
 That means the frontier is no longer only a structural preparation for future
@@ -361,6 +362,12 @@ When training parallelism is enabled, that evaluation phase runs across the
 whole active frontier at once. Each node still scores its own candidate
 features using the same histogram-based split logic as before, but same-depth
 nodes can now do that work concurrently.
+
+The later mutation phase is now parallel too. Pending same-depth splits are
+sorted by their owned row ranges, then partitioned through a recursive
+divide-and-conquer pass over disjoint slices of the shared row-index buffer.
+That keeps the in-place row-buffer model intact while allowing non-overlapping
+partitions to run concurrently.
 
 ### Histograms and child reuse
 
@@ -412,6 +419,8 @@ view of the current row ownership. That makes several future steps much cleaner:
 
 - scoring active nodes in parallel
 - feature-parallel split search inside each node evaluation
+- partitioning disjoint same-depth row ranges in parallel once split choices
+  are known
 - building child histograms across splitting nodes in parallel after
   partitioning
 - postponing row partitioning until after split selection is complete
@@ -457,8 +466,8 @@ ForestFire training is optimized around a compact binned core and shared row-ind
 - random forests parallelize across trees while limiting intra-tree parallelism
 - standard second-order CART/randomized trees now grow through a level-wise
   active-node frontier, with parallel frontier evaluation, feature-parallel
-  split scoring, and parallel child-histogram construction separated from the
-  later row-buffer mutation step
+  split scoring, parallel row partitioning over disjoint slices, and parallel
+  child-histogram construction separated by explicit frontier phases
 - binary sparse inputs stay sparse through training and inference
 - classifier, regressor, and second-order tree builders now share the same core
   histogram/partitioning/randomization helpers instead of carrying separate

@@ -174,7 +174,6 @@ struct PendingSplit {
     start: usize,
     mid: usize,
     end: usize,
-    split: SplitChoice,
     evaluation: StandardNodeEvaluation,
 }
 
@@ -526,9 +525,8 @@ fn train_standard_structure(
                         node_index,
                         depth,
                         start,
-                        mid,
+                        mid: start,
                         end,
-                        split,
                         evaluation,
                     });
                 }
@@ -544,6 +542,14 @@ fn train_standard_structure(
                 }
             }
         }
+
+        pending_splits.sort_unstable_by_key(|pending| pending.start);
+        partition_pending_splits_in_place(
+            context.table,
+            rows,
+            &mut pending_splits,
+            context.parallelism,
+        );
 
         frontier = if context.parallelism.enabled() {
             pending_splits
@@ -793,6 +799,93 @@ fn train_oblivious_structure(
         },
         root_canary_selected,
     )
+}
+
+fn partition_pending_splits_in_place(
+    table: &dyn TableAccess,
+    rows: &mut [usize],
+    pending_splits: &mut [PendingSplit],
+    parallelism: Parallelism,
+) {
+    if pending_splits.is_empty() {
+        return;
+    }
+    partition_pending_splits_recursive(table, rows, pending_splits, 0, parallelism);
+}
+
+fn partition_pending_splits_recursive(
+    table: &dyn TableAccess,
+    rows: &mut [usize],
+    pending_splits: &mut [PendingSplit],
+    base_offset: usize,
+    parallelism: Parallelism,
+) {
+    if pending_splits.is_empty() {
+        return;
+    }
+    if pending_splits.len() == 1 {
+        let pending = &mut pending_splits[0];
+        let local_start = pending.start - base_offset;
+        let local_end = pending.end - base_offset;
+        let split = pending
+            .evaluation
+            .best_split
+            .expect("pending split must retain split choice");
+        let left_count = partition_rows_for_binary_split(
+            table,
+            split.feature_index,
+            split.threshold_bin,
+            MissingBranchDirection::Right,
+            &mut rows[local_start..local_end],
+        );
+        pending.mid = pending.start + left_count;
+        return;
+    }
+
+    let pending_len = pending_splits.len();
+    let mid_index = pending_len / 2;
+    let split_start = pending_splits[mid_index].start;
+    let split_offset = split_start - base_offset;
+    let (left_rows, right_rows) = rows.split_at_mut(split_offset);
+    let (left_pending, right_pending) = pending_splits.split_at_mut(mid_index);
+
+    if parallelism.enabled() && pending_len >= 4 {
+        rayon::join(
+            || {
+                partition_pending_splits_recursive(
+                    table,
+                    left_rows,
+                    left_pending,
+                    base_offset,
+                    parallelism,
+                )
+            },
+            || {
+                partition_pending_splits_recursive(
+                    table,
+                    right_rows,
+                    right_pending,
+                    split_start,
+                    parallelism,
+                )
+            },
+        );
+    } else {
+        partition_pending_splits_recursive(
+            table,
+            left_rows,
+            left_pending,
+            base_offset,
+            parallelism,
+        );
+        partition_pending_splits_recursive(
+            table,
+            right_rows,
+            right_pending,
+            split_start,
+            parallelism,
+        );
+    }
 }
 
 fn evaluate_standard_node(
