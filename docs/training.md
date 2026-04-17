@@ -238,6 +238,185 @@ But it keeps a ForestFire-specific stopping rule:
 
 That choice reflects the project’s general design preference: use explicit training-time noise competition as a stopping signal instead of bolting on a separate pruning or early-stopping layer later.
 
+### How second-order tree fitting works
+
+The boosting stage loop is serial, but the tree builder inside one stage is now
+organized so it can become more parallel internally.
+
+That distinction matters:
+
+- stage `k + 1` depends on the predictions produced after stage `k`
+- the nodes inside the single tree fitted at stage `k` do not all depend on one
+  another in the same way
+
+ForestFire therefore treats "fit one boosting stage" and "grow one tree inside
+that stage" as separate scheduling problems.
+
+At a high level, one boosting stage does this:
+
+1. compute per-row gradients and Hessians from the current ensemble prediction
+2. fit one second-order tree against those gradient/Hessian pairs
+3. scale that tree by `learning_rate`
+4. add it to the ensemble
+5. repeat until the stopping rule rejects the next stage
+
+The second-order tree itself uses Newton-style leaf values. For any node, the
+leaf prediction is derived from the node-local gradient and Hessian totals:
+
+- `leaf_value = -G / (H + lambda)`
+
+where:
+
+- `G` is the sum of gradients in the node
+- `H` is the sum of Hessians in the node
+- `lambda` is the L2 regularization term
+
+The split score asks whether dividing the current rows into left and right
+children increases the regularized objective strength enough to justify growing
+the tree.
+
+### The active-node frontier
+
+Standard second-order CART and randomized trees now grow with an active-node
+frontier instead of depth-first recursion.
+
+The frontier is simply the set of nodes at the current depth that are still
+eligible to split.
+
+That means tree growth now looks like this:
+
+1. start with the root in the frontier
+2. evaluate every node in that frontier
+3. decide which nodes actually split
+4. partition rows for those winning splits
+5. create all children
+6. use those children as the next frontier
+
+This is different from the older depth-first pattern:
+
+1. evaluate one node
+2. partition its rows immediately
+3. recurse into the left child
+4. recurse into the right child
+5. only later return to same-depth siblings
+
+The frontier-based layout is important because it separates node evaluation
+from row-buffer mutation.
+
+In the standard binary tree path, ForestFire still uses one shared mutable
+row-index buffer rather than copying rows into separate node-local allocations.
+Each active node owns a contiguous slice of that buffer. During evaluation, the
+builder reads that slice, computes node statistics, constructs or reuses
+histograms, and scores candidate features. It does not mutate the slice yet.
+
+Only after the whole current frontier has been evaluated does the builder begin
+partitioning rows for the nodes that actually split.
+
+That separation is the architectural point of the frontier:
+
+- evaluation is "read the current node state and score split candidates"
+- partitioning is "rewrite the shared row-index slice so left/right children
+  occupy contiguous ranges"
+- child creation is "record those new ranges as the next active frontier"
+
+### What is evaluated for each active node
+
+For every active node, the builder computes:
+
+- sample count
+- gradient sum
+- Hessian sum
+- the node leaf prediction
+- the node objective strength before splitting
+- feature histograms for the node rows
+- the best surviving split candidate after canary filtering
+
+The stopping checks happen at this evaluation stage:
+
+- max depth
+- `min_samples_split`
+- non-positive or too-small Hessian mass
+- no valid feature split after `min_samples_leaf` and
+  `min_sum_hessian_in_leaf`
+- canary competition blocking the node at the root
+
+If a node does not produce a valid split, it becomes a leaf and never enters
+the next frontier.
+
+If it does split, the builder retains enough information to mutate the row
+buffer afterward without rescoring the node.
+
+### Histograms and child reuse
+
+The second-order tree path is histogram-based.
+
+For each feature and node, the histogram stores:
+
+- row count
+- gradient sum
+- Hessian sum
+
+Those histograms are what let the builder score candidate thresholds without
+rescanning raw rows for every possible split.
+
+When a node is partitioned, the implementation tries to avoid rebuilding both
+children from scratch:
+
+- it builds histograms for the smaller child directly from that child’s rows
+- it derives the sibling histograms by subtracting the smaller child from the
+  parent histograms
+
+That matters because histogram construction is one of the dominant training
+costs. Reusing the parent histogram avoids paying that full cost twice per
+split.
+
+### Why the frontier matters for parallelism
+
+The frontier does not by itself make the whole tree fit fully parallel, but it
+creates the right execution boundary for that work.
+
+Without a frontier, same-depth siblings are entangled with mutation order:
+
+- node `A` is evaluated
+- node `A` partitions the shared row buffer
+- node `A` recurses into its children
+- only later does node `B` get evaluated
+
+That ordering makes same-depth batching awkward because one branch has already
+started rewriting shared training state before its siblings have even been
+scored.
+
+With a frontier, every node at a depth is evaluated against the same stable
+view of the current row ownership. That makes several future steps much cleaner:
+
+- scoring active nodes in parallel
+- building histograms across active nodes in batches
+- running feature-parallel split search across those node batches
+- postponing row partitioning until after split selection is complete
+
+The stage loop of gradient boosting still remains serial. The frontier only
+changes the work inside one stage’s tree fit.
+
+That is the intended balance:
+
+- keep stage semantics simple and correct
+- make intra-tree work increasingly parallel over time
+
+### Relationship to oblivious trees
+
+Oblivious second-order trees were already level-wise by construction because
+every node at a given depth shares the same feature/threshold pair.
+
+The active-node frontier brings the standard CART/randomized second-order path
+closer to that same batching style, but without changing the standard-tree
+semantics:
+
+- standard trees still choose splits independently per node
+- oblivious trees still choose one shared split per depth
+
+What they now share is the important scheduling idea that depth-level work can
+be evaluated as a batch before the next level is created.
+
 ## Training optimizations
 
 ForestFire training is optimized around a compact binned core and shared row-index buffers rather than row copies.
@@ -254,6 +433,9 @@ ForestFire training is optimized around a compact binned core and shared row-ind
 - CART/randomized classification and mean-regression builders reuse parent histograms and derive sibling histograms by subtraction
 - oblivious split scoring reuses cached per-leaf counts or `sum`/`sum_sq`
 - random forests parallelize across trees while limiting intra-tree parallelism
+- standard second-order CART/randomized trees now grow through a level-wise
+  active-node frontier, so one depth can be evaluated before any node at that
+  depth mutates the shared row-index buffer
 - binary sparse inputs stay sparse through training and inference
 - classifier, regressor, and second-order tree builders now share the same core
   histogram/partitioning/randomization helpers instead of carrying separate

@@ -152,6 +152,14 @@ struct StandardNodeEvaluation {
     blocked_by_canary: bool,
 }
 
+struct ActiveNode {
+    node_index: usize,
+    depth: usize,
+    start: usize,
+    end: usize,
+    histograms: Option<Vec<SecondOrderFeatureHistogram>>,
+}
+
 #[derive(Debug, Clone)]
 struct SecondOrderHistogramBin {
     count: usize,
@@ -311,7 +319,11 @@ fn train_second_order_regressor(
 
     let (structure, root_canary_selected) = match algorithm {
         RegressionTreeAlgorithm::Cart | RegressionTreeAlgorithm::Randomized => {
-            let mut nodes = Vec::new();
+            let mut nodes = vec![RegressionNode::Leaf {
+                value: 0.0,
+                sample_count: 0,
+                variance: None,
+            }];
             let mut rows: Vec<usize> = (0..train_set.n_rows()).collect();
             let context = BuildContext {
                 table: train_set,
@@ -322,15 +334,10 @@ fn train_second_order_regressor(
                 options: options.clone(),
             };
             let mut root_canary_selected = false;
-            // This path mirrors the first-order standard-tree builders: one
-            // mutable row-index buffer, histogram-backed split scoring, and
-            // optional canary detection at the root.
-            let root = build_standard_node(
+            let root = train_standard_structure(
                 &context,
                 &mut nodes,
                 &mut rows,
-                0,
-                None,
                 &mut root_canary_selected,
             );
             (
@@ -411,6 +418,128 @@ fn validate_inputs(
     }
 
     Ok(())
+}
+
+fn train_standard_structure(
+    context: &BuildContext<'_>,
+    nodes: &mut Vec<RegressionNode>,
+    rows: &mut [usize],
+    root_canary_selected: &mut bool,
+) -> usize {
+    let root = 0usize;
+    let mut frontier = vec![ActiveNode {
+        node_index: root,
+        depth: 0,
+        start: 0,
+        end: rows.len(),
+        histograms: None,
+    }];
+
+    while !frontier.is_empty() {
+        let evaluations = frontier
+            .iter()
+            .map(|active| {
+                (
+                    active.node_index,
+                    active.depth,
+                    active.start,
+                    active.end,
+                    evaluate_standard_node(
+                        context,
+                        &rows[active.start..active.end],
+                        active.depth,
+                        active.histograms.clone(),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut next_frontier = Vec::new();
+
+        for (node_index, depth, start, end, evaluation) in evaluations {
+            match evaluation.best_split {
+                Some(split) if split.gain > context.options.min_gain_to_split => {
+                    let histograms = evaluation
+                        .histograms
+                        .expect("splittable second-order node must retain histograms");
+                    let left_count = partition_rows_for_binary_split(
+                        context.table,
+                        split.feature_index,
+                        split.threshold_bin,
+                        MissingBranchDirection::Right,
+                        &mut rows[start..end],
+                    );
+                    let mid = start + left_count;
+
+                    let (left_histograms, right_histograms) = if left_count <= end - mid {
+                        let left_histograms = build_second_order_feature_histograms(
+                            context.table,
+                            context.gradients,
+                            context.hessians,
+                            &rows[start..mid],
+                            context.parallelism,
+                        );
+                        let right_histograms =
+                            subtract_feature_histograms(&histograms, &left_histograms);
+                        (left_histograms, right_histograms)
+                    } else {
+                        let right_histograms = build_second_order_feature_histograms(
+                            context.table,
+                            context.gradients,
+                            context.hessians,
+                            &rows[mid..end],
+                            context.parallelism,
+                        );
+                        let left_histograms =
+                            subtract_feature_histograms(&histograms, &right_histograms);
+                        (left_histograms, right_histograms)
+                    };
+
+                    let left_child = push_leaf(nodes, evaluation.leaf_prediction, mid - start);
+                    let right_child = push_leaf(nodes, evaluation.leaf_prediction, end - mid);
+                    nodes[node_index] = RegressionNode::BinarySplit {
+                        feature_index: split.feature_index,
+                        threshold_bin: split.threshold_bin,
+                        missing_direction: MissingBranchDirection::Node,
+                        missing_value: evaluation.leaf_prediction,
+                        left_child,
+                        right_child,
+                        sample_count: evaluation.sample_count,
+                        impurity: evaluation.parent_strength,
+                        gain: split.gain,
+                        variance: None,
+                    };
+                    next_frontier.push(ActiveNode {
+                        node_index: left_child,
+                        depth: depth + 1,
+                        start,
+                        end: mid,
+                        histograms: Some(left_histograms),
+                    });
+                    next_frontier.push(ActiveNode {
+                        node_index: right_child,
+                        depth: depth + 1,
+                        start: mid,
+                        end,
+                        histograms: Some(right_histograms),
+                    });
+                }
+                _ => {
+                    if depth == 0 && evaluation.blocked_by_canary {
+                        *root_canary_selected = true;
+                    }
+                    nodes[node_index] = RegressionNode::Leaf {
+                        value: evaluation.leaf_prediction,
+                        sample_count: evaluation.sample_count,
+                        variance: None,
+                    };
+                }
+            }
+        }
+
+        frontier = next_frontier;
+    }
+
+    root
 }
 
 fn train_oblivious_structure(
@@ -537,110 +666,6 @@ fn train_oblivious_structure(
         },
         root_canary_selected,
     )
-}
-
-fn build_standard_node(
-    context: &BuildContext<'_>,
-    nodes: &mut Vec<RegressionNode>,
-    rows: &mut [usize],
-    depth: usize,
-    histograms: Option<Vec<SecondOrderFeatureHistogram>>,
-    root_canary_selected: &mut bool,
-) -> usize {
-    let evaluation = evaluate_standard_node(context, rows, depth, histograms);
-
-    match evaluation.best_split {
-        Some(split) if split.gain > context.options.min_gain_to_split => {
-            let histograms = evaluation
-                .histograms
-                .expect("splittable second-order node must retain histograms");
-            let left_count = partition_rows_for_binary_split(
-                context.table,
-                split.feature_index,
-                split.threshold_bin,
-                MissingBranchDirection::Right,
-                rows,
-            );
-            let (left_rows, right_rows) = rows.split_at_mut(left_count);
-            let (left_child, right_child) = if left_rows.len() <= right_rows.len() {
-                let left_histograms = build_second_order_feature_histograms(
-                    context.table,
-                    context.gradients,
-                    context.hessians,
-                    left_rows,
-                    context.parallelism,
-                );
-                let right_histograms = subtract_feature_histograms(&histograms, &left_histograms);
-                (
-                    build_standard_node(
-                        context,
-                        nodes,
-                        left_rows,
-                        depth + 1,
-                        Some(left_histograms),
-                        root_canary_selected,
-                    ),
-                    build_standard_node(
-                        context,
-                        nodes,
-                        right_rows,
-                        depth + 1,
-                        Some(right_histograms),
-                        root_canary_selected,
-                    ),
-                )
-            } else {
-                let right_histograms = build_second_order_feature_histograms(
-                    context.table,
-                    context.gradients,
-                    context.hessians,
-                    right_rows,
-                    context.parallelism,
-                );
-                let left_histograms = subtract_feature_histograms(&histograms, &right_histograms);
-                (
-                    build_standard_node(
-                        context,
-                        nodes,
-                        left_rows,
-                        depth + 1,
-                        Some(left_histograms),
-                        root_canary_selected,
-                    ),
-                    build_standard_node(
-                        context,
-                        nodes,
-                        right_rows,
-                        depth + 1,
-                        Some(right_histograms),
-                        root_canary_selected,
-                    ),
-                )
-            };
-
-            push_node(
-                nodes,
-                RegressionNode::BinarySplit {
-                    feature_index: split.feature_index,
-                    threshold_bin: split.threshold_bin,
-                    missing_direction: MissingBranchDirection::Node,
-                    missing_value: evaluation.leaf_prediction,
-                    left_child,
-                    right_child,
-                    sample_count: evaluation.sample_count,
-                    impurity: evaluation.parent_strength,
-                    gain: split.gain,
-                    variance: None,
-                },
-            )
-        }
-        _ => {
-            if depth == 0 && evaluation.blocked_by_canary {
-                *root_canary_selected = true;
-            }
-            push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count)
-        }
-    }
 }
 
 fn evaluate_standard_node(
