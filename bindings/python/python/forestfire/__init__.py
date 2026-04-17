@@ -1,4 +1,4 @@
-from ._core import Model, OptimizedModel, Table, train
+from ._api import Model, OptimizedModel, Table, train
 from .forest import (
     C45RandomForestClassifier,
     CARTRandomForestClassifier,

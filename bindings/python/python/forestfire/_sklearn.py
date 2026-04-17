@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from ._core import Model, train
+from ._api import Model, train
 
 try:
     from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
@@ -137,6 +137,9 @@ class _TreeClassifierBase(_ForestFireClassifier):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        categorical_strategy: str | None = None,
+        categorical_features: str | list[str | int] | None = None,
+        target_smoothing: float = 20.0,
     ) -> None:
         self.criterion = criterion
         self.canaries = canaries
@@ -148,6 +151,9 @@ class _TreeClassifierBase(_ForestFireClassifier):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.categorical_strategy = categorical_strategy
+        self.categorical_features = categorical_features
+        self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_TreeClassifierBase":
         _validate_sample_weight(sample_weight)
@@ -167,6 +173,9 @@ class _TreeClassifierBase(_ForestFireClassifier):
             min_samples_leaf=self.min_samples_leaf,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
+            categorical_strategy=self.categorical_strategy,
+            categorical_features=self.categorical_features,
+            target_smoothing=self.target_smoothing,
         )
         self._finalize_fit(x, y, model)
         return self
@@ -187,6 +196,9 @@ class _TreeRegressorBase(_ForestFireRegressor):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        categorical_strategy: str | None = None,
+        categorical_features: str | list[str | int] | None = None,
+        target_smoothing: float = 20.0,
     ) -> None:
         self.criterion = criterion
         self.canaries = canaries
@@ -198,6 +210,9 @@ class _TreeRegressorBase(_ForestFireRegressor):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.categorical_strategy = categorical_strategy
+        self.categorical_features = categorical_features
+        self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_TreeRegressorBase":
         _validate_sample_weight(sample_weight)
@@ -217,6 +232,9 @@ class _TreeRegressorBase(_ForestFireRegressor):
             min_samples_leaf=self.min_samples_leaf,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
+            categorical_strategy=self.categorical_strategy,
+            categorical_features=self.categorical_features,
+            target_smoothing=self.target_smoothing,
         )
         self._finalize_fit(x, model)
         return self
@@ -240,6 +258,9 @@ class _ForestClassifierBase(_ForestFireClassifier):
         random_state: int | None = None,
         compute_oob: bool = False,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        categorical_strategy: str | None = None,
+        categorical_features: str | list[str | int] | None = None,
+        target_smoothing: float = 20.0,
     ) -> None:
         self.n_estimators = n_estimators
         self.criterion = criterion
@@ -254,6 +275,9 @@ class _ForestClassifierBase(_ForestFireClassifier):
         self.random_state = random_state
         self.compute_oob = compute_oob
         self.missing_value_strategy = missing_value_strategy
+        self.categorical_strategy = categorical_strategy
+        self.categorical_features = categorical_features
+        self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_ForestClassifierBase":
         _validate_sample_weight(sample_weight)
@@ -276,6 +300,9 @@ class _ForestClassifierBase(_ForestFireClassifier):
             seed=self.random_state,
             compute_oob=self.compute_oob,
             missing_value_strategy=self.missing_value_strategy,
+            categorical_strategy=self.categorical_strategy,
+            categorical_features=self.categorical_features,
+            target_smoothing=self.target_smoothing,
         )
         self._finalize_fit(x, y, model)
         return self
@@ -299,6 +326,9 @@ class _ForestRegressorBase(_ForestFireRegressor):
         random_state: int | None = None,
         compute_oob: bool = False,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        categorical_strategy: str | None = None,
+        categorical_features: str | list[str | int] | None = None,
+        target_smoothing: float = 20.0,
     ) -> None:
         self.n_estimators = n_estimators
         self.criterion = criterion
@@ -313,6 +343,9 @@ class _ForestRegressorBase(_ForestFireRegressor):
         self.random_state = random_state
         self.compute_oob = compute_oob
         self.missing_value_strategy = missing_value_strategy
+        self.categorical_strategy = categorical_strategy
+        self.categorical_features = categorical_features
+        self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_ForestRegressorBase":
         _validate_sample_weight(sample_weight)
@@ -335,6 +368,9 @@ class _ForestRegressorBase(_ForestFireRegressor):
             seed=self.random_state,
             compute_oob=self.compute_oob,
             missing_value_strategy=self.missing_value_strategy,
+            categorical_strategy=self.categorical_strategy,
+            categorical_features=self.categorical_features,
+            target_smoothing=self.target_smoothing,
         )
         self._finalize_fit(x, model)
         return self
@@ -359,6 +395,9 @@ class _GBMClassifierBase(_ForestFireClassifier):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        categorical_strategy: str | None = None,
+        categorical_features: str | list[str | int] | None = None,
+        target_smoothing: float = 20.0,
     ) -> None:
         self.n_estimators = n_estimators
         self.canaries = canaries
@@ -374,6 +413,9 @@ class _GBMClassifierBase(_ForestFireClassifier):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.categorical_strategy = categorical_strategy
+        self.categorical_features = categorical_features
+        self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_GBMClassifierBase":
         _validate_sample_weight(sample_weight)
@@ -397,6 +439,9 @@ class _GBMClassifierBase(_ForestFireClassifier):
             top_gradient_fraction=self.top_gradient_fraction,
             other_gradient_fraction=self.other_gradient_fraction,
             missing_value_strategy=self.missing_value_strategy,
+            categorical_strategy=self.categorical_strategy,
+            categorical_features=self.categorical_features,
+            target_smoothing=self.target_smoothing,
         )
         self._finalize_fit(x, y, model)
         return self
@@ -421,6 +466,9 @@ class _GBMRegressorBase(_ForestFireRegressor):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        categorical_strategy: str | None = None,
+        categorical_features: str | list[str | int] | None = None,
+        target_smoothing: float = 20.0,
     ) -> None:
         self.n_estimators = n_estimators
         self.canaries = canaries
@@ -436,6 +484,9 @@ class _GBMRegressorBase(_ForestFireRegressor):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.categorical_strategy = categorical_strategy
+        self.categorical_features = categorical_features
+        self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_GBMRegressorBase":
         _validate_sample_weight(sample_weight)
@@ -459,6 +510,9 @@ class _GBMRegressorBase(_ForestFireRegressor):
             top_gradient_fraction=self.top_gradient_fraction,
             other_gradient_fraction=self.other_gradient_fraction,
             missing_value_strategy=self.missing_value_strategy,
+            categorical_strategy=self.categorical_strategy,
+            categorical_features=self.categorical_features,
+            target_smoothing=self.target_smoothing,
         )
         self._finalize_fit(x, model)
         return self
