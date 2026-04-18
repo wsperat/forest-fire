@@ -20,7 +20,6 @@ production-oriented lifecycle.
 ```python
 import forestfire
 import numpy as np
-import polars as pl
 
 from forestfire import Model, Table, train
 

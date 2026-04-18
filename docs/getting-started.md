@@ -39,7 +39,7 @@ use forestfire_data::Table;
 
 let x = vec![vec![0.0], vec![0.0], vec![1.0], vec![1.0]];
 let y = vec![0.0, 0.0, 1.0, 1.0];
-let table = Table::new(x.clone(), y)?;
+let table = Table::new(x, y)?;
 
 let model = train(
     &table,

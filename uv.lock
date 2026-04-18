@@ -12,7 +12,7 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "forestfire",
+    "forestfire-ml",
     "forestfire-workspace",
 ]
 
@@ -419,8 +419,8 @@ wheels = [
 ]
 
 [[package]]
-name = "forestfire"
-version = "0.1.4"
+name = "forestfire-ml"
+version = "0.2.0"
 source = { editable = "bindings/python" }
 dependencies = [
     { name = "numpy" },
@@ -440,6 +440,7 @@ dev = [
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "pytest" },
+    { name = "scikit-learn" },
 ]
 
 [package.metadata]
@@ -456,11 +457,12 @@ dev = [
     { name = "numpy", specifier = ">=2,<3" },
     { name = "pyarrow", specifier = ">=18,<20" },
     { name = "pytest", specifier = ">=8,<9" },
+    { name = "scikit-learn", specifier = ">=1.6,<2" },
 ]
 
 [[package]]
 name = "forestfire-workspace"
-version = "0.1.4"
+version = "0.2.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
