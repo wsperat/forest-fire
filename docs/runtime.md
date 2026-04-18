@@ -67,7 +67,8 @@ This means ForestFire can answer “what does this model mean?” and “how sho
 
 ## Reading the snippets below
 
-The snippets in this page are intentionally representative rather than exact copies of every line in the implementation.
+The snippets in this page are simplified, but they are intended to stay faithful
+to the current implementation shape.
 
 They are here to show:
 
@@ -75,7 +76,9 @@ They are here to show:
 - the lowered shape ForestFire uses instead
 - why the lowered shape is friendlier to CPU execution
 
-The real code lives in `crates/core/src`, but these snippets are meant to make the design readable without forcing you to reverse-engineer the whole crate first.
+The real code lives in `crates/core/src`, but these snippets are meant to make
+the design readable without forcing you to reverse-engineer the whole crate
+first.
 
 ## End-to-end optimized prediction lifecycle
 
@@ -219,6 +222,9 @@ enum OptimizedBinaryRegressorNode {
         threshold_bin: u16,
         jump_index: usize,
         jump_if_greater: bool,
+        missing_bin: Option<u16>,
+        missing_jump_index: Option<usize>,
+        missing_value: Option<f64>,
     },
 }
 
@@ -232,8 +238,22 @@ fn predict_fallthrough(nodes: &[OptimizedBinaryRegressorNode], row: &[u16]) -> f
                 threshold_bin,
                 jump_index,
                 jump_if_greater,
+                missing_bin,
+                missing_jump_index,
+                missing_value,
             } => {
-                let go_right = row[*feature_index] > *threshold_bin;
+                let bin = row[*feature_index];
+                if missing_bin.is_some_and(|expected| expected == bin) {
+                    if let Some(value) = missing_value {
+                        return *value;
+                    }
+                    if let Some(jump_index) = missing_jump_index {
+                        node_index = *jump_index;
+                        continue;
+                    }
+                }
+
+                let go_right = bin > *threshold_bin;
                 node_index = if go_right == *jump_if_greater {
                     *jump_index
                 } else {
@@ -251,6 +271,11 @@ Why the lowered version helps:
 - only the uncommon path needs an explicit jump target
 - the node payload is smaller and more regular
 - the traversal loop is simpler for the CPU to execute repeatedly
+
+One detail matters here: the chunked batch path only uses the branch-only
+layout when no node in the lowered tree needs explicit missing routing. If any
+optimized binary node carries missing-aware behavior, ForestFire falls back to a
+row-wise path for that runtime so it preserves the learned semantics exactly.
 
 ## Dense lookup for multiway nodes
 
@@ -743,6 +768,73 @@ Why this helps:
 - regular structures get specialized execution
 - irregular structures keep cheaper generic paths
 - the runtime does not force one strategy onto every tree family
+
+### Oblivious SIMD chunk shape
+
+```rust
+const OBLIVIOUS_SIMD_LANES: usize = 8;
+
+fn simd_predict_oblivious_chunk(
+    feature_indices: &[usize],
+    threshold_bins: &[u16],
+    leaf_values: &[f64],
+    matrix: &ColumnMajorBinnedMatrix,
+    start_row: usize,
+    output: &mut [f64],
+) -> usize {
+    let mut processed = 0usize;
+    let ones = u32x8::splat(1);
+
+    while processed + OBLIVIOUS_SIMD_LANES <= output.len() {
+        let base_row = start_row + processed;
+        let mut leaf_indices = u32x8::splat(0);
+
+        for (&feature_index, &threshold_bin) in feature_indices.iter().zip(threshold_bins) {
+            let column = matrix.column(feature_index);
+            let bins = if let Some(lanes) = column.slice_u8(base_row, OBLIVIOUS_SIMD_LANES) {
+                let lanes: [u8; OBLIVIOUS_SIMD_LANES] = lanes.try_into().unwrap();
+                u32x8::new([
+                    u32::from(lanes[0]),
+                    u32::from(lanes[1]),
+                    u32::from(lanes[2]),
+                    u32::from(lanes[3]),
+                    u32::from(lanes[4]),
+                    u32::from(lanes[5]),
+                    u32::from(lanes[6]),
+                    u32::from(lanes[7]),
+                ])
+            } else {
+                let lanes: [u16; OBLIVIOUS_SIMD_LANES] = column
+                    .slice_u16(base_row, OBLIVIOUS_SIMD_LANES)
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                u32x8::from(u16x8::new(lanes))
+            };
+
+            let threshold = u32x8::splat(u32::from(threshold_bin));
+            let bit = bins.cmp_gt(threshold) & ones;
+            leaf_indices = (leaf_indices << 1) | bit;
+        }
+
+        let lane_indices = leaf_indices.to_array();
+        for lane in 0..OBLIVIOUS_SIMD_LANES {
+            output[processed + lane] = leaf_values[lane_indices[lane] as usize];
+        }
+
+        processed += OBLIVIOUS_SIMD_LANES;
+    }
+
+    processed
+}
+```
+
+This is the current SIMD shape in practice:
+
+- oblivious execution vectorizes across rows, not across tree depth
+- `CompactBinnedColumn` can feed either `u8` or `u16` lane loads
+- each depth contributes one bit to the SIMD leaf-index accumulator
+- any tail rows after the SIMD chunk fall back to the scalar oblivious row path
 
 ## Compiled artifacts
 
