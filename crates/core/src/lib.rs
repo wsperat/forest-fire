@@ -33,6 +33,7 @@ use wide::{u16x8, u32x8};
 
 mod boosting;
 mod bootstrap;
+pub mod categorical;
 mod compiled_artifact;
 mod forest;
 mod inference_input;
@@ -47,6 +48,12 @@ pub mod tree;
 
 pub use boosting::BoostingError;
 pub use boosting::GradientBoostedTrees;
+pub use categorical::CategoricalConfig;
+pub use categorical::CategoricalError;
+pub use categorical::CategoricalModel;
+pub use categorical::CategoricalOptimizedModel;
+pub use categorical::CategoricalStrategy;
+pub use categorical::CategoricalValue;
 pub use compiled_artifact::CompiledArtifactError;
 pub use forest::RandomForest;
 pub use introspection::IntrospectionError;

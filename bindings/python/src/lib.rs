@@ -9,9 +9,10 @@
 //!   train/predict/optimize calls
 
 use forestfire_core::{
-    CanaryFilter, Criterion, IntrospectionError, MaxFeatures, MissingValueStrategy,
-    MissingValueStrategyConfig, Model, OptimizedModel as CoreOptimizedModel, Task, TrainAlgorithm,
-    TrainConfig, TreeType, train as train_model,
+    CanaryFilter, CategoricalConfig, CategoricalModel, CategoricalOptimizedModel,
+    CategoricalStrategy, CategoricalValue, Criterion, IntrospectionError, MaxFeatures,
+    MissingValueStrategy, MissingValueStrategyConfig, Model, OptimizedModel as CoreOptimizedModel,
+    Task, TrainAlgorithm, TrainConfig, TreeType, categorical, train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -30,6 +31,18 @@ struct PyModel {
 #[pyclass(name = "OptimizedModel")]
 struct PyOptimizedModel {
     inner: CoreOptimizedModel,
+    string_class_labels: Option<Vec<String>>,
+}
+
+#[pyclass(name = "CategoricalModel")]
+struct PyCategoricalModel {
+    inner: CategoricalModel,
+    string_class_labels: Option<Vec<String>>,
+}
+
+#[pyclass(name = "CategoricalOptimizedModel")]
+struct PyCategoricalOptimizedModel {
+    inner: CategoricalOptimizedModel,
     string_class_labels: Option<Vec<String>>,
 }
 
@@ -1429,6 +1442,96 @@ fn extract_matrix_from_rows(rows: &Bound<PyAny>) -> PyResult<Vec<Vec<f64>>> {
         .collect()
 }
 
+fn extract_categorical_scalar(value: &Bound<PyAny>) -> PyResult<CategoricalValue> {
+    if value.is_none() {
+        return Ok(CategoricalValue::Missing);
+    }
+    if let Ok(value) = value.extract::<String>() {
+        return Ok(CategoricalValue::String(value));
+    }
+    if let Ok(value) = value.extract::<bool>() {
+        return Ok(CategoricalValue::Numeric(f64::from(u8::from(value))));
+    }
+    if let Ok(value) = value.extract::<f64>() {
+        if value.is_nan() {
+            return Ok(CategoricalValue::Missing);
+        }
+        return Ok(CategoricalValue::Numeric(value));
+    }
+    if let Ok(value) = value.extract::<i64>() {
+        return Ok(CategoricalValue::Numeric(value as f64));
+    }
+    if let Ok(value) = value.extract::<i32>() {
+        return Ok(CategoricalValue::Numeric(f64::from(value)));
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "Categorical inputs must contain strings, booleans, numbers, or missing values.",
+    ))
+}
+
+fn extract_categorical_matrix_from_rows(
+    rows: &Bound<PyAny>,
+) -> PyResult<Vec<Vec<CategoricalValue>>> {
+    rows.try_iter()?
+        .map(|row| {
+            let row = row?;
+            row.try_iter()?
+                .map(|value| value.and_then(|value| extract_categorical_scalar(&value)))
+                .collect::<PyResult<Vec<_>>>()
+        })
+        .collect()
+}
+
+fn extract_categorical_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<CategoricalValue>>> {
+    if x.hasattr("collect")? {
+        let collected = x.call_method0("collect")?;
+        return extract_categorical_matrix(&collected);
+    }
+
+    if x.hasattr("to_pylist")? {
+        let rows = x.call_method0("to_pylist")?;
+        return extract_categorical_matrix_from_rows(&rows);
+    }
+
+    if x.hasattr("to_dict")? {
+        if let Ok(columns) = x.call_method("to_dict", ("list",), None) {
+            let dict = columns.cast::<PyDict>()?;
+            let column_names = dict
+                .iter()
+                .map(|(name, _)| name.extract::<String>())
+                .collect::<PyResult<Vec<_>>>()?;
+            let values = dict
+                .iter()
+                .map(|(_, values)| {
+                    values
+                        .try_iter()?
+                        .map(|value| value.and_then(|value| extract_categorical_scalar(&value)))
+                        .collect::<PyResult<Vec<_>>>()
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            let n_rows = values.first().map_or(0, Vec::len);
+            let _ = column_names;
+            return Ok((0..n_rows)
+                .map(|row_idx| {
+                    values
+                        .iter()
+                        .map(|column| column[row_idx].clone())
+                        .collect()
+                })
+                .collect());
+        }
+    }
+
+    if x.hasattr("__array__")? {
+        let as_array = x.call_method0("__array__")?;
+        if !as_array.is(x) {
+            return extract_categorical_matrix(&as_array);
+        }
+    }
+
+    extract_categorical_matrix_from_rows(x)
+}
+
 fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
     if let Ok(array) = y.extract::<PyReadonlyArray1<'_, f64>>() {
         return Ok(array.as_array().to_vec());
@@ -1922,6 +2025,42 @@ fn parse_canary_filter(value: Option<&Bound<PyAny>>) -> PyResult<CanaryFilter> {
     ))
 }
 
+fn parse_categorical_strategy(value: Option<&str>) -> PyResult<Option<CategoricalStrategy>> {
+    match value {
+        None => Ok(None),
+        Some("dummy") | Some("one_hot") => Ok(Some(CategoricalStrategy::Dummy)),
+        Some("target") => Ok(Some(CategoricalStrategy::Target)),
+        Some("fisher") => Ok(Some(CategoricalStrategy::Fisher)),
+        Some(value) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported categorical_strategy '{}'. Expected one of: dummy, target, fisher.",
+            value
+        ))),
+    }
+}
+
+fn parse_categorical_features(value: Option<&Bound<PyAny>>) -> PyResult<Option<Vec<usize>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_none() {
+        return Ok(None);
+    }
+    if let Ok(text) = value.extract::<String>() {
+        if text == "all" {
+            return Ok(Some(Vec::new()));
+        }
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "categorical_features string form currently only supports 'all'.",
+        ));
+    }
+    if let Ok(features) = value.extract::<Vec<usize>>() {
+        return Ok(Some(features));
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "categorical_features must be None, 'all', or a list of integer feature indices.",
+    ))
+}
+
 fn parse_bins(bins: Option<&Bound<PyAny>>) -> PyResult<NumericBins> {
     let Some(bins) = bins else {
         return Ok(NumericBins::Auto);
@@ -2049,6 +2188,109 @@ fn train(
 
     Ok(PyModel {
         inner: model,
+        string_class_labels,
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (x, y, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy="dummy", categorical_features=None, target_smoothing=20.0))]
+#[allow(clippy::too_many_arguments)]
+fn train_categorical(
+    py: Python<'_>,
+    x: &Bound<PyAny>,
+    y: &Bound<PyAny>,
+    algorithm: &str,
+    task: &str,
+    tree_type: &str,
+    criterion: &str,
+    canaries: usize,
+    bins: Option<&Bound<PyAny>>,
+    histogram_bins: Option<&Bound<PyAny>>,
+    physical_cores: Option<usize>,
+    max_depth: Option<usize>,
+    min_samples_split: Option<usize>,
+    min_samples_leaf: Option<usize>,
+    n_trees: Option<usize>,
+    max_features: Option<&Bound<PyAny>>,
+    seed: Option<u64>,
+    compute_oob: bool,
+    learning_rate: Option<f64>,
+    bootstrap: bool,
+    top_gradient_fraction: Option<f64>,
+    other_gradient_fraction: Option<f64>,
+    missing_value_strategy: Option<&Bound<PyAny>>,
+    filter: Option<&Bound<PyAny>>,
+    categorical_strategy: &str,
+    categorical_features: Option<&Bound<PyAny>>,
+    target_smoothing: f64,
+) -> PyResult<PyCategoricalModel> {
+    let task_was_auto = task == "auto";
+    let resolved_task = resolve_task(x, Some(y), task)?;
+    let rows = extract_categorical_matrix(x)?;
+    let (targets, string_class_labels) = match extract_training_targets(y)? {
+        TrainingTargets::Numeric(values) => (values, None),
+        TrainingTargets::StringClasses { encoded, labels } => (encoded, Some(labels)),
+    };
+    let parsed_strategy = parse_categorical_strategy(Some(categorical_strategy))?
+        .expect("categorical train requires a strategy");
+    let parsed_features = parse_categorical_features(categorical_features)?;
+    let parsed_features = parsed_features.map(|features| {
+        if features.is_empty() {
+            (0..rows.first().map_or(0, |row| row.len())).collect()
+        } else {
+            features
+        }
+    });
+    let parsed_bins = parse_bins(bins)?;
+    let config = TrainConfig {
+        algorithm: parse_algorithm(algorithm)?,
+        task: resolved_task,
+        tree_type: resolve_tree_type(tree_type, task_was_auto)?,
+        criterion: parse_criterion(criterion)?,
+        max_depth: parse_optional_positive_usize(max_depth, "max_depth")?,
+        min_samples_split: parse_optional_positive_usize(min_samples_split, "min_samples_split")?,
+        min_samples_leaf: parse_optional_positive_usize(min_samples_leaf, "min_samples_leaf")?,
+        physical_cores,
+        n_trees,
+        max_features: parse_max_features(max_features)?,
+        seed,
+        canary_filter: parse_canary_filter(filter)?,
+        compute_oob,
+        learning_rate: parse_optional_positive_f64(learning_rate, "learning_rate")?,
+        bootstrap,
+        top_gradient_fraction: parse_optional_fraction(
+            top_gradient_fraction,
+            "top_gradient_fraction",
+        )?,
+        other_gradient_fraction: parse_optional_fraction(
+            other_gradient_fraction,
+            "other_gradient_fraction",
+        )?,
+        missing_value_strategy: parse_missing_value_strategy(missing_value_strategy)?,
+        histogram_bins: histogram_bins
+            .map(|value| parse_bins(Some(value)))
+            .transpose()?,
+    };
+    let inner = py
+        .detach(move || {
+            categorical::train(
+                rows,
+                targets,
+                None,
+                canaries,
+                parsed_bins,
+                config,
+                CategoricalConfig {
+                    strategy: parsed_strategy,
+                    categorical_features: parsed_features,
+                    target_smoothing,
+                },
+            )
+            .map_err(|err| err.to_string())
+        })
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+    Ok(PyCategoricalModel {
+        inner,
         string_class_labels,
     })
 }
@@ -2316,6 +2558,76 @@ impl PyModel {
             self.inner.serialize()
         }
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+}
+
+#[pymethods]
+impl PyCategoricalModel {
+    fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let rows = extract_categorical_matrix(x)?;
+        let preds = py
+            .detach(|| self.inner.predict_rows(rows).map_err(|err| err.to_string()))
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        decoded_predictions(py, preds, self.string_class_labels.as_deref())
+    }
+
+    fn predict_proba<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let rows = extract_categorical_matrix(x)?;
+        let preds = py
+            .detach(|| {
+                self.inner
+                    .predict_proba_rows(rows)
+                    .map_err(|err| err.to_string())
+            })
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        PyArray2::from_vec2(py, &preds)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (physical_cores=None, missing_features=None))]
+    fn optimize_inference(
+        &self,
+        _py: Python<'_>,
+        physical_cores: Option<usize>,
+        missing_features: Option<Vec<usize>>,
+    ) -> PyResult<PyCategoricalOptimizedModel> {
+        let inner = self
+            .inner
+            .optimize_inference(physical_cores, missing_features.as_deref())
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(PyCategoricalOptimizedModel {
+            inner,
+            string_class_labels: self.string_class_labels.clone(),
+        })
+    }
+
+    #[getter]
+    fn algorithm(&self) -> &'static str {
+        algorithm_name(self.inner.inner().algorithm())
+    }
+
+    #[getter]
+    fn task(&self) -> &'static str {
+        task_name(self.inner.inner().task())
+    }
+
+    #[getter]
+    fn criterion(&self) -> &'static str {
+        criterion_name(self.inner.inner().criterion())
+    }
+
+    #[getter]
+    fn tree_type(&self) -> &'static str {
+        tree_type_name(self.inner.inner().tree_type())
+    }
+
+    #[getter]
+    fn n_trees(&self) -> Option<usize> {
+        self.inner.inner().n_trees()
     }
 }
 
@@ -2594,6 +2906,34 @@ impl PyOptimizedModel {
 }
 
 #[pymethods]
+impl PyCategoricalOptimizedModel {
+    fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let rows = extract_categorical_matrix(x)?;
+        let preds = py
+            .detach(|| self.inner.predict_rows(rows).map_err(|err| err.to_string()))
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        decoded_predictions(py, preds, self.string_class_labels.as_deref())
+    }
+
+    fn predict_proba<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let rows = extract_categorical_matrix(x)?;
+        let preds = py
+            .detach(|| {
+                self.inner
+                    .predict_proba_rows(rows)
+                    .map_err(|err| err.to_string())
+            })
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        PyArray2::from_vec2(py, &preds)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+}
+
+#[pymethods]
 impl PyTable {
     #[new]
     #[pyo3(signature = (x, y=None, canaries=2, bins=None))]
@@ -2644,8 +2984,22 @@ impl PyTable {
 fn _core(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyModel>()?;
     m.add_class::<PyOptimizedModel>()?;
+    m.add_class::<PyCategoricalModel>()?;
+    m.add_class::<PyCategoricalOptimizedModel>()?;
     m.add_class::<PyTable>()?;
     m.add_function(wrap_pyfunction!(train, m)?)?;
-    m.add("__all__", vec!["Model", "OptimizedModel", "Table", "train"])?;
+    m.add_function(wrap_pyfunction!(train_categorical, m)?)?;
+    m.add(
+        "__all__",
+        vec![
+            "Model",
+            "OptimizedModel",
+            "CategoricalModel",
+            "CategoricalOptimizedModel",
+            "Table",
+            "train",
+            "train_categorical",
+        ],
+    )?;
     Ok(())
 }
