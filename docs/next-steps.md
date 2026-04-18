@@ -77,6 +77,197 @@ on pushing it further:
 - profile whether frontier-level work scheduling should become more adaptive on
   small trees where synchronization overhead can outweigh gains
 
+## Experimental alternatives to second-order leaf optimization
+
+Another worthwhile GBM track is broadening the leaf-weight optimizer beyond the
+current second-order Newton approximation.
+
+The immediate goal is not to replace the default Newton path. It is to make the
+leaf-update step pluggable so ForestFire can experiment with higher-order Taylor
+methods, Halley-style updates, and non-Taylor surrogates while keeping the
+default behavior stable and well-tested.
+
+The most important architectural rule is to keep two concerns separate:
+
+- tree structure selection
+- leaf-value optimization after the structure is fixed
+
+That split keeps the current histogram-based split search usable while making it
+possible to compare alternative leaf optimizers without rewriting the whole GBM
+trainer.
+
+### 1. Refactor the optimization interface
+
+- extract leaf-weight optimization behind a shared interface
+- keep the current second-order Newton step as the baseline implementation
+- add explicit experimental optimizer implementations:
+  - `SecondOrderOptimizer`
+  - `ThirdOrderTaylorOptimizer`
+  - `FourthOrderTaylorOptimizer`
+  - `HalleyOptimizer`
+  - `PadeOptimizer`
+  - `LineSearchOptimizer`
+  - `TrustRegionWrapper`
+  - `AsymmetricQuadraticOptimizer`
+  - `PiecewiseApproxOptimizer`
+- make optimizer selection affect leaf fitting, not the default split-search
+  path
+
+### 2. Third-order Taylor approximation
+
+- add a per-sample third-derivative API such as `d3loss(y, y_pred)`
+- aggregate the per-leaf third-derivative statistic `S = sum(d3)`
+- implement the per-leaf local objective
+  - `G w + 0.5 (H + lambda) w^2 + (1/6) S w^3`
+- solve the stationary condition as a quadratic in `w`
+- handle roots conservatively:
+  - keep only real roots
+  - evaluate the leaf objective at each admissible root
+  - prefer the root closest to the Newton step when solutions are otherwise
+    competitive
+  - reject very large-magnitude roots
+- fall back to the second-order update when the cubic approximation is unstable
+- log how often root ambiguity occurs
+
+### 3. Fourth-order Taylor approximation
+
+- add a per-sample fourth-derivative API such as `d4loss(y, y_pred)`
+- aggregate the per-leaf fourth-derivative statistic `Q = sum(d4)`
+- implement the per-leaf local objective
+  - `G w + 0.5 (H + lambda) w^2 + (1/6) S w^3 + (1/24) Q w^4`
+- solve the stationary condition as a cubic equation
+- evaluate all real roots and apply stricter trust-region filtering than in the
+  third-order case
+- prefer the smallest-loss admissible solution
+- clip more aggressively than with the third-order method
+- fall back to second-order when the quartic surrogate is not trustworthy
+
+### 4. Halley optimizer
+
+- implement a Halley-style update from aggregated `(G, H, S)` statistics
+- initialize from the Newton step `w0 = -G / (H + lambda)`
+- run one deterministic Halley iteration rather than performing ambiguous
+  root-selection logic
+- add denominator safety checks
+- apply step clipping or trust-region bounds
+- fall back when:
+  - the denominator is too small
+  - the update becomes `NaN` or `Inf`
+  - the candidate increases the true loss
+- benchmark it against:
+  - the current Newton update
+  - the exact third-order Taylor root-selection path
+
+### 5. Padé approximant
+
+- implement a rational local surrogate rather than a pure Taylor polynomial
+- start with a small numerator/denominator family such as quadratic over
+  quadratic
+- fit coefficients from local derivative information `(G, H, S, Q)` or a small
+  local sampling procedure
+- minimize the surrogate numerically per leaf
+- guard against denominator singularities
+- compare its stability to the third- and fourth-order Taylor paths
+
+### 6. Global line search
+
+- after the tree structure is fixed, optimize a global stage scale
+  - `alpha = argmin sum_i l(y_i, y_pred + alpha * f_t(x_i))`
+- implement:
+  - backtracking line search
+  - optional coarse grid search
+- add stopping criteria based on realized loss decrease
+- keep the line-search path composable with all leaf optimizers rather than
+  treating it as a competing training mode
+
+### 7. Shared trust-region wrapper
+
+- add a generic wrapper that enforces `|w| <= delta`
+- make it usable around every optimizer except pure line-search-only updates
+- support adaptive `delta` expansion and shrinkage
+- reject or clip steps outside the region
+- track clipping and rejection statistics
+
+### 8. Asymmetric quadratic approximation
+
+- implement a bounded skew-aware surrogate that preserves a single optimum
+- keep the shape close to a quadratic near the origin
+- avoid a full cubic term when the main goal is asymmetry without multiple roots
+- validate whether it improves behavior on asymmetric losses
+
+### 9. Piecewise approximation
+
+- define optimizer regimes from prediction scale or gradient magnitude:
+  - near zero: quadratic
+  - moderate: asymmetric
+  - extreme: linear or clipped
+- enforce continuity at regime boundaries
+- make thresholds configurable
+- add explicit transition tests
+
+### 10. Split-scoring integration
+
+- keep the default gain computation second-order at first
+- only add higher-order split-gain experiments behind an explicit opt-in mode
+- preserve a clear boundary between:
+  - split search
+  - leaf optimization
+- add an `experimental_split_gain` flag rather than silently changing the
+  default tree-structure criterion
+
+### 11. Safety and fallback logic
+
+- centralize fallback to second-order when:
+  - required derivatives are missing
+  - all candidate roots are complex
+  - values become `NaN` or `Inf`
+  - step magnitude becomes excessive
+  - the true loss increases
+- add debug counters per optimizer:
+  - fallback reason
+  - root ambiguity count
+- add optional verbose per-leaf tracing for optimizer diagnostics
+
+### 12. Tests
+
+- add unit tests for:
+  - derivative correctness
+  - leaf objective evaluation
+  - root solving
+- validate derivatives numerically with finite differences
+- cover edge cases such as:
+  - near-zero Hessians
+  - very large gradients
+  - ambiguous roots
+- add a regression test that proves the default second-order path is unchanged
+
+### 13. Benchmarks
+
+- evaluate at least:
+  - squared-error regression
+  - logistic binary classification
+- compare:
+  - training loss
+  - validation loss
+  - convergence speed
+  - runtime
+  - fallback frequency
+  - update magnitudes
+- include synthetic cases designed to trigger instability
+
+### 14. Documentation
+
+- document every optimizer with:
+  - the local objective or update formula
+  - required derivatives
+  - main tradeoffs
+- add a comparison table covering:
+  - speed
+  - stability
+  - ambiguity
+- mark every non-second-order method as experimental
+- provide small usage examples once the optimizer-selection API stabilizes
+
 ## Random-forest training on wide data
 
 Another clear next step is reducing RF training cost once feature counts become

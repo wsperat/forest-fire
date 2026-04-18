@@ -203,6 +203,238 @@
         }
       }
     },
+    "CategoricalDummyFeature": {
+      "type": "object",
+      "required": [
+        "categories",
+        "feature_index"
+      ],
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "feature_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      }
+    },
+    "CategoricalEncoder": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "column_names",
+            "dummy_specs",
+            "kind",
+            "numeric_features",
+            "target_specs"
+          ],
+          "properties": {
+            "column_names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dummy_specs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CategoricalDummyFeature"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "table"
+              ]
+            },
+            "numeric_features": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0.0
+              }
+            },
+            "target_specs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CategoricalTargetFeature"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "column_names",
+            "fisher_specs",
+            "kind",
+            "passthrough_features"
+          ],
+          "properties": {
+            "column_names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "fisher_specs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CategoricalFisherFeature"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "fisher"
+              ]
+            },
+            "passthrough_features": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0.0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CategoricalFisherFeature": {
+      "type": "object",
+      "required": [
+        "feature_index",
+        "mapping"
+      ],
+      "properties": {
+        "feature_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "mapping": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CategoricalRankEntry"
+          }
+        }
+      }
+    },
+    "CategoricalMappingEntry": {
+      "type": "object",
+      "required": [
+        "category",
+        "encoded"
+      ],
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "encoded": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      }
+    },
+    "CategoricalRankEntry": {
+      "type": "object",
+      "required": [
+        "category",
+        "rank"
+      ],
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "rank": {
+          "type": "number",
+          "format": "double"
+        }
+      }
+    },
+    "CategoricalTargetFeature": {
+      "type": "object",
+      "required": [
+        "feature_index",
+        "mapping",
+        "priors"
+      ],
+      "properties": {
+        "feature_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "mapping": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CategoricalMappingEntry"
+          }
+        },
+        "priors": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      }
+    },
+    "CategoricalTransformSection": {
+      "type": "object",
+      "required": [
+        "encoder",
+        "raw_feature_count",
+        "raw_features",
+        "strategy",
+        "target_smoothing"
+      ],
+      "properties": {
+        "categorical_features": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0.0
+          }
+        },
+        "encoder": {
+          "$ref": "#/definitions/CategoricalEncoder"
+        },
+        "raw_feature_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "raw_features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InputFeature"
+          }
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "target_smoothing": {
+          "type": "number",
+          "format": "double"
+        }
+      }
+    },
     "Compatibility": {
       "type": "object",
       "required": [
@@ -1032,6 +1264,16 @@
         "numeric_binning"
       ],
       "properties": {
+        "categorical": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CategoricalTransformSection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "included_in_model": {
           "type": "boolean"
         },

@@ -119,6 +119,10 @@ The reason to keep all three is that they solve different problems:
 
 So a compiled optimized model is best understood as a deployment cache for the optimized runtime, not as a new canonical model definition.
 
+For categorical models, the compiled artifact also carries the categorical
+transform metadata needed to convert raw mixed inputs into the encoded feature
+space expected by the lowered runtime.
+
 Where the impact is largest:
 
 - large batches
@@ -157,6 +161,7 @@ It includes:
 - algorithm, task, tree type, and criterion
 - explicit `node_tree` and `oblivious_levels` representations
 - training-time numeric bin boundaries
+- categorical transform metadata when categorical strategies were used
 - leaf payloads for classification and regression
 - node and leaf stats like sample counts, impurity, gain, class counts, and variance when relevant
 
@@ -173,6 +178,13 @@ That is why `Model` and `OptimizedModel` export the same IR JSON:
 - both objects represent the same learned function
 - only one of them stores it in a runtime-specialized way
 - the IR must therefore describe the common semantics, not the optimization strategy
+
+For categorical models, that common semantic layer now includes:
+
+- the raw input schema
+- the categorical strategy configuration
+- the serialized transform state needed to reproduce encoded inference before
+  tree evaluation
 
 ## Tree introspection
 
