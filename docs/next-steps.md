@@ -268,6 +268,276 @@ trainer.
 - mark every non-second-order method as experimental
 - provide small usage examples once the optimizer-selection API stabilizes
 
+## Experimental tree-building strategies
+
+Another useful training track is experimenting with stronger tree-construction
+strategies than the current greedy builder.
+
+This is distinct from leaf optimization. Higher-order or alternative leaf
+optimizers change how a fixed tree assigns leaf values. The work here changes
+how the tree structure itself is chosen.
+
+The baseline should remain explicit:
+
+- `GreedyBuilder` stays the default and the main speed baseline
+- stronger builders should begin as clearly experimental alternatives
+
+### 15. Refactor the tree-construction interface
+
+- add a pluggable tree-builder interface so the current greedy search is not
+  hard-coded as the only option
+- keep the current implementation as `GreedyBuilder`
+- reserve explicit experimental builders such as:
+  - `LookaheadBuilder`
+  - `BeamSearchBuilder`
+  - `RefinementBuilder`
+  - `OptimalTreeBuilder`
+
+### 15.1 Lookahead
+
+- implement depth-1 lookahead for split scoring
+- for each node, shortlist the top `K` splits by immediate gain
+- re-score the shortlisted splits by performing one-step child expansion
+- add configuration:
+  - `lookahead_depth`
+  - `lookahead_top_k`
+  - `lookahead_weight`
+
+### 15.2 Beam search
+
+- implement a beam over partial trees with width `beam_width`
+- define a partial-tree score from:
+  - current leaf objective
+  - a heuristic estimate of future value
+- deduplicate equivalent partial trees
+- add budget controls:
+  - maximum expansions
+  - maximum memory
+  - early stopping
+
+### 15.3 Post-build non-greedy refinement
+
+- build the tree greedily first
+- revisit internal nodes one at a time while keeping topology fixed
+- re-optimize split feature, threshold, and downstream routing
+- recompute leaf weights after each accepted change
+- stop after a fixed number of passes or when no more improvement is found
+
+### 15.4 Optimal or near-optimal shallow search
+
+- add a shallow-tree experimental mode using branch-and-bound or dynamic
+  programming style search
+- restrict the first version to:
+  - small depth
+  - small feature subsets
+- add a time-budgeted anytime mode
+- compare directly against greedy and lookahead builders
+
+### 15.5 Evaluation
+
+- benchmark tree builders on:
+  - training objective
+  - validation objective
+  - wall-clock time
+  - tree size and realized depth
+  - number of accepted refinements
+- measure whether stronger trees reduce the number of boosting rounds required
+  to hit the same validation quality
+
+## Constraint-aware modeling
+
+Another high-value direction is making models stronger by making them more
+structured rather than only more flexible.
+
+Many real tabular problems come with known shape constraints:
+
+- increasing income should not reduce approved credit under the intended policy
+- higher dose should not decrease expected toxicity risk in some medical models
+- some feature interactions are allowed while others should be forbidden
+
+Encoding those priors can improve both generalization and trustworthiness. It
+also changes the optimization problem in ways that are more interesting than
+simply growing deeper trees.
+
+The most useful roadmap items here are:
+
+- add monotonic constraints for CART, forests, and boosting
+- add interaction constraints so only approved feature groups may co-occur on a
+  path or within one tree
+- add optional fairness or policy-style constraints once the monotonic path is
+  stable
+- make constraint violations observable during training rather than silently
+  clipped away
+
+### Monotonic constraints
+
+- allow per-feature monotonic directions:
+  - increasing
+  - decreasing
+  - unconstrained
+- filter split candidates and leaf updates that would violate the required
+  ordering
+- ensure boosted stage updates preserve the global monotonic contract
+- benchmark the tradeoff between:
+  - constrained training loss
+  - validation quality
+  - monotonicity violation rate under numerical edge cases
+
+### Interaction constraints
+
+- add configuration that limits which features may interact inside one path or
+  one tree
+- start with simple allow-list groups rather than a full constraint language
+- integrate the constraint into:
+  - split candidate generation
+  - lookahead and beam-search builders
+  - feature-importance and introspection output
+- measure whether interaction constraints improve generalization on wide,
+  weak-signal tables
+
+### Constraint diagnostics
+
+- add explicit reports for:
+  - rejected splits due to constraints
+  - constrained-vs-unconstrained objective gap
+  - paths that sit near feasibility boundaries
+- expose those diagnostics in introspection and dataframe export rather than
+  keeping them trainer-internal
+
+## Oblique and hybrid split families
+
+The current tree families are all axis-aligned. That keeps training and runtime
+simple, but it also limits the shape of functions that one split can express.
+
+An important experimental next step is adding split families that can separate
+examples using combinations of features rather than one threshold on one
+feature.
+
+This can improve model quality substantially when:
+
+- useful boundaries are rotated rather than axis-aligned
+- many weak numeric predictors only become strong together
+- the user wants shallower, stronger trees instead of many tiny axis-aligned
+  fragments
+
+### Sparse oblique splits
+
+- add an experimental split type of the form:
+  - `w_1 x_1 + ... + w_k x_k <= t`
+- keep the first implementation sparse and low-dimensional:
+  - very small `k`
+  - strong regularization
+  - clear support for missing-value handling
+- shortlist candidate feature groups from the existing histogram/gain pipeline
+  before fitting the local hyperplane
+- compare against deeper axis-aligned trees at matched latency budgets
+
+### Hybrid builders
+
+- allow a tree builder to mix:
+  - ordinary axis-aligned nodes
+  - sparse oblique nodes only where they buy clear objective improvement
+- add a budget such as:
+  - maximum oblique nodes per tree
+  - maximum features per oblique split
+- preserve a clean fallback to pure axis-aligned training for portability and
+  runtime simplicity
+
+### Runtime and export implications
+
+- define how oblique nodes should be represented in the IR
+- decide whether optimized runtime support should start with:
+  - scalar-only execution
+  - batched dot-product evaluation
+- benchmark whether a few strong oblique nodes outperform many ordinary nodes
+  at equal prediction cost
+
+## Richer leaf models
+
+Another way to improve tree quality is to keep the structure tree-shaped while
+making leaves more expressive than a constant.
+
+This is especially attractive when a leaf contains a region that is mostly
+simple but not truly flat. Instead of forcing the tree to keep splitting until
+that region looks constant, it may be better to keep a coarser partition and
+fit a richer local model in the leaf.
+
+### Linear leaves and model trees
+
+- add experimental linear leaves for regression first
+- fit tiny regularized local models inside leaves using only the features seen
+  on the path or a very small active subset
+- compare:
+  - one stronger tree with linear leaves
+  - many deeper constant-leaf trees
+- keep the optimized runtime path explicit, because linear leaves change the
+  scoring contract
+
+### Residualized leaves for boosting
+
+- experiment with stage learners that still use tree structure but allow each
+  leaf to fit:
+  - a constant
+  - a tiny linear correction
+  - a calibrated one-dimensional response
+- evaluate whether stronger leaves reduce the number of required boosting
+  rounds enough to offset the extra per-leaf cost
+
+### Safety and regularization
+
+- require explicit regularization stronger than constant leaves
+- log when richer leaves overfit tiny support regions
+- add fallback to constant leaves when local conditioning is poor or the leaf
+  support is too small
+
+## Calibration and distributional outputs
+
+Improving a model is not only about its point predictions. For many use cases,
+better probabilities, intervals, and uncertainty estimates are the real model
+improvement.
+
+ForestFire already has good structure for semantic postprocessing, so this is a
+natural place to push beyond ordinary point-estimate trees.
+
+### Probability calibration
+
+- add optional post-training calibration for classification:
+  - Platt scaling
+  - isotonic regression
+  - temperature scaling for boosted margins where appropriate
+- compare calibrated and uncalibrated:
+  - log loss
+  - Brier score
+  - calibration curves
+- decide whether calibrated wrappers should be:
+  - separate artifacts
+  - part of the semantic model contract
+
+### Quantile and interval prediction
+
+- add quantile-regression objectives and leaf semantics
+- support prediction intervals from:
+  - direct quantile models
+  - conformal wrappers over existing models
+- benchmark not just width but coverage accuracy and conditional coverage drift
+
+### Distributional leaves
+
+- experiment with leaves that predict a small parametric distribution rather
+  than only a mean
+- good early targets are:
+  - Gaussian-style regression leaves
+  - binary probability leaves with better calibrated uncertainty metadata
+- extend the IR only after the semantic contract is clear and stable
+
+### Evaluation
+
+- add benchmark suites that score:
+  - calibration error
+  - interval coverage
+  - sharpness vs coverage tradeoffs
+  - uncertainty quality under covariate shift
+
 ## Random-forest training on wide data
 
 Another clear next step is reducing RF training cost once feature counts become
