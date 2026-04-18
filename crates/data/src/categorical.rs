@@ -1,22 +1,23 @@
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CategoricalValue {
     Numeric(f64),
     String(String),
     Missing,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TableCategoricalStrategy {
     Dummy,
     Target,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableCategoricalConfig {
     pub strategy: TableCategoricalStrategy,
     pub categorical_features: Option<Vec<usize>>,
@@ -35,25 +36,25 @@ impl Default for TableCategoricalConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-struct DummyFeatureSpec {
-    feature_index: usize,
-    categories: Vec<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DummyFeatureSpec {
+    pub feature_index: usize,
+    pub categories: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct TargetFeatureSpec {
-    feature_index: usize,
-    priors: Vec<f64>,
-    mapping: BTreeMap<String, Vec<f64>>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetFeatureSpec {
+    pub feature_index: usize,
+    pub priors: Vec<f64>,
+    pub mapping: BTreeMap<String, Vec<f64>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableCategoricalEncoder {
     pub column_names: Vec<String>,
-    numeric_features: Vec<usize>,
-    dummy_specs: Vec<DummyFeatureSpec>,
-    target_specs: Vec<TargetFeatureSpec>,
+    pub numeric_features: Vec<usize>,
+    pub dummy_specs: Vec<DummyFeatureSpec>,
+    pub target_specs: Vec<TargetFeatureSpec>,
 }
 
 #[derive(Debug)]

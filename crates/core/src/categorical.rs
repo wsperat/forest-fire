@@ -1,9 +1,21 @@
-use crate::{Model, OptimizedModel, PredictError, TrainConfig, TrainError};
-use forestfire_data::categorical::{
-    TableCategoricalConfig, TableCategoricalEncoder, TableCategoricalError,
-    TableCategoricalStrategy, category_key, category_signal_strength, resolve_categorical_features,
-    shuffled_feature_rows, validate_rows,
+use crate::compiled_artifact::{
+    COMPILED_ARTIFACT_BACKEND_CPU, COMPILED_ARTIFACT_HEADER_LEN, COMPILED_ARTIFACT_MAGIC,
+    COMPILED_ARTIFACT_VERSION,
 };
+use crate::ir::{
+    CategoricalDummyFeature, CategoricalEncoder as CategoricalEncoderIr, CategoricalFisherFeature,
+    CategoricalMappingEntry, CategoricalRankEntry, CategoricalTargetFeature,
+    CategoricalTransformSection, InputFeature, InputSchema, ModelPackageIr,
+};
+use crate::{
+    CompiledArtifactError, IrError, Model, OptimizedModel, PredictError, TrainConfig, TrainError,
+};
+use forestfire_data::categorical::{
+    DummyFeatureSpec, TableCategoricalConfig, TableCategoricalEncoder, TableCategoricalError,
+    TableCategoricalStrategy, TargetFeatureSpec, category_key, category_signal_strength,
+    resolve_categorical_features, shuffled_feature_rows, validate_rows,
+};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -55,13 +67,13 @@ impl Display for CategoricalError {
 
 impl Error for CategoricalError {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FisherFeatureSpec {
     feature_index: usize,
     mapping: BTreeMap<String, f64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum CoreEncoder {
     Table(TableCategoricalEncoder),
     Fisher {
@@ -75,12 +87,16 @@ enum CoreEncoder {
 pub struct CategoricalModel {
     inner: Model,
     encoder: CoreEncoder,
+    config: CategoricalConfig,
+    raw_input_schema: InputSchema,
 }
 
 #[derive(Debug, Clone)]
 pub struct CategoricalOptimizedModel {
     inner: OptimizedModel,
     encoder: CoreEncoder,
+    config: CategoricalConfig,
+    raw_input_schema: InputSchema,
 }
 
 impl CategoricalModel {
@@ -117,7 +133,45 @@ impl CategoricalModel {
                 missing_features.map(|features| features.to_vec()),
             )?,
             encoder: self.encoder.clone(),
+            config: self.config.clone(),
+            raw_input_schema: self.raw_input_schema.clone(),
         })
+    }
+
+    pub fn to_ir(&self) -> ModelPackageIr {
+        let mut ir = self.inner.to_ir();
+        ir.model.supports_categorical = true;
+        ir.input_schema = self.raw_input_schema.clone();
+        ir.preprocessing.categorical = Some(categorical_transform_section(
+            &self.encoder,
+            &self.config,
+            &self.raw_input_schema,
+        ));
+        ir.preprocessing.notes = "Numeric features use serialized training-time rank bins. Categorical transforms are serialized alongside the model and applied before numeric/binary inference."
+            .to_string();
+        ir
+    }
+
+    pub fn to_ir_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.to_ir())
+    }
+
+    pub fn to_ir_json_pretty(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.to_ir())
+    }
+
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        self.to_ir_json()
+    }
+
+    pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
+        self.to_ir_json_pretty()
+    }
+
+    pub fn deserialize(serialized: &str) -> Result<Self, IrError> {
+        let ir: ModelPackageIr =
+            serde_json::from_str(serialized).map_err(|err| IrError::Json(err.to_string()))?;
+        categorical_model_from_ir(ir)
     }
 }
 
@@ -143,6 +197,99 @@ impl CategoricalOptimizedModel {
             .predict_proba_rows(self.encoder.transform_rows(&rows)?)
             .map_err(CategoricalError::Predict)
     }
+
+    pub fn to_ir(&self) -> ModelPackageIr {
+        let mut ir = self.inner.to_ir();
+        ir.model.supports_categorical = true;
+        ir.input_schema = self.raw_input_schema.clone();
+        ir.preprocessing.categorical = Some(categorical_transform_section(
+            &self.encoder,
+            &self.config,
+            &self.raw_input_schema,
+        ));
+        ir.preprocessing.notes = "Numeric features use serialized training-time rank bins. Categorical transforms are serialized alongside the model and applied before optimized inference."
+            .to_string();
+        ir
+    }
+
+    pub fn to_ir_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.to_ir())
+    }
+
+    pub fn to_ir_json_pretty(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.to_ir())
+    }
+
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        self.to_ir_json()
+    }
+
+    pub fn serialize_pretty(&self) -> Result<String, serde_json::Error> {
+        self.to_ir_json_pretty()
+    }
+
+    pub fn serialize_compiled(&self) -> Result<Vec<u8>, CompiledArtifactError> {
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct Payload {
+            semantic_ir: ModelPackageIr,
+            runtime: crate::OptimizedRuntime,
+            feature_projection: Option<Vec<usize>>,
+        }
+
+        let payload = Payload {
+            semantic_ir: self.to_ir(),
+            runtime: self.inner.runtime.clone(),
+            feature_projection: Some(self.inner.feature_projection.clone()),
+        };
+        let mut payload_bytes = Vec::new();
+        ciborium::into_writer(&payload, &mut payload_bytes)
+            .map_err(|err| CompiledArtifactError::Encode(err.to_string()))?;
+        let mut bytes = Vec::with_capacity(COMPILED_ARTIFACT_HEADER_LEN + payload_bytes.len());
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_MAGIC);
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&COMPILED_ARTIFACT_BACKEND_CPU.to_le_bytes());
+        bytes.extend_from_slice(&payload_bytes);
+        Ok(bytes)
+    }
+
+    pub fn deserialize_compiled(
+        serialized: &[u8],
+        physical_cores: Option<usize>,
+    ) -> Result<Self, CompiledArtifactError> {
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct Payload {
+            semantic_ir: ModelPackageIr,
+            runtime: crate::OptimizedRuntime,
+            feature_projection: Option<Vec<usize>>,
+        }
+        if serialized.len() < COMPILED_ARTIFACT_HEADER_LEN {
+            return Err(CompiledArtifactError::ArtifactTooShort {
+                actual: serialized.len(),
+                minimum: COMPILED_ARTIFACT_HEADER_LEN,
+            });
+        }
+        let magic = [serialized[0], serialized[1], serialized[2], serialized[3]];
+        if magic != COMPILED_ARTIFACT_MAGIC {
+            return Err(CompiledArtifactError::InvalidMagic(magic));
+        }
+        let version = u16::from_le_bytes([serialized[4], serialized[5]]);
+        if version != COMPILED_ARTIFACT_VERSION {
+            return Err(CompiledArtifactError::UnsupportedVersion(version));
+        }
+        let backend = u16::from_le_bytes([serialized[6], serialized[7]]);
+        if backend != COMPILED_ARTIFACT_BACKEND_CPU {
+            return Err(CompiledArtifactError::UnsupportedBackend(backend));
+        }
+        let _payload: Payload = ciborium::from_reader(std::io::Cursor::new(
+            &serialized[COMPILED_ARTIFACT_HEADER_LEN..],
+        ))
+        .map_err(|err| CompiledArtifactError::Decode(err.to_string()))?;
+        let restored = categorical_model_from_ir(_payload.semantic_ir)
+            .map_err(CompiledArtifactError::InvalidSemanticModel)?;
+        restored
+            .optimize_inference(physical_cores, None)
+            .map_err(CompiledArtifactError::InvalidRuntime)
+    }
 }
 
 pub fn train(
@@ -160,13 +307,14 @@ pub fn train(
             .map(|index| format!("f{index}"))
             .collect()
     });
+    let raw_input_schema = raw_input_schema(&column_names, &rows);
 
     let encoder = match categorical.strategy {
         CategoricalStrategy::Dummy => CoreEncoder::Table(
             TableCategoricalEncoder::fit(
                 &rows,
                 &targets,
-                column_names,
+                column_names.clone(),
                 &TableCategoricalConfig {
                     strategy: TableCategoricalStrategy::Dummy,
                     categorical_features: categorical.categorical_features.clone(),
@@ -188,7 +336,7 @@ pub fn train(
                 TableCategoricalEncoder::fit(
                     &rows,
                     &targets,
-                    column_names,
+                    column_names.clone(),
                     &TableCategoricalConfig {
                         strategy: TableCategoricalStrategy::Target,
                         categorical_features: categorical.categorical_features.clone(),
@@ -230,6 +378,8 @@ pub fn train(
     Ok(CategoricalModel {
         inner: model,
         encoder,
+        config: categorical,
+        raw_input_schema,
     })
 }
 
@@ -364,6 +514,231 @@ fn transform_fisher_rows(
         encoded_rows.push(encoded);
     }
     Ok(encoded_rows)
+}
+
+fn raw_input_schema(column_names: &[String], rows: &[Vec<CategoricalValue>]) -> InputSchema {
+    let features = column_names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let logical_type = if rows
+                .iter()
+                .any(|row| matches!(row[index], CategoricalValue::String(_)))
+            {
+                "categorical"
+            } else {
+                "numeric"
+            };
+            InputFeature {
+                index,
+                name: name.clone(),
+                dtype: if logical_type == "categorical" {
+                    "string".to_string()
+                } else {
+                    "float64".to_string()
+                },
+                logical_type: logical_type.to_string(),
+                nullable: rows
+                    .iter()
+                    .any(|row| matches!(row[index], CategoricalValue::Missing)),
+            }
+        })
+        .collect::<Vec<_>>();
+    InputSchema {
+        feature_count: column_names.len(),
+        features,
+        ordering: "strict_index_order".to_string(),
+        input_tensor_layout: "row_major".to_string(),
+        accepts_feature_names: false,
+    }
+}
+
+fn categorical_transform_section(
+    encoder: &CoreEncoder,
+    config: &CategoricalConfig,
+    raw_input_schema: &InputSchema,
+) -> CategoricalTransformSection {
+    CategoricalTransformSection {
+        raw_feature_count: raw_input_schema.feature_count,
+        raw_features: raw_input_schema.features.clone(),
+        strategy: match config.strategy {
+            CategoricalStrategy::Dummy => "dummy",
+            CategoricalStrategy::Target => "target",
+            CategoricalStrategy::Fisher => "fisher",
+        }
+        .to_string(),
+        categorical_features: config.categorical_features.clone(),
+        target_smoothing: config.target_smoothing,
+        encoder: match encoder {
+            CoreEncoder::Table(table) => CategoricalEncoderIr::Table {
+                column_names: table.column_names.clone(),
+                numeric_features: table.numeric_features.clone(),
+                dummy_specs: table
+                    .dummy_specs
+                    .iter()
+                    .map(|spec| CategoricalDummyFeature {
+                        feature_index: spec.feature_index,
+                        categories: spec.categories.clone(),
+                    })
+                    .collect(),
+                target_specs: table
+                    .target_specs
+                    .iter()
+                    .map(|spec| CategoricalTargetFeature {
+                        feature_index: spec.feature_index,
+                        priors: spec.priors.clone(),
+                        mapping: spec
+                            .mapping
+                            .iter()
+                            .map(|(category, encoded)| CategoricalMappingEntry {
+                                category: category.clone(),
+                                encoded: encoded.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            CoreEncoder::Fisher {
+                column_names,
+                passthrough_features,
+                fisher_specs,
+            } => CategoricalEncoderIr::Fisher {
+                column_names: column_names.clone(),
+                passthrough_features: passthrough_features.clone(),
+                fisher_specs: fisher_specs
+                    .iter()
+                    .map(|spec| CategoricalFisherFeature {
+                        feature_index: spec.feature_index,
+                        mapping: spec
+                            .mapping
+                            .iter()
+                            .map(|(category, rank)| CategoricalRankEntry {
+                                category: category.clone(),
+                                rank: *rank,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+        },
+    }
+}
+
+fn categorical_model_from_ir(ir: ModelPackageIr) -> Result<CategoricalModel, IrError> {
+    if !ir.model.supports_categorical {
+        return Err(IrError::InvalidInferenceOption(
+            "categorical transform metadata is missing".to_string(),
+        ));
+    }
+    let categorical = ir.preprocessing.categorical.clone().ok_or_else(|| {
+        IrError::InvalidPreprocessing("categorical preprocessing block is missing".to_string())
+    })?;
+    let mut inner_ir = ir.clone();
+    inner_ir.model.supports_categorical = false;
+    inner_ir.input_schema = encoded_input_schema(&inner_ir);
+    inner_ir.preprocessing.categorical = None;
+    let inner = crate::ir::model_from_ir(inner_ir)?;
+    let encoder = match categorical.encoder {
+        CategoricalEncoderIr::Table {
+            column_names,
+            numeric_features,
+            dummy_specs,
+            target_specs,
+        } => CoreEncoder::Table(TableCategoricalEncoder {
+            column_names,
+            numeric_features,
+            dummy_specs: dummy_specs
+                .into_iter()
+                .map(|spec| DummyFeatureSpec {
+                    feature_index: spec.feature_index,
+                    categories: spec.categories,
+                })
+                .collect(),
+            target_specs: target_specs
+                .into_iter()
+                .map(|spec| TargetFeatureSpec {
+                    feature_index: spec.feature_index,
+                    priors: spec.priors,
+                    mapping: spec
+                        .mapping
+                        .into_iter()
+                        .map(|entry| (entry.category, entry.encoded))
+                        .collect(),
+                })
+                .collect(),
+        }),
+        CategoricalEncoderIr::Fisher {
+            column_names,
+            passthrough_features,
+            fisher_specs,
+        } => CoreEncoder::Fisher {
+            column_names,
+            passthrough_features,
+            fisher_specs: fisher_specs
+                .into_iter()
+                .map(|spec| FisherFeatureSpec {
+                    feature_index: spec.feature_index,
+                    mapping: spec
+                        .mapping
+                        .into_iter()
+                        .map(|entry| (entry.category, entry.rank))
+                        .collect(),
+                })
+                .collect(),
+        },
+    };
+    Ok(CategoricalModel {
+        inner,
+        encoder,
+        config: CategoricalConfig {
+            strategy: match categorical.strategy.as_str() {
+                "dummy" => CategoricalStrategy::Dummy,
+                "target" => CategoricalStrategy::Target,
+                "fisher" => CategoricalStrategy::Fisher,
+                other => {
+                    return Err(IrError::InvalidPreprocessing(format!(
+                        "unsupported categorical strategy '{}'",
+                        other
+                    )));
+                }
+            },
+            categorical_features: categorical.categorical_features,
+            target_smoothing: categorical.target_smoothing,
+        },
+        raw_input_schema: ir.input_schema,
+    })
+}
+
+fn encoded_input_schema(ir: &ModelPackageIr) -> InputSchema {
+    let features = ir
+        .preprocessing
+        .numeric_binning
+        .features
+        .iter()
+        .map(|feature| match feature {
+            crate::ir::FeatureBinning::Numeric { feature_index, .. } => InputFeature {
+                index: *feature_index,
+                name: format!("f{}", feature_index),
+                dtype: "float64".to_string(),
+                logical_type: "numeric".to_string(),
+                nullable: false,
+            },
+            crate::ir::FeatureBinning::Binary { feature_index } => InputFeature {
+                index: *feature_index,
+                name: format!("f{}", feature_index),
+                dtype: "bool".to_string(),
+                logical_type: "boolean".to_string(),
+                nullable: false,
+            },
+        })
+        .collect();
+    InputSchema {
+        feature_count: ir.model.num_features,
+        features,
+        ordering: "strict_index_order".to_string(),
+        input_tensor_layout: "row_major".to_string(),
+        accepts_feature_names: false,
+    }
 }
 
 #[cfg(test)]

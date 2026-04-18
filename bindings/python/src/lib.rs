@@ -2512,6 +2512,16 @@ impl PyModel {
 
 #[pymethods]
 impl PyCategoricalModel {
+    #[classmethod]
+    fn deserialize(_cls: &Bound<PyType>, serialized: &str) -> PyResult<Self> {
+        let inner = CategoricalModel::deserialize(serialized)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(Self {
+            inner,
+            string_class_labels: None,
+        })
+    }
+
     fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let rows = extract_categorical_matrix(x)?;
         let preds = py
@@ -2577,6 +2587,36 @@ impl PyCategoricalModel {
     #[getter]
     fn n_trees(&self) -> Option<usize> {
         self.inner.inner().n_trees()
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "IR export is not supported for models trained with string class labels.",
+            ));
+        }
+        if pretty {
+            self.inner.to_ir_json_pretty()
+        } else {
+            self.inner.to_ir_json()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Serialization is not supported for models trained with string class labels.",
+            ));
+        }
+        if pretty {
+            self.inner.serialize_pretty()
+        } else {
+            self.inner.serialize()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
     }
 }
 
@@ -2856,6 +2896,21 @@ impl PyOptimizedModel {
 
 #[pymethods]
 impl PyCategoricalOptimizedModel {
+    #[classmethod]
+    #[pyo3(signature = (serialized, physical_cores=None))]
+    fn deserialize_compiled(
+        _cls: &Bound<PyType>,
+        serialized: &[u8],
+        physical_cores: Option<usize>,
+    ) -> PyResult<Self> {
+        let inner = CategoricalOptimizedModel::deserialize_compiled(serialized, physical_cores)
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(Self {
+            inner,
+            string_class_labels: None,
+        })
+    }
+
     fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let rows = extract_categorical_matrix(x)?;
         let preds = py
@@ -2879,6 +2934,49 @@ impl PyCategoricalOptimizedModel {
             .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
         PyArray2::from_vec2(py, &preds)
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn to_ir_json(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "IR export is not supported for models trained with string class labels.",
+            ));
+        }
+        if pretty {
+            self.inner.to_ir_json_pretty()
+        } else {
+            self.inner.to_ir_json()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    #[pyo3(signature = (pretty=false))]
+    fn serialize(&self, pretty: bool) -> PyResult<String> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Serialization is not supported for models trained with string class labels.",
+            ));
+        }
+        if pretty {
+            self.inner.serialize_pretty()
+        } else {
+            self.inner.serialize()
+        }
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+    }
+
+    fn serialize_compiled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if self.string_class_labels.is_some() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Compiled serialization is not supported for models trained with string class labels.",
+            ));
+        }
+        let bytes = self
+            .inner
+            .serialize_compiled()
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        Ok(PyBytes::new(py, &bytes))
     }
 }
 

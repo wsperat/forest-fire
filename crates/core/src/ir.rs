@@ -283,7 +283,67 @@ pub struct Determinism {
 pub struct PreprocessingSection {
     pub included_in_model: bool,
     pub numeric_binning: NumericBinning,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categorical: Option<CategoricalTransformSection>,
     pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalTransformSection {
+    pub raw_feature_count: usize,
+    pub raw_features: Vec<InputFeature>,
+    pub strategy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub categorical_features: Option<Vec<usize>>,
+    pub target_smoothing: f64,
+    pub encoder: CategoricalEncoder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CategoricalEncoder {
+    Table {
+        column_names: Vec<String>,
+        numeric_features: Vec<usize>,
+        dummy_specs: Vec<CategoricalDummyFeature>,
+        target_specs: Vec<CategoricalTargetFeature>,
+    },
+    Fisher {
+        column_names: Vec<String>,
+        passthrough_features: Vec<usize>,
+        fisher_specs: Vec<CategoricalFisherFeature>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalDummyFeature {
+    pub feature_index: usize,
+    pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalTargetFeature {
+    pub feature_index: usize,
+    pub priors: Vec<f64>,
+    pub mapping: Vec<CategoricalMappingEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalFisherFeature {
+    pub feature_index: usize,
+    pub mapping: Vec<CategoricalRankEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalMappingEntry {
+    pub category: String,
+    pub encoded: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalRankEntry {
+    pub category: String,
+    pub rank: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1503,6 +1563,7 @@ fn preprocessing(model: &Model) -> PreprocessingSection {
             kind: "rank_bin_128".to_string(),
             features,
         },
+        categorical: None,
         notes: "Numeric features use serialized training-time rank bins. Binary features are serialized as booleans. Missing values and categorical encodings are not implemented in IR v1."
             .to_string(),
     }

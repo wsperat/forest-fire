@@ -602,6 +602,7 @@ version = "0.3.0"
 dependencies = [
  "arrow",
  "rand",
+ "serde",
 ]
 
 [[package]]

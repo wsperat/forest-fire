@@ -17,7 +17,13 @@ class Model:
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model":
-        return cls(_core.Model.deserialize(serialized))
+        try:
+            inner = _core.Model.deserialize(serialized)
+            categorical_strategy = None
+        except ValueError:
+            inner = _core.CategoricalModel.deserialize(serialized)
+            categorical_strategy = "categorical"
+        return cls(inner, categorical_strategy=categorical_strategy)
 
     def predict(self, x: Any) -> Any:
         return self._inner.predict(x)
@@ -36,17 +42,9 @@ class Model:
         )
 
     def to_ir_json(self, pretty: bool = False) -> str:
-        if self.categorical_strategy is not None:
-            raise ValueError(
-                "IR export is not supported for models trained with native categorical transforms."
-            )
         return self._inner.to_ir_json(pretty)
 
     def serialize(self, pretty: bool = False) -> str:
-        if self.categorical_strategy is not None:
-            raise ValueError(
-                "Serialization is not supported for models trained with native categorical transforms."
-            )
         return self._inner.serialize(pretty)
 
     def __getattr__(self, name: str) -> Any:
@@ -67,9 +65,17 @@ class OptimizedModel:
     def deserialize_compiled(
         cls, serialized: bytes, physical_cores: int | None = None
     ) -> "OptimizedModel":
-        return cls(
-            _core.OptimizedModel.deserialize_compiled(serialized, physical_cores)
-        )
+        try:
+            inner = _core.OptimizedModel.deserialize_compiled(
+                serialized, physical_cores
+            )
+            categorical_strategy = None
+        except ValueError:
+            inner = _core.CategoricalOptimizedModel.deserialize_compiled(
+                serialized, physical_cores
+            )
+            categorical_strategy = "categorical"
+        return cls(inner, categorical_strategy=categorical_strategy)
 
     def predict(self, x: Any) -> Any:
         return self._inner.predict(x)
@@ -78,24 +84,12 @@ class OptimizedModel:
         return self._inner.predict_proba(x)
 
     def to_ir_json(self, pretty: bool = False) -> str:
-        if self.categorical_strategy is not None:
-            raise ValueError(
-                "IR export is not supported for models trained with native categorical transforms."
-            )
         return self._inner.to_ir_json(pretty)
 
     def serialize(self, pretty: bool = False) -> str:
-        if self.categorical_strategy is not None:
-            raise ValueError(
-                "Serialization is not supported for models trained with native categorical transforms."
-            )
         return self._inner.serialize(pretty)
 
     def serialize_compiled(self) -> bytes:
-        if self.categorical_strategy is not None:
-            raise ValueError(
-                "Compiled serialization is not supported for models trained with native categorical transforms."
-            )
         return self._inner.serialize_compiled()
 
     def __getattr__(self, name: str) -> Any:
