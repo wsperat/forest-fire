@@ -2124,7 +2124,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -2151,96 +2151,13 @@ fn train(
     other_gradient_fraction: Option<f64>,
     missing_value_strategy: Option<&Bound<PyAny>>,
     filter: Option<&Bound<PyAny>>,
-) -> PyResult<PyModel> {
-    let task_was_auto = task == "auto";
-    let resolved_task = resolve_task(x, y, task)?;
-    let (table, string_class_labels) = build_training_table(x, y, canaries, parse_bins(bins)?)?;
-    let config = TrainConfig {
-        algorithm: parse_algorithm(algorithm)?,
-        task: resolved_task,
-        tree_type: resolve_tree_type(tree_type, task_was_auto)?,
-        criterion: parse_criterion(criterion)?,
-        max_depth: parse_optional_positive_usize(max_depth, "max_depth")?,
-        min_samples_split: parse_optional_positive_usize(min_samples_split, "min_samples_split")?,
-        min_samples_leaf: parse_optional_positive_usize(min_samples_leaf, "min_samples_leaf")?,
-        physical_cores,
-        n_trees,
-        max_features: parse_max_features(max_features)?,
-        seed,
-        canary_filter: parse_canary_filter(filter)?,
-        compute_oob,
-        learning_rate: parse_optional_positive_f64(learning_rate, "learning_rate")?,
-        bootstrap,
-        top_gradient_fraction: parse_optional_fraction(
-            top_gradient_fraction,
-            "top_gradient_fraction",
-        )?,
-        other_gradient_fraction: parse_optional_fraction(
-            other_gradient_fraction,
-            "other_gradient_fraction",
-        )?,
-        missing_value_strategy: parse_missing_value_strategy(missing_value_strategy)?,
-        histogram_bins: histogram_bins
-            .map(|value| parse_bins(Some(value)))
-            .transpose()?,
-    };
-    let model = train_model_detached(py, table, config)?;
-
-    Ok(PyModel {
-        inner: model,
-        string_class_labels,
-    })
-}
-
-#[pyfunction]
-#[pyo3(signature = (x, y, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy="dummy", categorical_features=None, target_smoothing=20.0))]
-#[allow(clippy::too_many_arguments)]
-fn train_categorical(
-    py: Python<'_>,
-    x: &Bound<PyAny>,
-    y: &Bound<PyAny>,
-    algorithm: &str,
-    task: &str,
-    tree_type: &str,
-    criterion: &str,
-    canaries: usize,
-    bins: Option<&Bound<PyAny>>,
-    histogram_bins: Option<&Bound<PyAny>>,
-    physical_cores: Option<usize>,
-    max_depth: Option<usize>,
-    min_samples_split: Option<usize>,
-    min_samples_leaf: Option<usize>,
-    n_trees: Option<usize>,
-    max_features: Option<&Bound<PyAny>>,
-    seed: Option<u64>,
-    compute_oob: bool,
-    learning_rate: Option<f64>,
-    bootstrap: bool,
-    top_gradient_fraction: Option<f64>,
-    other_gradient_fraction: Option<f64>,
-    missing_value_strategy: Option<&Bound<PyAny>>,
-    filter: Option<&Bound<PyAny>>,
-    categorical_strategy: &str,
+    categorical_strategy: Option<&str>,
     categorical_features: Option<&Bound<PyAny>>,
     target_smoothing: f64,
-) -> PyResult<PyCategoricalModel> {
+) -> PyResult<Py<PyAny>> {
     let task_was_auto = task == "auto";
-    let resolved_task = resolve_task(x, Some(y), task)?;
-    let rows = extract_categorical_matrix(x)?;
-    let (targets, string_class_labels) = match extract_training_targets(y)? {
-        TrainingTargets::Numeric(values) => (values, None),
-        TrainingTargets::StringClasses { encoded, labels } => (encoded, Some(labels)),
-    };
-    let parsed_strategy = parse_categorical_strategy(Some(categorical_strategy))?
-        .expect("categorical train requires a strategy");
-    let parsed_features = parse_categorical_features(categorical_features)?;
-    let parsed_features = parsed_features.map(|features| {
-        if features.is_empty() {
-            (0..rows.first().map_or(0, |row| row.len())).collect()
-        } else {
-            features
-        }
-    });
+    let resolved_task = resolve_task(x, y, task)?;
+    let parsed_strategy = parse_categorical_strategy(categorical_strategy)?;
     let parsed_bins = parse_bins(bins)?;
     let config = TrainConfig {
         algorithm: parse_algorithm(algorithm)?,
@@ -2271,28 +2188,60 @@ fn train_categorical(
             .map(|value| parse_bins(Some(value)))
             .transpose()?,
     };
-    let inner = py
-        .detach(move || {
-            categorical::train(
-                rows,
-                targets,
-                None,
-                canaries,
-                parsed_bins,
-                config,
-                CategoricalConfig {
-                    strategy: parsed_strategy,
-                    categorical_features: parsed_features,
-                    target_smoothing,
-                },
+    if let Some(parsed_strategy) = parsed_strategy {
+        let y = y.ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "y is required unless x is already a Table.",
             )
-            .map_err(|err| err.to_string())
-        })
-        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
-    Ok(PyCategoricalModel {
-        inner,
-        string_class_labels,
-    })
+        })?;
+        let rows = extract_categorical_matrix(x)?;
+        let (targets, string_class_labels) = match extract_training_targets(y)? {
+            TrainingTargets::Numeric(values) => (values, None),
+            TrainingTargets::StringClasses { encoded, labels } => (encoded, Some(labels)),
+        };
+        let parsed_features = parse_categorical_features(categorical_features)?;
+        let parsed_features = parsed_features.map(|features| {
+            if features.is_empty() {
+                (0..rows.first().map_or(0, |row| row.len())).collect()
+            } else {
+                features
+            }
+        });
+        let inner = py
+            .detach(move || {
+                categorical::train(
+                    rows,
+                    targets,
+                    None,
+                    canaries,
+                    parsed_bins,
+                    config,
+                    CategoricalConfig {
+                        strategy: parsed_strategy,
+                        categorical_features: parsed_features,
+                        target_smoothing,
+                    },
+                )
+                .map_err(|err| err.to_string())
+            })
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        let model = PyCategoricalModel {
+            inner,
+            string_class_labels,
+        };
+        return Py::new(py, model).map(|obj| obj.into_any());
+    }
+
+    let (table, string_class_labels) = build_training_table(x, y, canaries, parsed_bins)?;
+    let model = train_model_detached(py, table, config)?;
+    Py::new(
+        py,
+        PyModel {
+            inner: model,
+            string_class_labels,
+        },
+    )
+    .map(|obj| obj.into_any())
 }
 
 #[pymethods]
@@ -2988,7 +2937,6 @@ fn _core(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyCategoricalOptimizedModel>()?;
     m.add_class::<PyTable>()?;
     m.add_function(wrap_pyfunction!(train, m)?)?;
-    m.add_function(wrap_pyfunction!(train_categorical, m)?)?;
     m.add(
         "__all__",
         vec![
@@ -2998,7 +2946,6 @@ fn _core(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
             "CategoricalOptimizedModel",
             "Table",
             "train",
-            "train_categorical",
         ],
     )?;
     Ok(())

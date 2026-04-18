@@ -114,11 +114,8 @@ def train(
     target_smoothing: float = 20.0,
     **kwargs: Any,
 ) -> Model:
-    if categorical_strategy is None:
-        return Model(_core.train(x, y, **kwargs))
-
     return Model(
-        _core.train_categorical(
+        _core.train(
             x,
             y,
             categorical_strategy=categorical_strategy,
