@@ -1,7 +1,8 @@
 use crate::{Model, OptimizedModel, PredictError, TrainConfig, TrainError};
 use forestfire_data::categorical::{
     TableCategoricalConfig, TableCategoricalEncoder, TableCategoricalError,
-    TableCategoricalStrategy, category_key, validate_rows,
+    TableCategoricalStrategy, category_key, category_signal_strength, resolve_categorical_features,
+    shuffled_feature_rows, validate_rows,
 };
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -64,7 +65,8 @@ struct FisherFeatureSpec {
 enum CoreEncoder {
     Table(TableCategoricalEncoder),
     Fisher {
-        table: TableCategoricalEncoder,
+        column_names: Vec<String>,
+        passthrough_features: Vec<usize>,
         fisher_specs: Vec<FisherFeatureSpec>,
     },
 }
@@ -169,46 +171,53 @@ pub fn train(
                     strategy: TableCategoricalStrategy::Dummy,
                     categorical_features: categorical.categorical_features.clone(),
                     target_smoothing: categorical.target_smoothing,
+                    target_smoothing_overrides: BTreeMap::new(),
                 },
             )
             .map_err(CategoricalError::Table)?,
         ),
-        CategoricalStrategy::Target => CoreEncoder::Table(
-            TableCategoricalEncoder::fit(
-                &rows,
-                &targets,
-                column_names,
-                &TableCategoricalConfig {
-                    strategy: TableCategoricalStrategy::Target,
-                    categorical_features: categorical.categorical_features.clone(),
-                    target_smoothing: categorical.target_smoothing,
-                },
-            )
-            .map_err(CategoricalError::Table)?,
-        ),
-        CategoricalStrategy::Fisher => {
-            let fisher_specs = fit_fisher_specs(
+        CategoricalStrategy::Target => {
+            let smoothing_overrides = canary_informed_target_smoothing(
                 &rows,
                 &targets,
                 categorical.categorical_features.as_deref(),
                 categorical.target_smoothing,
             )
             .map_err(CategoricalError::Table)?;
-            let table_encoder = TableCategoricalEncoder::fit(
-                &apply_fisher_mapping(&rows, &fisher_specs),
+            CoreEncoder::Table(
+                TableCategoricalEncoder::fit(
+                    &rows,
+                    &targets,
+                    column_names,
+                    &TableCategoricalConfig {
+                        strategy: TableCategoricalStrategy::Target,
+                        categorical_features: categorical.categorical_features.clone(),
+                        target_smoothing: categorical.target_smoothing,
+                        target_smoothing_overrides: smoothing_overrides,
+                    },
+                )
+                .map_err(CategoricalError::Table)?,
+            )
+        }
+        CategoricalStrategy::Fisher => {
+            let smoothing_overrides = canary_informed_target_smoothing(
+                &rows,
                 &targets,
-                column_names,
-                &TableCategoricalConfig {
-                    strategy: TableCategoricalStrategy::Target,
-                    categorical_features: Some(
-                        fisher_specs.iter().map(|spec| spec.feature_index).collect(),
-                    ),
-                    target_smoothing: 0.0,
-                },
+                categorical.categorical_features.as_deref(),
+                categorical.target_smoothing,
+            )
+            .map_err(CategoricalError::Table)?;
+            let fisher_specs = fit_fisher_specs(
+                &rows,
+                &targets,
+                categorical.categorical_features.as_deref(),
+                &smoothing_overrides,
+                categorical.target_smoothing,
             )
             .map_err(CategoricalError::Table)?;
             CoreEncoder::Fisher {
-                table: table_encoder,
+                passthrough_features: collect_passthrough_features(&rows, &fisher_specs),
+                column_names,
                 fisher_specs,
             }
         }
@@ -234,26 +243,47 @@ impl CoreEncoder {
                 .transform_rows(rows, Some(&encoder.column_names))
                 .map_err(CategoricalError::Table),
             Self::Fisher {
-                table,
+                column_names,
+                passthrough_features,
                 fisher_specs,
-            } => table
-                .transform_rows(
-                    &apply_fisher_mapping(rows, fisher_specs),
-                    Some(&table.column_names),
-                )
+            } => transform_fisher_rows(rows, column_names, passthrough_features, fisher_specs)
                 .map_err(CategoricalError::Table),
         }
     }
+}
+
+fn canary_informed_target_smoothing(
+    rows: &[Vec<CategoricalValue>],
+    targets: &[f64],
+    explicit: Option<&[usize]>,
+    base_smoothing: f64,
+) -> Result<BTreeMap<usize, f64>, TableCategoricalError> {
+    let categorical_features = resolve_categorical_features(rows, explicit)?;
+    let mut overrides = BTreeMap::new();
+    for feature_index in categorical_features {
+        let real_strength = category_signal_strength(rows, targets, feature_index, base_smoothing);
+        let shuffled_rows = shuffled_feature_rows(rows, feature_index, 0);
+        let canary_strength =
+            category_signal_strength(&shuffled_rows, targets, feature_index, base_smoothing);
+        let baseline = base_smoothing.max(1.0);
+        let ratio = if real_strength <= f64::EPSILON {
+            4.0
+        } else {
+            (canary_strength / real_strength).clamp(0.0, 4.0)
+        };
+        overrides.insert(feature_index, base_smoothing + baseline * ratio);
+    }
+    Ok(overrides)
 }
 
 fn fit_fisher_specs(
     rows: &[Vec<CategoricalValue>],
     targets: &[f64],
     explicit: Option<&[usize]>,
+    smoothing_overrides: &BTreeMap<usize, f64>,
     smoothing: f64,
 ) -> Result<Vec<FisherFeatureSpec>, TableCategoricalError> {
-    let categorical_features =
-        forestfire_data::categorical::resolve_categorical_features(rows, explicit)?;
+    let categorical_features = resolve_categorical_features(rows, explicit)?;
     let mut specs = Vec::new();
     for feature_index in categorical_features {
         let mut buckets = BTreeMap::<String, Vec<f64>>::new();
@@ -270,8 +300,12 @@ fn fit_fisher_specs(
         let mut ordered = buckets
             .into_iter()
             .map(|(category, values)| {
-                let score = (values.iter().sum::<f64>() + smoothing * global_mean)
-                    / (values.len() as f64 + smoothing);
+                let effective_smoothing = smoothing_overrides
+                    .get(&feature_index)
+                    .copied()
+                    .unwrap_or(smoothing);
+                let score = (values.iter().sum::<f64>() + effective_smoothing * global_mean)
+                    / (values.len() as f64 + effective_smoothing);
                 (category, score)
             })
             .collect::<Vec<_>>();
@@ -288,18 +322,89 @@ fn fit_fisher_specs(
     Ok(specs)
 }
 
-fn apply_fisher_mapping(
+fn collect_passthrough_features(
     rows: &[Vec<CategoricalValue>],
     fisher_specs: &[FisherFeatureSpec],
-) -> Vec<Vec<CategoricalValue>> {
-    let mut encoded = rows.to_vec();
-    for row in &mut encoded {
-        for spec in fisher_specs {
-            row[spec.feature_index] = category_key(&row[spec.feature_index])
-                .and_then(|category| spec.mapping.get(&category).copied())
-                .map(CategoricalValue::Numeric)
-                .unwrap_or(CategoricalValue::Missing);
-        }
+) -> Vec<usize> {
+    let fisher_features = fisher_specs
+        .iter()
+        .map(|spec| spec.feature_index)
+        .collect::<std::collections::BTreeSet<_>>();
+    (0..rows.first().map_or(0, Vec::len))
+        .filter(|feature_index| !fisher_features.contains(feature_index))
+        .collect()
+}
+
+fn transform_fisher_rows(
+    rows: &[Vec<CategoricalValue>],
+    column_names: &[String],
+    passthrough_features: &[usize],
+    fisher_specs: &[FisherFeatureSpec],
+) -> Result<Vec<Vec<f64>>, TableCategoricalError> {
+    validate_rows(rows)?;
+    if rows.first().map_or(0, Vec::len) != column_names.len() {
+        return Err(TableCategoricalError::ColumnNameMismatch);
     }
-    encoded
+    let mut encoded_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut encoded = Vec::new();
+        for &feature_index in passthrough_features {
+            encoded.push(match &row[feature_index] {
+                CategoricalValue::Numeric(value) => *value,
+                CategoricalValue::Missing | CategoricalValue::String(_) => f64::NAN,
+            });
+        }
+        for spec in fisher_specs {
+            encoded.push(
+                category_key(&row[spec.feature_index])
+                    .and_then(|category| spec.mapping.get(&category).copied())
+                    .unwrap_or(f64::NAN),
+            );
+        }
+        encoded_rows.push(encoded);
+    }
+    Ok(encoded_rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows() -> Vec<Vec<CategoricalValue>> {
+        vec![
+            vec![CategoricalValue::String("a".into())],
+            vec![CategoricalValue::String("a".into())],
+            vec![CategoricalValue::String("b".into())],
+            vec![CategoricalValue::String("b".into())],
+            vec![CategoricalValue::String("c".into())],
+            vec![CategoricalValue::String("c".into())],
+        ]
+    }
+
+    #[test]
+    fn canary_informed_smoothing_never_undershoots_base() {
+        let overrides =
+            canary_informed_target_smoothing(&rows(), &[0.0, 0.0, 1.0, 1.0, 0.0, 1.0], None, 2.0)
+                .unwrap();
+        assert!(overrides.get(&0).copied().unwrap() >= 2.0);
+    }
+
+    #[test]
+    fn fisher_transform_emits_ranked_numeric_feature() {
+        let specs = fit_fisher_specs(
+            &rows(),
+            &[0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+            None,
+            &BTreeMap::from([(0usize, 1.0)]),
+            1.0,
+        )
+        .unwrap();
+        let transformed =
+            transform_fisher_rows(&rows(), &[String::from("f0")], &[], &specs).unwrap();
+        assert!(
+            transformed
+                .iter()
+                .all(|row| row.len() == 1 && row[0].is_finite())
+        );
+    }
 }

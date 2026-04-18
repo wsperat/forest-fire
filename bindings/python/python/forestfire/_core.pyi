@@ -41,6 +41,9 @@ def train(
     other_gradient_fraction: float | None = None,
     missing_value_strategy: str | dict[str, str] | None = None,
     filter: int | float | None = None,
+    categorical_strategy: str | None = None,
+    categorical_features: str | list[str | int] | None = None,
+    target_smoothing: float = 20.0,
 ) -> "Model": ...
 
 class OptimizedModel:

@@ -1,3 +1,6 @@
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +21,7 @@ pub struct TableCategoricalConfig {
     pub strategy: TableCategoricalStrategy,
     pub categorical_features: Option<Vec<usize>>,
     pub target_smoothing: f64,
+    pub target_smoothing_overrides: BTreeMap<usize, f64>,
 }
 
 impl Default for TableCategoricalConfig {
@@ -26,6 +30,7 @@ impl Default for TableCategoricalConfig {
             strategy: TableCategoricalStrategy::Dummy,
             categorical_features: None,
             target_smoothing: 20.0,
+            target_smoothing_overrides: BTreeMap::new(),
         }
     }
 }
@@ -154,7 +159,11 @@ impl TableCategoricalEncoder {
                     rows,
                     targets,
                     feature_index,
-                    config.target_smoothing,
+                    config
+                        .target_smoothing_overrides
+                        .get(&feature_index)
+                        .copied()
+                        .unwrap_or(config.target_smoothing),
                 )),
             }
         }
@@ -313,4 +322,61 @@ fn fit_target_spec(
         priors: vec![global_mean],
         mapping,
     }
+}
+
+pub fn category_signal_strength(
+    rows: &[Vec<CategoricalValue>],
+    targets: &[f64],
+    feature_index: usize,
+    smoothing: f64,
+) -> f64 {
+    if rows.is_empty() || targets.is_empty() {
+        return 0.0;
+    }
+    let mut buckets = BTreeMap::<String, (f64, usize)>::new();
+    for (row, target) in rows.iter().zip(targets.iter().copied()) {
+        if let Some(category) = category_key(&row[feature_index]) {
+            let entry = buckets.entry(category).or_insert((0.0, 0));
+            entry.0 += target;
+            entry.1 += 1;
+        }
+    }
+    if buckets.is_empty() {
+        return 0.0;
+    }
+    let global_mean = targets.iter().sum::<f64>() / targets.len() as f64;
+    buckets
+        .into_values()
+        .map(|(sum, count)| {
+            let encoded = (sum + smoothing * global_mean) / (count as f64 + smoothing);
+            count as f64 * (encoded - global_mean).powi(2)
+        })
+        .sum::<f64>()
+        / targets.len() as f64
+}
+
+pub fn shuffled_feature_rows(
+    rows: &[Vec<CategoricalValue>],
+    feature_index: usize,
+    copy_index: usize,
+) -> Vec<Vec<CategoricalValue>> {
+    let mut shuffled_rows = rows.to_vec();
+    let mut feature_values = rows
+        .iter()
+        .map(|row| row[feature_index].clone())
+        .collect::<Vec<_>>();
+    shuffle_values(&mut feature_values, copy_index, feature_index);
+    for (row, shuffled) in shuffled_rows.iter_mut().zip(feature_values.into_iter()) {
+        row[feature_index] = shuffled;
+    }
+    shuffled_rows
+}
+
+fn shuffle_values<T>(values: &mut [T], copy_index: usize, source_index: usize) {
+    let seed = 0xA11CE5EED_u64
+        ^ ((copy_index as u64) << 32)
+        ^ (source_index as u64)
+        ^ ((values.len() as u64) << 16);
+    let mut rng = StdRng::seed_from_u64(seed);
+    values.shuffle(&mut rng);
 }
