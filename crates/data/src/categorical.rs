@@ -182,10 +182,10 @@ impl TableCategoricalEncoder {
         column_names: Option<&[String]>,
     ) -> Result<Vec<Vec<f64>>, TableCategoricalError> {
         validate_rows(rows)?;
-        if let Some(names) = column_names {
-            if names != self.column_names {
-                return Err(TableCategoricalError::ColumnNameMismatch);
-            }
+        if let Some(names) = column_names
+            && names != self.column_names
+        {
+            return Err(TableCategoricalError::ColumnNameMismatch);
         }
         let mut encoded_rows = Vec::with_capacity(rows.len());
         for row in rows {
@@ -284,10 +284,10 @@ pub fn distinct_categories(rows: &[Vec<CategoricalValue>], feature_index: usize)
     let mut seen = BTreeSet::new();
     let mut categories = Vec::new();
     for row in rows {
-        if let Some(category) = category_key(&row[feature_index]) {
-            if seen.insert(category.clone()) {
-                categories.push(category);
-            }
+        if let Some(category) = category_key(&row[feature_index])
+            && seen.insert(category.clone())
+        {
+            categories.push(category);
         }
     }
     categories

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from . import _core
 
@@ -17,6 +17,7 @@ class Model:
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model":
+        inner: Any
         try:
             inner = _core.Model.deserialize(serialized)
             categorical_strategy = None
@@ -42,10 +43,10 @@ class Model:
         )
 
     def to_ir_json(self, pretty: bool = False) -> str:
-        return self._inner.to_ir_json(pretty)
+        return cast(str, self._inner.to_ir_json(pretty))
 
     def serialize(self, pretty: bool = False) -> str:
-        return self._inner.serialize(pretty)
+        return cast(str, self._inner.serialize(pretty))
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -65,6 +66,7 @@ class OptimizedModel:
     def deserialize_compiled(
         cls, serialized: bytes, physical_cores: int | None = None
     ) -> "OptimizedModel":
+        inner: Any
         try:
             inner = _core.OptimizedModel.deserialize_compiled(
                 serialized, physical_cores
@@ -84,13 +86,13 @@ class OptimizedModel:
         return self._inner.predict_proba(x)
 
     def to_ir_json(self, pretty: bool = False) -> str:
-        return self._inner.to_ir_json(pretty)
+        return cast(str, self._inner.to_ir_json(pretty))
 
     def serialize(self, pretty: bool = False) -> str:
-        return self._inner.serialize(pretty)
+        return cast(str, self._inner.serialize(pretty))
 
     def serialize_compiled(self) -> bytes:
-        return self._inner.serialize_compiled()
+        return cast(bytes, self._inner.serialize_compiled())
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

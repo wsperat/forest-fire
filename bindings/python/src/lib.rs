@@ -1493,33 +1493,33 @@ fn extract_categorical_matrix(x: &Bound<PyAny>) -> PyResult<Vec<Vec<CategoricalV
         return extract_categorical_matrix_from_rows(&rows);
     }
 
-    if x.hasattr("to_dict")? {
-        if let Ok(columns) = x.call_method("to_dict", ("list",), None) {
-            let dict = columns.cast::<PyDict>()?;
-            let column_names = dict
-                .iter()
-                .map(|(name, _)| name.extract::<String>())
-                .collect::<PyResult<Vec<_>>>()?;
-            let values = dict
-                .iter()
-                .map(|(_, values)| {
-                    values
-                        .try_iter()?
-                        .map(|value| value.and_then(|value| extract_categorical_scalar(&value)))
-                        .collect::<PyResult<Vec<_>>>()
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            let n_rows = values.first().map_or(0, Vec::len);
-            let _ = column_names;
-            return Ok((0..n_rows)
-                .map(|row_idx| {
-                    values
-                        .iter()
-                        .map(|column| column[row_idx].clone())
-                        .collect()
-                })
-                .collect());
-        }
+    if x.hasattr("to_dict")?
+        && let Ok(columns) = x.call_method("to_dict", ("list",), None)
+    {
+        let dict = columns.cast::<PyDict>()?;
+        let column_names = dict
+            .iter()
+            .map(|(name, _)| name.extract::<String>())
+            .collect::<PyResult<Vec<_>>>()?;
+        let values = dict
+            .iter()
+            .map(|(_, values)| {
+                values
+                    .try_iter()?
+                    .map(|value| value.and_then(|value| extract_categorical_scalar(&value)))
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let n_rows = values.first().map_or(0, Vec::len);
+        let _ = column_names;
+        return Ok((0..n_rows)
+            .map(|row_idx| {
+                values
+                    .iter()
+                    .map(|column| column[row_idx].clone())
+                    .collect()
+            })
+            .collect());
     }
 
     if x.hasattr("__array__")? {
