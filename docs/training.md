@@ -171,11 +171,14 @@ train(
 )
 ```
 
-Current limit:
+Categorical models now preserve that transform contract in:
 
-- IR export and model serialization are still disabled for categorical models
-  because the IR/runtime contract does not yet encode the categorical transform
-  metadata
+- semantic serialization
+- IR export
+- compiled optimized artifacts
+
+So restored categorical models still accept raw categorical inputs rather than
+requiring callers to reproduce the transform manually.
 
 ## Stopping and control parameters
 

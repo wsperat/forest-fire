@@ -375,22 +375,33 @@ train(
 The same applies to the sklearn-style wrappers, which forward the categorical
 configuration through the same native path.
 
-## Current Limits
+## Serialization And IR
 
-The current categorical strategies are native Rust transforms, but they are not
-yet represented as first-class categorical semantics in the serialized/IR model
-contract.
+Categorical models now serialize their transform contract explicitly.
 
-That means:
+That includes:
 
-- IR export is disabled for models trained with categorical transforms
-- serialization is disabled for those models
-- compiled optimized serialization is disabled for those models
+- semantic JSON serialization
+- IR export
+- compiled optimized serialization
 
-The reason is straightforward: the Rust semantic model and IR do not yet record
-the categorical transform contract.
+The important design point is that the learned trees still live in encoded
+feature space, while the serialized categorical metadata preserves the raw
+input contract and the transform needed to reach that encoded space.
 
-Until they do, serialization would not be faithfully reproducible.
+So a serialized categorical model records both:
+
+- the raw categorical/numeric inputs it expects
+- the categorical transform required before tree evaluation
+
+This is enough to round-trip categorical models without asking callers to
+rebuild the transform manually.
+
+The remaining limitation is semantic rather than transport-related:
+
+- categorical strategies are now preserved in IR and serialization
+- but the learned trees still operate on transformed numeric/binary features,
+  not on native categorical subset predicates
 
 ## Practical Guidance
 
