@@ -61,6 +61,82 @@ The next concrete implementation step should be introducing an active-node
 frontier for standard second-order trees so a whole level can be scored before
 any node at that level mutates the shared row-index buffer.
 
+## Experimental tree-building strategies
+
+Another useful training track is experimenting with stronger tree-construction
+strategies than the current greedy builder.
+
+This is distinct from leaf optimization. Higher-order or alternative leaf
+optimizers change how a fixed tree assigns leaf values. The work here changes
+how the tree structure itself is chosen.
+
+The baseline should remain explicit:
+
+- `GreedyBuilder` stays the default and the main speed baseline
+- stronger builders should begin as clearly experimental alternatives
+
+### 15. Refactor the tree-construction interface
+
+- add a pluggable tree-builder interface so the current greedy search is not
+  hard-coded as the only option
+- keep the current implementation as `GreedyBuilder`
+- reserve explicit experimental builders such as:
+  - `LookaheadBuilder`
+  - `BeamSearchBuilder`
+  - `RefinementBuilder`
+  - `OptimalTreeBuilder`
+
+### 15.1 Lookahead
+
+- implement depth-1 lookahead for split scoring
+- for each node, shortlist the top `K` splits by immediate gain
+- re-score the shortlisted splits by performing one-step child expansion
+- add configuration:
+  - `lookahead_depth`
+  - `lookahead_top_k`
+  - `lookahead_weight`
+
+### 15.2 Beam search
+
+- implement a beam over partial trees with width `beam_width`
+- define a partial-tree score from:
+  - current leaf objective
+  - a heuristic estimate of future value
+- deduplicate equivalent partial trees
+- add budget controls:
+  - maximum expansions
+  - maximum memory
+  - early stopping
+
+### 15.3 Post-build non-greedy refinement
+
+- build the tree greedily first
+- revisit internal nodes one at a time while keeping topology fixed
+- re-optimize split feature, threshold, and downstream routing
+- recompute leaf weights after each accepted change
+- stop after a fixed number of passes or when no more improvement is found
+
+### 15.4 Optimal or near-optimal shallow search
+
+- add a shallow-tree experimental mode using branch-and-bound or dynamic
+  programming style search
+- restrict the first version to:
+  - small depth
+  - small feature subsets
+- add a time-budgeted anytime mode
+- compare directly against greedy and lookahead builders
+
+### 15.5 Evaluation
+
+- benchmark tree builders on:
+  - training objective
+  - validation objective
+  - wall-clock time
+  - tree size and realized depth
+  - number of accepted refinements
+- measure whether stronger trees reduce the number of boosting rounds required
+  to hit the same validation quality
+
 ## Random-forest training on wide data
 
 Another clear next step is reducing RF training cost once feature counts become
