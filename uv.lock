@@ -440,6 +440,7 @@ dev = [
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "pytest" },
+    { name = "scikit-learn" },
 ]
 
 [package.metadata]
@@ -456,6 +457,7 @@ dev = [
     { name = "numpy", specifier = ">=2,<3" },
     { name = "pyarrow", specifier = ">=18,<20" },
     { name = "pytest", specifier = ">=8,<9" },
+    { name = "scikit-learn", specifier = ">=1.6,<2" },
 ]
 
 [[package]]
