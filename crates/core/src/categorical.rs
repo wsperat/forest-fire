@@ -127,10 +127,12 @@ impl CategoricalModel {
         physical_cores: Option<usize>,
         missing_features: Option<&[usize]>,
     ) -> Result<CategoricalOptimizedModel, crate::OptimizeError> {
+        let encoded_missing_features =
+            missing_features.map(|features| self.encoder.encoded_missing_features(features));
         Ok(CategoricalOptimizedModel {
             inner: self.inner.optimize_inference_with_missing_features(
                 physical_cores,
-                missing_features.map(|features| features.to_vec()),
+                encoded_missing_features,
             )?,
             encoder: self.encoder.clone(),
             config: self.config.clone(),
@@ -399,6 +401,57 @@ impl CoreEncoder {
             } => transform_fisher_rows(rows, column_names, passthrough_features, fisher_specs)
                 .map_err(CategoricalError::Table),
         }
+    }
+
+    fn encoded_missing_features(&self, raw_missing_features: &[usize]) -> Vec<usize> {
+        let mut encoded_missing = Vec::new();
+        match self {
+            Self::Table(encoder) => {
+                let mut offset = 0usize;
+                for &feature_index in &encoder.numeric_features {
+                    if raw_missing_features.contains(&feature_index) {
+                        encoded_missing.push(offset);
+                    }
+                    offset += 1;
+                }
+                for spec in &encoder.dummy_specs {
+                    let width = spec.categories.len() + 1;
+                    if raw_missing_features.contains(&spec.feature_index) {
+                        encoded_missing.extend(offset..offset + width);
+                    }
+                    offset += width;
+                }
+                for spec in &encoder.target_specs {
+                    let width = spec.priors.len();
+                    if raw_missing_features.contains(&spec.feature_index) {
+                        encoded_missing.extend(offset..offset + width);
+                    }
+                    offset += width;
+                }
+            }
+            Self::Fisher {
+                passthrough_features,
+                fisher_specs,
+                ..
+            } => {
+                let mut offset = 0usize;
+                for &feature_index in passthrough_features {
+                    if raw_missing_features.contains(&feature_index) {
+                        encoded_missing.push(offset);
+                    }
+                    offset += 1;
+                }
+                for spec in fisher_specs {
+                    if raw_missing_features.contains(&spec.feature_index) {
+                        encoded_missing.push(offset);
+                    }
+                    offset += 1;
+                }
+            }
+        }
+        encoded_missing.sort_unstable();
+        encoded_missing.dedup();
+        encoded_missing
     }
 }
 
@@ -744,6 +797,8 @@ fn encoded_input_schema(ir: &ModelPackageIr) -> InputSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Criterion, Task, TrainAlgorithm, TrainConfig, TreeType};
+    use forestfire_data::NumericBins;
 
     fn rows() -> Vec<Vec<CategoricalValue>> {
         vec![
@@ -781,5 +836,97 @@ mod tests {
                 .iter()
                 .all(|row| row.len() == 1 && row[0].is_finite())
         );
+    }
+
+    #[test]
+    fn optimize_inference_maps_raw_missing_features_for_dummy_strategy() {
+        assert_optimized_missing_feature_matches_semantic(CategoricalStrategy::Dummy);
+    }
+
+    #[test]
+    fn optimize_inference_maps_raw_missing_features_for_target_strategy() {
+        assert_optimized_missing_feature_matches_semantic(CategoricalStrategy::Target);
+    }
+
+    #[test]
+    fn optimize_inference_maps_raw_missing_features_for_fisher_strategy() {
+        assert_optimized_missing_feature_matches_semantic(CategoricalStrategy::Fisher);
+    }
+
+    fn assert_optimized_missing_feature_matches_semantic(strategy: CategoricalStrategy) {
+        let model = train(
+            regression_rows_with_numeric_signal(),
+            regression_targets_with_numeric_signal(),
+            Some(vec!["cat".into(), "num".into()]),
+            0,
+            NumericBins::Auto,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::Mean,
+                max_depth: Some(2),
+                min_samples_split: Some(2),
+                min_samples_leaf: Some(1),
+                physical_cores: Some(1),
+                seed: Some(7),
+                ..TrainConfig::default()
+            },
+            CategoricalConfig {
+                strategy,
+                categorical_features: Some(vec![0]),
+                target_smoothing: 20.0,
+            },
+        )
+        .unwrap();
+        let prediction_rows = vec![
+            vec![CategoricalValue::Missing, CategoricalValue::Numeric(0.0)],
+            vec![CategoricalValue::Missing, CategoricalValue::Numeric(3.0)],
+        ];
+        let expected = model.predict_rows(prediction_rows.clone()).unwrap();
+        let optimized = model.optimize_inference(Some(1), Some(&[0])).unwrap();
+        let actual = optimized.predict_rows(prediction_rows).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    fn regression_rows_with_numeric_signal() -> Vec<Vec<CategoricalValue>> {
+        vec![
+            vec![
+                CategoricalValue::String("x".into()),
+                CategoricalValue::Numeric(0.0),
+            ],
+            vec![
+                CategoricalValue::String("y".into()),
+                CategoricalValue::Numeric(0.0),
+            ],
+            vec![
+                CategoricalValue::String("x".into()),
+                CategoricalValue::Numeric(1.0),
+            ],
+            vec![
+                CategoricalValue::String("y".into()),
+                CategoricalValue::Numeric(1.0),
+            ],
+            vec![
+                CategoricalValue::String("x".into()),
+                CategoricalValue::Numeric(2.0),
+            ],
+            vec![
+                CategoricalValue::String("y".into()),
+                CategoricalValue::Numeric(2.0),
+            ],
+            vec![
+                CategoricalValue::String("x".into()),
+                CategoricalValue::Numeric(3.0),
+            ],
+            vec![
+                CategoricalValue::String("y".into()),
+                CategoricalValue::Numeric(3.0),
+            ],
+        ]
+    }
+
+    fn regression_targets_with_numeric_signal() -> Vec<f64> {
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
     }
 }
