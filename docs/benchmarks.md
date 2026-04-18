@@ -20,6 +20,7 @@ The suite currently measures:
 - training micro-phases
 - prediction micro-phases
 - `make_moons` probability surfaces for classifier ensembles
+- one-dimensional regression prediction curves for regressor ensembles
 
 For prediction, the suite also includes:
 
@@ -198,6 +199,41 @@ Current plot outputs:
 
 ![Gradient Boosting make_moons probabilities](benchmarks/moons_probabilities_gradient_boosting.png)
 
+## Regression curve benchmark
+
+The runtime grids answer scaling questions, and `make_moons` answers a visual
+classification question.
+
+They still do not show how the regressors behave on a simple nonlinear function
+where smoothness, bias, and local overfitting are easy to inspect directly.
+
+For that, the suite also includes a dedicated one-dimensional synthetic
+regression benchmark. It trains the supported random-forest and
+gradient-boosting regressors on a noisy nonlinear target, then plots each
+backend's prediction curve against the sampled training data.
+
+This benchmark is useful for a different class of comparison:
+
+- whether a model tracks the underlying shape smoothly or in blocky steps
+- whether a backend overshoots or flattens in sparse regions
+- whether ForestFire CART, randomized, and oblivious trees differ visibly in fit character
+- whether the boosted variants introduce sharper local corrections than the forest variants
+
+Like the `make_moons` benchmark, it writes one artifact set per ensemble family:
+
+- a rendered prediction-curve figure
+- a JSON results file with fit time, predict time, RMSE, and `R^2`
+- a markdown summary
+
+Current plot outputs:
+
+- [Random Forest regression curves](benchmarks/regression_curve_random_forest.png)
+- [Gradient Boosting regression curves](benchmarks/regression_curve_gradient_boosting.png)
+
+![Random Forest regression curves](benchmarks/regression_curve_random_forest.png)
+
+![Gradient Boosting regression curves](benchmarks/regression_curve_gradient_boosting.png)
+
 ## Complexity matching
 
 To keep the cross-library comparisons more meaningful, each grid cell now uses ForestFire as the complexity reference.
@@ -261,6 +297,7 @@ Prediction is now decoupled from fitting in a simpler way:
 - `task benchmark-prediction-micro-rf`
 - `task benchmark-prediction-micro-gbm`
 - `task benchmark-moons`
+- `task benchmark-regression-surface`
 - `task benchmark-micro`
 - `task benchmark`
 
@@ -269,6 +306,7 @@ The task split is:
 - `task benchmark`: cross-library end-to-end train/predict grids
 - `task benchmark-micro`: ForestFire-only phase breakdowns
 - `task benchmark-moons`: two-dimensional probability-surface comparison on `make_moons`
+- `task benchmark-regression-surface`: one-dimensional prediction-curve comparison on a synthetic regression task
 
 ## Output artifacts
 
@@ -291,6 +329,9 @@ For each family/problem pair, the scripts write:
 - `moons_results_<family>.json`
 - `moons_probabilities_<family>.png`
 - `moons_summary_<family>.md`
+- `regression_curve_results_<family>.json`
+- `regression_curve_<family>.png`
+- `regression_curve_summary_<family>.md`
 
 The summary markdown files are generated from the measured results and call out:
 

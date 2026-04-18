@@ -2,12 +2,11 @@
 name = "forestfire-inference"
 version = "0.2.0"
 edition = "2024"
-publish = false
 license = "MIT"
 repository = "https://github.com/wsperat/forest-fire"
-description = "Shared inference-facing traits and helpers for ForestFire."
+description = "Inference-facing traits and helpers for ForestFire models."
 
 [dependencies]
-forestfire-core = { version = "0.2.0", path = "../core" }
-forestfire-data = { version = "0.2.0", path = "../data" }
+forestfire-core = { version = "0.4.0", path = "../core" }
+forestfire-data = { version = "0.4.0", path = "../data" }
 arrow.workspace = true

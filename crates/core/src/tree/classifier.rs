@@ -21,10 +21,10 @@ use crate::ir::{
 };
 use crate::tree::shared::{
     MissingBranchDirection, candidate_feature_indices, choose_random_threshold, node_seed,
-    partition_rows_for_binary_split,
+    partition_rows_for_binary_split, select_best_non_canary_candidate,
 };
 use crate::{
-    Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
+    CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
     capture_feature_preprocessing,
 };
 use forestfire_data::TableAccess;
@@ -75,6 +75,7 @@ pub struct DecisionTreeOptions {
     pub max_features: Option<usize>,
     pub random_seed: u64,
     pub missing_value_strategies: Vec<MissingValueStrategy>,
+    pub canary_filter: CanaryFilter,
 }
 
 impl Default for DecisionTreeOptions {
@@ -86,6 +87,7 @@ impl Default for DecisionTreeOptions {
             max_features: None,
             random_seed: 0,
             missing_value_strategies: Vec::new(),
+            canary_filter: CanaryFilter::default(),
         }
     }
 }
@@ -923,11 +925,11 @@ fn build_binary_node_in_place_with_hist(
         )
     });
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
     );
-    let best_split = if context.parallelism.enabled() {
+    let split_candidates = if context.parallelism.enabled() {
         feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
@@ -940,7 +942,7 @@ fn build_binary_node_in_place_with_hist(
                     context.algorithm,
                 )
             })
-            .max_by(|left, right| left.score.total_cmp(&right.score))
+            .collect::<Vec<_>>()
     } else {
         feature_indices
             .into_iter()
@@ -954,22 +956,18 @@ fn build_binary_node_in_place_with_hist(
                     context.algorithm,
                 )
             })
-            .max_by(|left, right| left.score.total_cmp(&right.score))
+            .collect::<Vec<_>>()
     };
+    let best_split = select_best_non_canary_candidate(
+        context.table,
+        split_candidates,
+        context.options.canary_filter,
+        |candidate| candidate.score,
+        |candidate| candidate.feature_index,
+    )
+    .selected;
 
     match best_split {
-        Some(best_split)
-            if context
-                .table
-                .is_canary_binned_feature(best_split.feature_index) =>
-        {
-            push_leaf(
-                nodes,
-                majority_class_index,
-                rows.len(),
-                current_class_counts,
-            )
-        }
         Some(best_split) if best_split.score > 0.0 => {
             let impurity =
                 classification_impurity(&current_class_counts, rows.len(), context.criterion);
@@ -1079,39 +1077,35 @@ fn build_multiway_node_in_place(
         missing_value_strategies: &context.options.missing_value_strategies,
     };
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
     );
-    let best_split = if context.parallelism.enabled() {
+    let split_candidates = if context.parallelism.enabled() {
         feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
                 score_multiway_split_choice(&scoring, feature_index, rows, metric)
             })
-            .max_by(|left, right| left.score.total_cmp(&right.score))
+            .collect::<Vec<_>>()
     } else {
         feature_indices
             .into_iter()
             .filter_map(|feature_index| {
                 score_multiway_split_choice(&scoring, feature_index, rows, metric)
             })
-            .max_by(|left, right| left.score.total_cmp(&right.score))
+            .collect::<Vec<_>>()
     };
+    let best_split = select_best_non_canary_candidate(
+        context.table,
+        split_candidates,
+        context.options.canary_filter,
+        |candidate| candidate.score,
+        |candidate| candidate.feature_index,
+    )
+    .selected;
 
     match best_split {
-        Some(best_split)
-            if context
-                .table
-                .is_canary_binned_feature(best_split.feature_index) =>
-        {
-            push_leaf(
-                nodes,
-                majority_class_index,
-                rows.len(),
-                current_class_counts,
-            )
-        }
         Some(best_split) if best_split.score > 0.0 => {
             let impurity =
                 classification_impurity(&current_class_counts, rows.len(), context.criterion);

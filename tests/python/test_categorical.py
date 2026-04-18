@@ -1,0 +1,167 @@
+import numpy as np
+from forestfire import train
+from forestfire.gbm import ExtraGBMClassifier
+
+
+def categorical_rows() -> list[list[object]]:
+    return [
+        ["red", 0.0],
+        ["red", 1.0],
+        ["blue", 0.0],
+        ["blue", 1.0],
+        ["green", 0.0],
+        ["green", 1.0],
+    ]
+
+
+def test_train_supports_dummy_categorical_strategy() -> None:
+    x = categorical_rows()
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+
+    model = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        categorical_strategy="dummy",
+    )
+
+    preds = np.asarray(model.predict(x), dtype=np.float64)
+    assert preds.shape == y.shape
+    assert np.isfinite(preds).all()
+
+
+def test_train_supports_target_encoded_categorical_strategy() -> None:
+    x = categorical_rows()
+    y = np.array([0.0, 1.0, 4.0, 5.0, 8.0, 9.0])
+
+    model = train(
+        x,
+        y,
+        task="regression",
+        tree_type="cart",
+        canaries=0,
+        categorical_strategy="target",
+    )
+
+    preds = np.asarray(model.predict(x), dtype=np.float64)
+    assert preds.shape == y.shape
+    assert np.isfinite(preds).all()
+
+
+def test_train_supports_fisher_categorical_strategy() -> None:
+    x = categorical_rows()
+    y = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+
+    model = train(
+        x,
+        y,
+        task="classification",
+        tree_type="randomized",
+        canaries=0,
+        categorical_strategy="fisher",
+    )
+
+    preds = np.asarray(model.predict(x), dtype=np.float64)
+    assert preds.shape == y.shape
+    assert np.isfinite(preds).all()
+
+
+def test_categorical_model_reuses_encoding_for_unseen_prediction_rows() -> None:
+    x = categorical_rows()
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+    model = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        canaries=0,
+        categorical_strategy="target",
+    )
+
+    preds = np.asarray(model.predict([["purple", 0.0], ["red", 0.0]]), dtype=np.float64)
+    assert preds.shape == (2,)
+    assert np.isfinite(preds).all()
+
+
+def test_gbm_wrapper_accepts_categorical_strategy() -> None:
+    x = categorical_rows()
+    y = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+
+    model = ExtraGBMClassifier(
+        n_estimators=5,
+        categorical_strategy="dummy",
+    ).fit(x, y)
+
+    proba = model.predict_proba([["red", 0.0], ["blue", 1.0]])
+    assert proba.shape == (2, 2)
+    assert np.isfinite(proba).all()
+
+
+def test_categorical_models_round_trip_through_serialization() -> None:
+    x = categorical_rows()
+    cases = [
+        ("dummy", np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0]), "classification", "cart"),
+        ("target", np.array([0.0, 1.0, 4.0, 5.0, 8.0, 9.0]), "regression", "cart"),
+        (
+            "fisher",
+            np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+            "classification",
+            "randomized",
+        ),
+    ]
+
+    for strategy, y, task, tree_type in cases:
+        model = train(
+            x,
+            y,
+            task=task,
+            tree_type=tree_type,
+            canaries=1,
+            categorical_strategy=strategy,
+        )
+        baseline = np.asarray(
+            model.predict([["purple", 0.0], ["red", 1.0]]), dtype=np.float64
+        )
+
+        restored = type(model).deserialize(model.serialize())
+        restored_pred = np.asarray(
+            restored.predict([["purple", 0.0], ["red", 1.0]]), dtype=np.float64
+        )
+        assert np.allclose(baseline, restored_pred)
+
+
+def test_categorical_optimized_models_round_trip_through_compiled_serialization() -> (
+    None
+):
+    x = categorical_rows()
+    cases = [
+        ("dummy", np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0]), "classification", "cart"),
+        ("target", np.array([0.0, 1.0, 4.0, 5.0, 8.0, 9.0]), "regression", "cart"),
+        (
+            "fisher",
+            np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+            "classification",
+            "randomized",
+        ),
+    ]
+
+    for strategy, y, task, tree_type in cases:
+        model = train(
+            x,
+            y,
+            task=task,
+            tree_type=tree_type,
+            canaries=1,
+            categorical_strategy=strategy,
+        ).optimize_inference()
+        baseline = np.asarray(
+            model.predict([["purple", 0.0], ["red", 1.0]]), dtype=np.float64
+        )
+
+        restored = type(model).deserialize_compiled(model.serialize_compiled())
+        restored_pred = np.asarray(
+            restored.predict([["purple", 0.0], ["red", 1.0]]), dtype=np.float64
+        )
+        assert np.allclose(baseline, restored_pred)

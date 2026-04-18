@@ -197,6 +197,60 @@ That point is especially important now that:
 
 All of those runtime optimizations depend on the semantic preprocessing contract being explicit and reconstructible.
 
+### Categorical transforms in the IR
+
+Categorical models now also serialize their categorical transform contract in
+the IR.
+
+That categorical block records:
+
+- the raw input feature schema
+- the categorical strategy in use
+- the feature selection for categorical handling when explicitly configured
+- the base smoothing parameter
+- the fitted transform state needed to reproduce encoded inference
+
+This matters because categorical strategies in ForestFire are currently
+implemented as explicit transforms into numeric or binary feature space.
+
+So for a categorical model, the IR is intentionally describing two related but
+different spaces:
+
+- the raw user-facing input space
+- the encoded feature space consumed by the tree structure
+
+For `dummy`, the IR preserves the learned indicator expansion.
+
+For `target`, the IR preserves the fitted per-category target-derived mappings
+and priors.
+
+For `fisher`, the IR preserves the learned category ordering that maps raw
+categories onto numeric ranks before split evaluation.
+
+That means a deserialized categorical model can once again accept raw mixed
+inputs directly rather than requiring the caller to rebuild the transform out
+of band.
+
+### Raw schema vs encoded feature space
+
+This split is the most important categorical IR subtlety.
+
+The tree definitions themselves still refer to encoded feature indices, because
+that is the feature space the learner actually trained on.
+
+But the top-level input contract for a categorical model is still the raw input
+schema, because that is what callers are expected to provide at prediction
+time.
+
+So the IR is effectively saying:
+
+- these are the raw inputs the user supplies
+- this is the categorical transform applied first
+- these are the encoded features the trees then evaluate
+
+That is why categorical IR support required more than just flipping a boolean
+flag. The transform had to become part of the semantic contract.
+
 ## Output schema and postprocessing
 
 The IR also explains how to interpret outputs.
@@ -272,6 +326,13 @@ That separation keeps the project flexible:
 
 - runtime layouts can improve without breaking serialized artifacts
 - introspection can stay stable even if the runtime gets more specialized
+
+For categorical models there is one extra distinction:
+
+- the IR describes the raw categorical input contract plus the transform into
+  encoded feature space
+- the optimized runtime still executes on the encoded feature space after that
+  transform has been applied
 
 ## IR vs compiled optimized artifacts
 

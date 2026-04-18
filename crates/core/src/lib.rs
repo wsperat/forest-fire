@@ -33,6 +33,7 @@ use wide::{u16x8, u32x8};
 
 mod boosting;
 mod bootstrap;
+pub mod categorical;
 mod compiled_artifact;
 mod forest;
 mod inference_input;
@@ -47,6 +48,12 @@ pub mod tree;
 
 pub use boosting::BoostingError;
 pub use boosting::GradientBoostedTrees;
+pub use categorical::CategoricalConfig;
+pub use categorical::CategoricalError;
+pub use categorical::CategoricalModel;
+pub use categorical::CategoricalOptimizedModel;
+pub use categorical::CategoricalStrategy;
+pub use categorical::CategoricalValue;
 pub use compiled_artifact::CompiledArtifactError;
 pub use forest::RandomForest;
 pub use introspection::IntrospectionError;
@@ -174,6 +181,20 @@ impl MaxFeatures {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CanaryFilter {
+    /// Require the chosen real feature to appear within the top `n` scored splits.
+    TopN(usize),
+    /// Require the chosen real feature to appear within the top fraction of scored splits.
+    TopFraction(f64),
+}
+
+impl Default for CanaryFilter {
+    fn default() -> Self {
+        Self::TopN(1)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputFeatureKind {
@@ -276,6 +297,8 @@ pub struct TrainConfig {
     pub max_features: MaxFeatures,
     /// Seed used for reproducible sampling and randomized splits.
     pub seed: Option<u64>,
+    /// Window used when skipping canaries during split selection.
+    pub canary_filter: CanaryFilter,
     /// Whether random forests should compute out-of-bag metrics.
     pub compute_oob: bool,
     /// Gradient boosting shrinkage factor.
@@ -310,6 +333,7 @@ impl Default for TrainConfig {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -354,6 +378,8 @@ pub enum TrainError {
     InvalidMinSamplesLeaf(usize),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
+    InvalidCanaryFilterTopN(usize),
+    InvalidCanaryFilterTopFraction(f64),
     InvalidMissingValueStrategyFeature {
         feature_index: usize,
         feature_count: usize,
@@ -417,6 +443,20 @@ impl Display for TrainError {
                     count
                 )
             }
+            TrainError::InvalidCanaryFilterTopN(count) => {
+                write!(
+                    f,
+                    "canary_filter top-n must be at least 1. Received {}.",
+                    count
+                )
+            }
+            TrainError::InvalidCanaryFilterTopFraction(fraction) => {
+                write!(
+                    f,
+                    "canary_filter top fraction must be finite and in (0, 1]. Received {}.",
+                    fraction
+                )
+            }
             TrainError::InvalidMissingValueStrategyFeature {
                 feature_index,
                 feature_count,
@@ -430,6 +470,34 @@ impl Display for TrainError {
 }
 
 impl Error for TrainError {}
+
+impl CanaryFilter {
+    pub(crate) fn validate(self) -> Result<(), TrainError> {
+        match self {
+            Self::TopN(0) => Err(TrainError::InvalidCanaryFilterTopN(0)),
+            Self::TopN(_) => Ok(()),
+            Self::TopFraction(fraction)
+                if !fraction.is_finite() || fraction <= 0.0 || fraction > 1.0 =>
+            {
+                Err(TrainError::InvalidCanaryFilterTopFraction(fraction))
+            }
+            Self::TopFraction(_) => Ok(()),
+        }
+    }
+
+    pub(crate) fn selection_size(self, candidate_count: usize) -> usize {
+        if candidate_count == 0 {
+            return 0;
+        }
+
+        match self {
+            Self::TopN(count) => count.clamp(1, candidate_count),
+            Self::TopFraction(fraction) => {
+                ((fraction * candidate_count as f64).ceil() as usize).clamp(1, candidate_count)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PredictError {

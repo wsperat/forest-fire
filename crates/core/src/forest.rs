@@ -122,6 +122,7 @@ impl RandomForest {
                         min_samples_split: config.min_samples_split,
                         min_samples_leaf: config.min_samples_leaf,
                         missing_value_strategies: config.missing_value_strategies.clone(),
+                        canary_filter: crate::CanaryFilter::default(),
                     },
                     max_features: Some(max_features),
                     random_seed: tree_seed,

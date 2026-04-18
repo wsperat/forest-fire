@@ -128,6 +128,7 @@ model = train(
     top_gradient_fraction=0.2,
     other_gradient_fraction=0.1,
     canaries=2,
+    filter=0.95,
 )
 
 print(model.tree_count)
@@ -158,6 +159,9 @@ What this example shows:
 - boosting still fits into the same top-level lifecycle as trees and forests
 - `tree_count` reflects the realized number of stages, which may be smaller than
   the requested `n_trees` because of canary-based stopping
+- `filter=0.95` keeps canary competition active while allowing the best real
+  root split to survive if it still lands inside the top 5% of ranked
+  candidates
 - introspection still works tree-by-tree on a boosted ensemble
 - optimized inference is expected to preserve the probability path, not just the
   hard labels
@@ -165,6 +169,78 @@ What this example shows:
   the runtime may only need a fraction of the original feature columns
 - JSON IR export and binary serialization both operate on the same semantic
   model
+
+## Example 3: Inspecting the canary `filter` policy directly
+
+This example focuses only on the canary acceptance rule. The important idea is
+that splits are still scored and sorted in the usual way first. `filter` only
+controls how far down that ranked list ForestFire is allowed to look for the
+first real feature.
+
+```python
+import numpy as np
+
+from forestfire import train
+
+rng = np.random.default_rng(23)
+n = 8_000
+
+X = rng.normal(size=(n, 6))
+y = (
+    1.8 * X[:, 0]
+    - 0.9 * X[:, 1]
+    + 0.4 * X[:, 2]
+    + rng.normal(scale=0.8, size=n)
+    > 0.0
+).astype(float)
+
+strict = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    canaries=2,
+)
+
+top_3 = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    canaries=2,
+    filter=3,
+)
+
+top_5_percent = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    canaries=2,
+    filter=0.95,
+)
+
+print(strict.tree_structure())
+print(top_3.tree_structure())
+print(top_5_percent.tree_structure())
+```
+
+How to read this:
+
+- the default model uses the strict policy, equivalent to `filter=1`
+- `filter=3` allows the best real feature to be chosen as long as it is still
+  within the top 3 ranked candidates
+- `filter=0.95` allows the best real feature to be chosen as long as it is
+  still within the top `ceil(5% * candidate_count)` ranked candidates
+
+What this example shows:
+
+- `filter` does not change how split quality is computed
+- canaries may still outrank the chosen real feature
+- the selected split is always the highest-ranked real feature inside the
+  allowed window
+- if the allowed window contains only canaries, the usual canary stop still
+  happens
 
 ## Why these examples matter
 

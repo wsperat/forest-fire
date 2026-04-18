@@ -1,4 +1,4 @@
-from ._core import Model, OptimizedModel, Table, train
+from ._api import Model, OptimizedModel, Table, train
 from .forest import (
     C45RandomForestClassifier,
     CARTRandomForestClassifier,
@@ -21,11 +21,11 @@ from .tree import (
     C45Classifier,
     CARTClassifier,
     CARTRegressor,
-    ExtraClassifier,
-    ExtraRegressor,
+    ExtraTreeClassifier,
+    ExtraTreeRegressor,
     ID3Classifier,
-    ObliviousClassifier,
-    ObliviousRegressor,
+    ObliviousTreeClassifier,
+    ObliviousTreeRegressor,
 )
 
 __all__ = [
@@ -36,11 +36,11 @@ __all__ = [
     "ID3Classifier",
     "C45Classifier",
     "CARTClassifier",
-    "ExtraClassifier",
-    "ObliviousClassifier",
+    "ExtraTreeClassifier",
+    "ObliviousTreeClassifier",
     "CARTRegressor",
-    "ExtraRegressor",
-    "ObliviousRegressor",
+    "ExtraTreeRegressor",
+    "ObliviousTreeRegressor",
     "ID3RandomForestClassifier",
     "C45RandomForestClassifier",
     "CARTRandomForestClassifier",

@@ -13,6 +13,8 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+pub mod categorical;
+
 pub const MAX_NUMERIC_BINS: usize = 128;
 const DEFAULT_CANARIES: usize = 2;
 pub const BINARY_MISSING_BIN: u16 = 2;

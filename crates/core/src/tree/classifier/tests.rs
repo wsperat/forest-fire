@@ -1,5 +1,5 @@
 use super::*;
-use crate::{FeaturePreprocessing, Model, NumericBinBoundary};
+use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary};
 use forestfire_data::{DenseTable, NumericBins};
 
 fn and_table() -> DenseTable {
@@ -23,22 +23,47 @@ fn criterion_choice_table() -> DenseTable {
     DenseTable::with_options(
         vec![
             vec![0.0, 1.0],
-            vec![4.0, 1.0],
-            vec![4.0, 0.0],
-            vec![0.0, 1.0],
-            vec![5.0, 2.0],
-            vec![2.0, 4.0],
-            vec![1.0, 2.0],
+            vec![0.0, 0.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
         ],
-        vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        vec![0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         0,
-        NumericBins::Fixed(8),
+        NumericBins::Auto,
     )
     .unwrap()
 }
 
 fn canary_target_table() -> DenseTable {
     let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
+    let probe = DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
+    let canary_index = probe.n_features();
+    let mut observed_bins = (0..probe.n_rows())
+        .map(|row_idx| probe.binned_value(canary_index, row_idx))
+        .collect::<Vec<_>>();
+    observed_bins.sort_unstable();
+    observed_bins.dedup();
+    let threshold = observed_bins[observed_bins.len() / 2];
+    let y = (0..probe.n_rows())
+        .map(|row_idx| {
+            if probe.binned_value(canary_index, row_idx) >= threshold {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+
+    DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
+}
+
+fn canary_target_table_with_noise_feature() -> DenseTable {
+    let x: Vec<Vec<f64>> = (0..8)
+        .map(|value| vec![value as f64, (value % 2) as f64])
+        .collect();
     let probe = DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
     let canary_index = probe.n_features();
     let mut observed_bins = (0..probe.n_rows())
@@ -253,6 +278,42 @@ fn stops_oblivious_tree_growth_when_a_canary_wins() {
 
     assert!(preds.iter().all(|pred| *pred == preds[0]));
     assert_ne!(preds, table_targets(&table));
+}
+
+#[test]
+fn top_n_canary_filter_can_choose_real_classifier_split() {
+    let table = canary_target_table();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            canary_filter: CanaryFilter::TopN(2),
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let preds = model.predict_table(&table);
+
+    assert!(preds.iter().any(|pred| *pred != preds[0]));
+}
+
+#[test]
+fn top_fraction_canary_filter_can_choose_real_classifier_split() {
+    let table = canary_target_table_with_noise_feature();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            canary_filter: CanaryFilter::TopFraction(0.5),
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let preds = model.predict_table(&table);
+
+    assert!(preds.iter().any(|pred| *pred != preds[0]));
 }
 
 #[test]
