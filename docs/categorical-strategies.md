@@ -206,6 +206,20 @@ Smaller smoothing means:
 - more category-specific flexibility
 - more sensitivity to rare-level noise
 
+This parameter is part of categorical modeling itself, not part of the canary
+policy.
+
+In other words:
+
+- `target_smoothing` defines the base amount of shrinkage used by categorical
+  training
+- canaries may later increase the effective smoothing for `target` and
+  `fisher` when shuffled-category signal is too competitive
+
+So if you are trying to understand what the parameter means, this is the
+primary section to read. The canaries page only explains when ForestFire may
+adapt that base value upward for robustness.
+
 ### Classification behavior
 
 For classification, the encoder currently emits one value per class. That means
@@ -283,6 +297,11 @@ library’s exact categorical algorithm.
 
 The current implementation uses target-derived category ordering and then maps
 that order to ranks consumed by the existing numeric split machinery.
+
+Although `fisher` is not itself target encoding, it still depends on
+target-derived category statistics. For that reason, the same
+`target_smoothing` parameter is also used as the base regularization level for
+the per-category statistics that determine the ordering.
 
 ### Strengths
 

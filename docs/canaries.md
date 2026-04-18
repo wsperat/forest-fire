@@ -146,6 +146,115 @@ This matters because standalone trees are the most exposed to “keep splitting 
 
 In that setting, canaries let ForestFire be less dependent on post-hoc pruning.
 
+## Categorical variables
+
+Canaries now also play a second role for categorical handling.
+
+For ordinary numeric and binary training, canaries act mainly as a split
+acceptance baseline:
+
+- is this candidate split better than structured noise?
+
+For categorical encodings, there is an additional failure mode:
+
+- a target-informed encoding can manufacture convincing-looking structure from
+  sparse or noisy categories even before the tree starts choosing splits
+
+That matters most for:
+
+- `target`
+- `fisher`
+
+and much less cleanly for:
+
+- `dummy`
+
+### Why categorical encodings need extra caution
+
+`target` and `fisher` both use the training target while building the feature
+representation itself.
+
+That means a noisy categorical column can still look strong:
+
+- `target` may give rare categories extreme encoded values
+- `fisher` may produce a clean-looking category ordering that is mostly luck
+
+If the library only asked whether the resulting transformed feature can win a
+split later, it would be evaluating the encoding after some of the overfit risk
+has already been baked in.
+
+### Current behavior
+
+ForestFire now uses canary-informed shrinkage for:
+
+- `target`
+- `fisher`
+
+The basic idea is:
+
+1. measure how much target-structured separation the real categorical feature
+   appears to have under the current smoothing level
+2. build a categorical canary by shuffling that feature while keeping the same
+   category vocabulary and marginal counts
+3. measure the same target-structured separation on the shuffled feature
+4. increase smoothing when the canary remains too competitive with the real
+   feature
+
+So the canary is not just competing with the feature at split time. It is also
+used earlier as a robustness check on the encoding strength itself.
+
+### What gets adjusted
+
+For `target`:
+
+- the effective smoothing can be increased on a per-feature basis
+
+For `fisher`:
+
+- the same canary-informed smoothing adjustment is applied before computing the
+  target-derived category ordering
+
+That means weak or fragile category signal gets pulled harder toward the global
+prior before the downstream tree learner ever sees the transformed feature.
+
+The base meaning of `target_smoothing` belongs to the categorical-feature
+documentation. The important canary-specific point is narrower:
+
+- canaries may increase the effective smoothing above the user-provided base
+  level when shuffled-category signal looks too competitive
+
+### Why `dummy` is excluded
+
+`dummy` is intentionally left out of this mechanism for now.
+
+The reason is not that canaries are irrelevant there. The reason is that the
+comparison unit is awkward:
+
+- one source categorical feature expands into many derived indicator columns
+- a naive per-indicator canary comparison would not be statistically matched to
+  the source feature as a whole
+
+So `dummy` would need a grouped or source-feature-level canary treatment rather
+than the per-feature shrinkage rule used for `target` and `fisher`.
+
+### What this does and does not mean
+
+This is a robustness mechanism, not a guarantee that leakage-like effects are
+fully solved.
+
+It helps by making the encoding more conservative when shuffled categories can
+still produce suspiciously strong apparent signal. But it is still a heuristic
+shrinkage rule, not a full cross-fitting or ordered-statistics categorical
+scheme.
+
+In practical terms, the current design means:
+
+- categorical canaries influence representation strength for `target` and
+  `fisher`
+- ordinary canary competition still governs whether splits are allowed to win
+  later in tree growth
+- `dummy` still uses the regular split-time canary mechanism only
+
 ## The windowed canary policy
 
 The important point is that ForestFire now separates two ideas that used to be fused together:
