@@ -367,7 +367,7 @@ pub fn shuffled_feature_rows(
         .map(|row| row[feature_index].clone())
         .collect::<Vec<_>>();
     shuffle_values(&mut feature_values, copy_index, feature_index);
-    for (row, shuffled) in shuffled_rows.iter_mut().zip(feature_values.into_iter()) {
+    for (row, shuffled) in shuffled_rows.iter_mut().zip(feature_values) {
         row[feature_index] = shuffled;
     }
     shuffled_rows
