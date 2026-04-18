@@ -1213,7 +1213,7 @@ fn extract_sparse_binary_columns(x: &Bound<PyAny>) -> PyResult<(usize, usize, Ve
     }
 
     let mut columns = vec![Vec::new(); n_features];
-    for (row_idx, col_idx) in row_indices.into_iter().zip(col_indices.into_iter()) {
+    for (row_idx, col_idx) in row_indices.into_iter().zip(col_indices) {
         if row_idx >= n_rows || col_idx >= n_features {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "Sparse input indices are out of bounds.",
