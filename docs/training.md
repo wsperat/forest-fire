@@ -125,6 +125,58 @@ Current implementation note:
 - the strategy toggle is implemented for the standard first-order tree builders
 - the second-order boosting path currently uses the existing missing-value behavior rather than a separate heuristic-vs-optimal toggle
 
+## Categorical features
+
+Categorical handling uses the same public `train(...)` interface as numeric
+training. There is no separate categorical training API.
+
+The current strategies are:
+
+- `dummy`
+- `target`
+- `fisher`
+
+At a high level:
+
+- `dummy` expands nominal categories into indicator-style derived columns
+- `target` replaces categories with smoothed target-derived statistics
+- `fisher` orders categories by target-derived statistics and then lets the
+  tree learner split over that learned ordering
+
+The implementation is split intentionally:
+
+- `dummy` and `target` are table-layer transforms
+- `fisher` is implemented in core because it is tied to category ordering for
+  threshold-based split search
+
+From the trainer’s point of view, categorical handling happens before tree
+growth and produces the numeric/binary representation consumed by the existing
+split machinery. That means:
+
+- trees, forests, and GBM all use the same categorical entry path
+- canaries compete against the transformed features rather than raw category
+  labels
+- histogram-based split search works over the transformed representation
+
+Example:
+
+```python
+train(
+    X,
+    y,
+    algorithm="gbm",
+    task="classification",
+    tree_type="cart",
+    categorical_strategy="fisher",
+)
+```
+
+Current limit:
+
+- IR export and model serialization are still disabled for categorical models
+  because the IR/runtime contract does not yet encode the categorical transform
+  metadata
+
 ## Stopping and control parameters
 
 - `max_depth`

@@ -43,7 +43,7 @@ ForestFire is intentionally opinionated in a few places:
 - [Rust API](rust-api.md): Rust crates and training entrypoints
 - [Examples](examples.md): end-to-end workflows from training through reload and batch scoring
 - [Training](training.md): algorithms, parameters, and stopping behavior
-- [Categorical Strategies](categorical-strategies.md): `dummy`, `target`, and `fisher` categorical handling in the Python API
+- [Categorical Strategies](categorical-strategies.md): `dummy`, `target`, and `fisher` categorical handling through the native training API
 - [Models And Introspection](models.md): prediction, optimization, serialization, and tree inspection
 - [Benchmarks](benchmarks.md): benchmark tasks and artifact locations
 - [Next Steps](next-steps.md): forward-looking implementation and optimization notes

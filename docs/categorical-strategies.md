@@ -1,16 +1,26 @@
 # Categorical Strategies
 
-ForestFire currently supports three practical categorical strategies in the
-Python API:
+ForestFire currently supports three practical categorical strategies through
+the normal native `train(...)` interface:
 
 - `dummy`
 - `target`
 - `fisher`
 
-At the moment these are implemented as Python-side preprocessing layers that
-transform categorical columns before the Rust trainers see the data. That means
-they work today with trees, forests, and GBM, but they are not yet native
-categorical semantics in the Rust IR or optimized runtime.
+These strategies are now implemented in Rust, not as Python-side
+preprocessing. Python sends mixed rows directly into the native training path,
+and Rust applies the configured categorical transform before handing the
+resulting representation to the tree/forest/GBM trainers.
+
+The implementation is intentionally split by responsibility:
+
+- `dummy` and `target` live close to the table layer because they are
+  fundamentally table-to-table feature transforms
+- `fisher` lives in core because it is not just a generic encoding; it is a
+  target-informed category-ordering strategy tied to tree split semantics
+
+That said, the current system is still based on transformed numeric/binary
+features rather than fully native categorical predicates in the IR and runtime.
 
 This page explains what each strategy means, when it is appropriate, and what
 its tradeoffs are.
@@ -312,8 +322,8 @@ into one observed category.
 
 ## Interaction With ForestFire Training
 
-After preprocessing, the downstream Rust trainers still see ordinary numeric or
-binary feature matrices.
+After categorical handling runs, the downstream trainers still see ordinary
+numeric or binary feature matrices.
 
 So all existing training behavior still applies:
 
@@ -325,22 +335,41 @@ So all existing training behavior still applies:
 
 This is both the strength and the limitation of the current design:
 
-- it makes categorical strategies available immediately
+- it makes categorical strategies available through the same native training
+  path as the rest of the library
 - but the model is still learning on transformed features, not on native
   categorical predicates
 
+At the API level, this means there is no separate categorical training entry
+point. You still call `train(...)` and pass categorical options directly:
+
+```python
+train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    categorical_strategy="dummy",
+)
+```
+
+The same applies to the sklearn-style wrappers, which forward the categorical
+configuration through the same native path.
+
 ## Current Limits
 
-The current categorical strategies are Python-layer preprocessing.
+The current categorical strategies are native Rust transforms, but they are not
+yet represented as first-class categorical semantics in the serialized/IR model
+contract.
 
 That means:
 
-- IR export is disabled for models trained with categorical preprocessing
+- IR export is disabled for models trained with categorical transforms
 - serialization is disabled for those models
 - compiled optimized serialization is disabled for those models
 
 The reason is straightforward: the Rust semantic model and IR do not yet record
-the preprocessing contract for these categorical transforms.
+the categorical transform contract.
 
 Until they do, serialization would not be faithfully reproducible.
 
