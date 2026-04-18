@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 /// Runtime-lowered model used for faster inference.
 ///
@@ -17,12 +18,19 @@ impl OptimizedModel {
     pub(crate) fn new(
         source_model: Model,
         physical_cores: Option<usize>,
+        missing_features: Option<&[usize]>,
     ) -> Result<Self, OptimizeError> {
         let thread_count = resolve_inference_thread_count(physical_cores)?;
         let feature_projection = build_feature_projection(&source_model);
         let feature_index_map =
             build_feature_index_map(source_model.num_features(), &feature_projection);
-        let runtime = OptimizedRuntime::from_model(&source_model, &feature_index_map);
+        let missing_feature_set =
+            missing_features.map(|features| features.iter().copied().collect::<BTreeSet<_>>());
+        let runtime = OptimizedRuntime::from_model(
+            &source_model,
+            &feature_index_map,
+            missing_feature_set.as_ref(),
+        );
         let executor = InferenceExecutor::new(thread_count)?;
 
         Ok(Self {
@@ -678,7 +686,15 @@ impl Model {
         &self,
         physical_cores: Option<usize>,
     ) -> Result<OptimizedModel, OptimizeError> {
-        OptimizedModel::new(self.clone(), physical_cores)
+        OptimizedModel::new(self.clone(), physical_cores, None)
+    }
+
+    pub fn optimize_inference_with_missing_features(
+        &self,
+        physical_cores: Option<usize>,
+        missing_features: Option<Vec<usize>>,
+    ) -> Result<OptimizedModel, OptimizeError> {
+        OptimizedModel::new(self.clone(), physical_cores, missing_features.as_deref())
     }
 
     pub fn json_schema() -> schemars::schema::RootSchema {

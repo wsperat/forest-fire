@@ -2,6 +2,7 @@
 name = "forestfire-python"
 version = "0.4.0"
 edition = "2024"
+publish = false
 license = "MIT"
 repository = "https://github.com/wsperat/forest-fire"
 description = "Python extension module for the ForestFire tree-learning library."
@@ -16,5 +17,5 @@ numpy = "0.26"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-forestfire-core = { path = "../../crates/core" }
-forestfire-data = { path = "../../crates/data" }
+forestfire-core = { version = "0.4.0", path = "../../crates/core" }
+forestfire-data = { version = "0.4.0", path = "../../crates/data" }

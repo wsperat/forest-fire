@@ -134,10 +134,31 @@ impl GradientBoostedTrees {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn train(
         train_set: &dyn TableAccess,
         config: TrainConfig,
         parallelism: Parallelism,
+    ) -> Result<Self, BoostingError> {
+        let missing_value_strategies = config
+            .missing_value_strategy
+            .resolve_for_feature_count(train_set.binned_feature_count())
+            .unwrap_or_else(|err| {
+                panic!("unexpected training error while resolving missing strategy: {err}")
+            });
+        Self::train_with_missing_value_strategies(
+            train_set,
+            config,
+            parallelism,
+            missing_value_strategies,
+        )
+    }
+
+    pub(crate) fn train_with_missing_value_strategies(
+        train_set: &dyn TableAccess,
+        config: TrainConfig,
+        parallelism: Parallelism,
+        missing_value_strategies: Vec<crate::MissingValueStrategy>,
     ) -> Result<Self, BoostingError> {
         let n_trees = config.n_trees.unwrap_or(100);
         let learning_rate = config.learning_rate.unwrap_or(0.1);
@@ -153,7 +174,7 @@ impl GradientBoostedTrees {
 
         let max_features = config
             .max_features
-            .resolve(config.task, train_set.binned_feature_count());
+            .resolve(config.task, train_set.n_features());
         let base_seed = config.seed.unwrap_or(0xB005_7EED_u64);
         let tree_options = crate::RegressionTreeOptions {
             max_depth: config.max_depth.unwrap_or(8),
@@ -161,6 +182,8 @@ impl GradientBoostedTrees {
             min_samples_leaf: config.min_samples_leaf.unwrap_or(1),
             max_features: Some(max_features),
             random_seed: 0,
+            missing_value_strategies,
+            canary_filter: config.canary_filter,
         };
         let tree_options = SecondOrderRegressionTreeOptions {
             tree_options,
@@ -241,7 +264,7 @@ impl GradientBoostedTrees {
                 mix_seed(stage_seed, 0x6011_5A11),
             );
             let sampled_table = SampledTable::new(train_set, sampled_rows.row_indices);
-            let mut stage_tree_options = tree_options;
+            let mut stage_tree_options = tree_options.clone();
             stage_tree_options.tree_options.random_seed = stage_seed;
             let stage_result = match config.tree_type {
                 TreeType::Cart => train_cart_regressor_from_gradients_and_hessians_with_status(
@@ -479,6 +502,11 @@ impl TableAccess for SampledTable<'_> {
             .feature_value(feature_index, self.resolve_row(row_index))
     }
 
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base
+            .is_missing(feature_index, self.resolve_row(row_index))
+    }
+
     fn is_binary_feature(&self, index: usize) -> bool {
         self.base.is_binary_feature(index)
     }
@@ -683,7 +711,7 @@ fn gradient_focus_sample(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MaxFeatures, TrainAlgorithm, TrainConfig};
+    use crate::{CanaryFilter, MaxFeatures, TrainAlgorithm, TrainConfig};
     use forestfire_data::{BinnedColumnKind, TableAccess};
     use forestfire_data::{DenseTable, NumericBins};
 
@@ -783,6 +811,8 @@ mod tests {
 
     struct RootCanaryTable;
 
+    struct FilteredRootCanaryTable;
+
     impl TableAccess for RootCanaryTable {
         fn n_rows(&self) -> usize {
             4
@@ -808,6 +838,10 @@ mod tests {
             0.0
         }
 
+        fn is_missing(&self, _feature_index: usize, _row_index: usize) -> bool {
+            false
+        }
+
         fn is_binary_feature(&self, _index: usize) -> bool {
             true
         }
@@ -823,6 +857,74 @@ mod tests {
         fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
             Some(match feature_index {
                 0 => false,
+                1 => row_index >= 2,
+                _ => unreachable!(),
+            })
+        }
+
+        fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+            match index {
+                0 => BinnedColumnKind::Real { source_index: 0 },
+                1 => BinnedColumnKind::Canary {
+                    source_index: 0,
+                    copy_index: 0,
+                },
+                _ => unreachable!(),
+            }
+        }
+
+        fn is_binary_binned_feature(&self, _index: usize) -> bool {
+            true
+        }
+
+        fn target_value(&self, row_index: usize) -> f64 {
+            [0.0, 0.0, 1.0, 1.0][row_index]
+        }
+    }
+
+    impl TableAccess for FilteredRootCanaryTable {
+        fn n_rows(&self) -> usize {
+            4
+        }
+
+        fn n_features(&self) -> usize {
+            1
+        }
+
+        fn canaries(&self) -> usize {
+            1
+        }
+
+        fn numeric_bin_cap(&self) -> usize {
+            2
+        }
+
+        fn binned_feature_count(&self) -> usize {
+            2
+        }
+
+        fn feature_value(&self, _feature_index: usize, _row_index: usize) -> f64 {
+            0.0
+        }
+
+        fn is_missing(&self, _feature_index: usize, _row_index: usize) -> bool {
+            false
+        }
+
+        fn is_binary_feature(&self, _index: usize) -> bool {
+            true
+        }
+
+        fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+            u16::from(
+                self.binned_boolean_value(feature_index, row_index)
+                    .expect("all features are observed"),
+            )
+        }
+
+        fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+            Some(match feature_index {
+                0 => row_index == 3,
                 1 => row_index >= 2,
                 _ => unreachable!(),
             })
@@ -878,5 +980,31 @@ mod tests {
                 .iter()
                 .all(|value| value.is_finite())
         );
+    }
+
+    #[test]
+    fn boosting_can_use_a_real_root_split_inside_top_n_canary_filter() {
+        let table = FilteredRootCanaryTable;
+
+        let model = GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(10),
+                max_features: MaxFeatures::All,
+                learning_rate: Some(0.1),
+                top_gradient_fraction: Some(1.0),
+                other_gradient_fraction: Some(0.0),
+                canary_filter: CanaryFilter::TopN(2),
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap();
+
+        assert!(!model.trees().is_empty());
     }
 }

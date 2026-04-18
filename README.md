@@ -16,6 +16,8 @@ Current capabilities:
 - random forests
 - gradient boosting
 - classification and regression
+- sklearn-compatible estimator wrappers
+- automatic missing-value handling during training and prediction
 - optimized inference runtimes
 - compiled optimized runtime artifacts
 - model introspection and dataframe export
@@ -55,6 +57,16 @@ print(model.predict(X))
 print(model.predict_proba(X))
 ```
 
+Missing values are handled automatically from common Python inputs such as
+`None`, `np.nan`, pandas/NumPy `NaN`, and `polars` nulls.
+
+Training can also choose between a fast missing-value split heuristic and a
+slower optimal search through `missing_value_strategy=...`.
+
+Histogram resolution is configurable through `histogram_bins=...`. That is
+separate from `bins=...`, which controls how an explicit training `Table` is
+preprocessed.
+
 Install from PyPI:
 
 ```bash
@@ -65,6 +77,14 @@ Import in Python:
 
 ```python
 import forestfire
+```
+
+Sklearn-style wrappers are also available:
+
+```python
+from forestfire.tree import ObliviousRegressor
+from forestfire.forest import CARTRandomForestRegressor
+from forestfire.gbm import ExtraGBMRegressor
 ```
 
 ## Development

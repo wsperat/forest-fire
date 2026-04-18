@@ -10,7 +10,7 @@ use crate::ir::TrainingMetadata;
 use crate::tree::shared::mix_seed;
 use crate::{
     Criterion, FeaturePreprocessing, MaxFeatures, Model, Parallelism, PredictError, Task,
-    TrainConfig, TrainError, TreeType, capture_feature_preprocessing, training,
+    TrainError, TreeType, capture_feature_preprocessing, training,
 };
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
@@ -78,11 +78,11 @@ impl RandomForest {
 
     pub(crate) fn train(
         train_set: &dyn TableAccess,
-        config: TrainConfig,
+        config: training::RandomForestConfig,
         criterion: Criterion,
         parallelism: Parallelism,
     ) -> Result<Self, TrainError> {
-        let n_trees = config.n_trees.unwrap_or(1000);
+        let n_trees = config.n_trees;
         if n_trees == 0 {
             return Err(TrainError::InvalidTreeCount(n_trees));
         }
@@ -118,9 +118,11 @@ impl RandomForest {
                         tree_type: config.tree_type,
                         criterion,
                         parallelism: per_tree_parallelism,
-                        max_depth: config.max_depth.unwrap_or(8),
-                        min_samples_split: config.min_samples_split.unwrap_or(2),
-                        min_samples_leaf: config.min_samples_leaf.unwrap_or(1),
+                        max_depth: config.max_depth,
+                        min_samples_split: config.min_samples_split,
+                        min_samples_leaf: config.min_samples_leaf,
+                        missing_value_strategies: config.missing_value_strategies.clone(),
+                        canary_filter: crate::CanaryFilter::default(),
                     },
                     max_features: Some(max_features),
                     random_seed: tree_seed,
@@ -440,6 +442,11 @@ impl TableAccess for SampledTable<'_> {
             .feature_value(feature_index, self.resolve_row(row_index))
     }
 
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base
+            .is_missing(feature_index, self.resolve_row(row_index))
+    }
+
     fn is_binary_feature(&self, index: usize) -> bool {
         self.base.is_binary_feature(index)
     }
@@ -490,6 +497,10 @@ impl TableAccess for NoCanaryTable<'_> {
 
     fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
         self.base.feature_value(feature_index, row_index)
+    }
+
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base.is_missing(feature_index, row_index)
     }
 
     fn is_binary_feature(&self, index: usize) -> bool {

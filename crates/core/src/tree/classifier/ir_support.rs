@@ -41,6 +41,7 @@ fn populate_depths(nodes: &[TreeNode], node_id: usize, depth: usize, depths: &mu
 pub(super) fn binary_split_ir(
     feature_index: usize,
     threshold_bin: u16,
+    _missing_direction: MissingBranchDirection,
     preprocessing: &[FeaturePreprocessing],
 ) -> BinarySplit {
     match preprocessing.get(feature_index) {

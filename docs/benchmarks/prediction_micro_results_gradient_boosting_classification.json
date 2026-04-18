@@ -1,0 +1,41 @@
+[
+  {
+    "benchmark": "prediction_micro",
+    "family": "gradient_boosting",
+    "n_estimators": 1000,
+    "n_features": 8,
+    "note": null,
+    "phase": "predict_base",
+    "predict_rows": 1,
+    "problem": "classification",
+    "seconds": 2.6625006285030395e-05,
+    "status": "ok",
+    "train_rows": 1024
+  },
+  {
+    "benchmark": "prediction_micro",
+    "family": "gradient_boosting",
+    "n_estimators": 1000,
+    "n_features": 8,
+    "note": null,
+    "phase": "predict_optimized",
+    "predict_rows": 1,
+    "problem": "classification",
+    "seconds": 4.7909998102113605e-06,
+    "status": "ok",
+    "train_rows": 1024
+  },
+  {
+    "benchmark": "prediction_micro",
+    "family": "gradient_boosting",
+    "n_estimators": 1000,
+    "n_features": 8,
+    "note": null,
+    "phase": "predict_compiled",
+    "predict_rows": 1,
+    "problem": "classification",
+    "seconds": 2.3750035325065255e-06,
+    "status": "ok",
+    "train_rows": 1024
+  }
+]

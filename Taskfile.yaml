@@ -20,11 +20,12 @@ tasks:
     cmds:
       - >-
         uv run isort --check-only
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - >-
         uv run ruff check
         bindings/python
@@ -34,22 +35,24 @@ tasks:
         tests/python
       - >-
         uv run ruff format --check
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   lint:
     desc: Auto-fix linting and formatting issues
     cmds:
       - >-
         uv run isort
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - >-
         uv run ruff check --fix
         bindings/python
@@ -59,11 +62,12 @@ tasks:
         tests/python
       - >-
         uv run ruff format
-        bindings/python/forestfire.pyi
+        bindings/python/python/forestfire/_core.pyi
         benchmark
         examples/python/showcase.py
         scripts/benchmark_inference.py
         tests/python/test_train.py
+        tests/python/test_sklearn_wrappers.py
       - uv run yamlfix Taskfile.yaml .pre-commit-config.yaml .github/workflows
       - uv run yamllint Taskfile.yaml .pre-commit-config.yaml .github/workflows
   mypy:
@@ -191,6 +195,16 @@ tasks:
     desc: Upload built distributions to PyPI with twine
     deps: [python-package-check]
     cmds: ["uv run --group release twine upload \\\n  dist/*\n"]
+  cargo-package-check:
+    desc: Build the publishable data crate archive before crates.io release
+    deps: [rust-toolchain]
+    cmds: [cargo package -p forestfire-data]
+  cargo-publish:
+    desc: Publish release crates to crates.io in dependency order
+    deps: [rust-toolchain]
+    cmds:
+      - cargo publish -p forestfire-data
+      - cargo publish -p forestfire-core
   docs-serve:
     desc: Serve the MkDocs documentation site locally
     deps: [install-docs]
@@ -211,6 +225,15 @@ tasks:
         python benchmark/train_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
+  benchmark-training-micro:
+    desc: Benchmark ForestFire training phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
   benchmark-training-rf:
     desc: Benchmark random-forest training over the default grid
     deps: [python-ext-develop-release]
@@ -218,6 +241,15 @@ tasks:
       - >-
         uv run --group benchmark
         python benchmark/train_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
+  benchmark-training-micro-rf:
+    desc: Benchmark random-forest training phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_micro_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
   benchmark-training-gbm:
@@ -230,6 +262,16 @@ tasks:
         python benchmark/train_benchmark.py
         --output-dir docs/benchmarks
         --family gradient_boosting
+  benchmark-training-micro-gbm:
+    desc: >-
+      Benchmark gradient-boosting training phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/train_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family gradient_boosting
   benchmark-prediction:
     desc: Benchmark random-forest prediction over the default grid
     deps: [python-ext-develop-release]
@@ -237,6 +279,15 @@ tasks:
       - >-
         uv run --group benchmark
         python benchmark/predict_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
+  benchmark-prediction-micro:
+    desc: Benchmark ForestFire prediction phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_micro_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
   benchmark-prediction-rf:
@@ -249,6 +300,16 @@ tasks:
         python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
         --family random_forest
+  benchmark-prediction-micro-rf:
+    desc: >-
+      Benchmark random-forest prediction phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family random_forest
   benchmark-prediction-gbm:
     desc: >-
       Benchmark gradient-boosting prediction over the default grid
@@ -259,6 +320,49 @@ tasks:
         python benchmark/predict_benchmark.py
         --output-dir docs/benchmarks
         --family gradient_boosting
+  benchmark-prediction-micro-gbm:
+    desc: >-
+      Benchmark gradient-boosting prediction phases over the default micro grid
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/predict_micro_benchmark.py
+        --output-dir docs/benchmarks
+        --family gradient_boosting
+  benchmark-moons:
+    desc: Benchmark make_moons probability surfaces for RF and GBM classifiers
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/moons_benchmark.py
+        --output-dir docs/benchmarks
+        --max-features all
+        --canaries 3
+        --filter 3
+        --noise 0.3
+        --oblivious-max-depth 10
+  benchmark-regression-surface:
+    desc: Benchmark 1D regression curves for RF and GBM regressors
+    deps: [python-ext-develop-release]
+    cmds:
+      - >-
+        uv run --group benchmark
+        python benchmark/regression_benchmark.py
+        --output-dir docs/benchmarks
+        --max-features all
+        --canaries 3
+        --filter 3
+        --noise 0.08
+        --oblivious-max-depth 10
+  benchmark-micro:
+    desc: Run ForestFire-only training and prediction micro-benchmarks
+    cmds:
+      - task benchmark-training-micro-rf
+      - task benchmark-training-micro-gbm
+      - task benchmark-prediction-micro-rf
+      - task benchmark-prediction-micro-gbm
   benchmark:
     desc: Run random-forest and gradient-boosting train/predict benchmarks
     cmds:

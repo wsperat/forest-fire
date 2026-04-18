@@ -3,10 +3,13 @@ name = "forestfire-rust-examples"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT"
+repository = "https://github.com/wsperat/forest-fire"
+description = "Runnable Rust examples for the ForestFire project."
 
 [dependencies]
-forestfire-core = { path = "../../crates/core" }
-forestfire-data = { path = "../../crates/data" }
+forestfire-core = { version = "0.3.0", path = "../../crates/core" }
+forestfire-data = { version = "0.3.0", path = "../../crates/data" }
 
 [[bin]]
 name = "showcase"

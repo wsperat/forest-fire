@@ -17,6 +17,10 @@ The suite currently measures:
 
 - training time
 - prediction time
+- training micro-phases
+- prediction micro-phases
+- `make_moons` probability surfaces for classifier ensembles
+- one-dimensional regression prediction curves for regressor ensembles
 
 For prediction, the suite also includes:
 
@@ -39,10 +43,12 @@ Depending on the family, the benchmark scripts compare against:
 - XGBoost
 - CatBoost
 
-Important qualification:
+Important qualifications:
 
 - CatBoost is included for gradient boosting
 - CatBoost does not expose a direct random-forest benchmark mode, so the RF grid records it as unsupported there rather than pretending there is a like-for-like RF comparison
+- the prediction benchmark still uses the same backend set
+- but each backend is trained once per feature-count cell, after which only prediction is timed across the row grid
 
 ## Dataset design
 
@@ -78,6 +84,155 @@ The purpose of the grid is to separate two different scaling questions:
 - what happens as search width grows?
 
 Those are not the same pressure on a tree system.
+
+## Micro-benchmarks
+
+The grid benchmarks answer end-to-end questions.
+
+The micro-benchmarks answer a different question:
+
+- where is ForestFire itself spending the time?
+
+They are ForestFire-only by design. They do not compare against other
+libraries, because the point is to isolate ForestFire’s own bottlenecks rather
+than library-to-library competitiveness.
+
+### Training micro-benchmark
+
+The training micro-benchmark splits the fit path into three phases:
+
+- `table_build`
+- `fit_from_table`
+- `fit_end_to_end`
+
+What those mean:
+
+- `table_build`: training-side preprocessing only
+- `fit_from_table`: learner fit on an already-built `Table`
+- `fit_end_to_end`: the full public `train(X, y, ...)` path
+
+This lets you see how much of total training time is being spent in:
+
+- input normalization
+- binning / sparse-vs-dense table construction
+- the learner itself
+
+The training micro-benchmark still runs over a row/feature grid, but it uses a
+smaller default row range than the macro benchmark so fixed preprocessing
+overheads remain visible.
+
+### Prediction micro-benchmark
+
+The prediction micro-benchmark fixes training complexity and varies only
+prediction batch size.
+
+That separation is important, because otherwise a prediction benchmark is partly
+a training benchmark in disguise: changing the row count also changes the
+realized model.
+
+The prediction micro-benchmark therefore:
+
+1. trains one reference model at a fixed training row budget
+2. lowers it to an optimized runtime once
+3. serializes / reloads the compiled optimized artifact once
+4. benchmarks only the runtime prediction paths on varying batch sizes
+
+The prediction phases are:
+
+- `predict_base`
+- `predict_optimized`
+- `predict_compiled`
+
+What those mean:
+
+- `predict_base`: semantic `Model.predict(...)`
+- `predict_optimized`: lowered `OptimizedModel.predict(...)`
+- `predict_compiled`: deserialized compiled-artifact runtime
+
+That makes it easier to answer questions like:
+
+- is the optimized runtime faster once training complexity is held constant?
+- how much of the benefit survives compiled-artifact reload?
+- at what batch size does the optimized runtime start pulling away?
+
+## `make_moons` probability benchmark
+
+The grid and micro-benchmarks answer runtime questions.
+
+They do not show *what kind of classifier boundary each model actually learns*.
+
+For that, the suite now includes a dedicated `sklearn.datasets.make_moons`
+benchmark that focuses on a two-dimensional nonlinear classification problem
+where a probability surface is visually informative.
+
+The benchmark trains two ForestFire variants for each family:
+
+- ForestFire CART
+- ForestFire oblivious
+
+and compares them against the closest ensemble implementations in the other
+libraries:
+
+- scikit-learn
+- LightGBM
+- XGBoost
+- CatBoost for gradient boosting
+
+The purpose is different from the grid benchmarks:
+
+- show how confidently each model partitions the two-moons manifold
+- show whether the probability field is smooth, blocky, symmetric, or brittle
+- make the CART-vs-oblivious tradeoff visible for ForestFire directly
+
+The benchmark writes:
+
+- per-family probability-surface figures
+- per-family JSON results with train time, predict time, accuracy, and log loss
+- per-family markdown summaries
+
+Current plot outputs:
+
+- [Random Forest make_moons probabilities](benchmarks/moons_probabilities_random_forest.png)
+- [Gradient Boosting make_moons probabilities](benchmarks/moons_probabilities_gradient_boosting.png)
+
+![Random Forest make_moons probabilities](benchmarks/moons_probabilities_random_forest.png)
+
+![Gradient Boosting make_moons probabilities](benchmarks/moons_probabilities_gradient_boosting.png)
+
+## Regression curve benchmark
+
+The runtime grids answer scaling questions, and `make_moons` answers a visual
+classification question.
+
+They still do not show how the regressors behave on a simple nonlinear function
+where smoothness, bias, and local overfitting are easy to inspect directly.
+
+For that, the suite also includes a dedicated one-dimensional synthetic
+regression benchmark. It trains the supported random-forest and
+gradient-boosting regressors on a noisy nonlinear target, then plots each
+backend's prediction curve against the sampled training data.
+
+This benchmark is useful for a different class of comparison:
+
+- whether a model tracks the underlying shape smoothly or in blocky steps
+- whether a backend overshoots or flattens in sparse regions
+- whether ForestFire CART, randomized, and oblivious trees differ visibly in fit character
+- whether the boosted variants introduce sharper local corrections than the forest variants
+
+Like the `make_moons` benchmark, it writes one artifact set per ensemble family:
+
+- a rendered prediction-curve figure
+- a JSON results file with fit time, predict time, RMSE, and `R^2`
+- a markdown summary
+
+Current plot outputs:
+
+- [Random Forest regression curves](benchmarks/regression_curve_random_forest.png)
+- [Gradient Boosting regression curves](benchmarks/regression_curve_gradient_boosting.png)
+
+![Random Forest regression curves](benchmarks/regression_curve_random_forest.png)
+
+![Gradient Boosting regression curves](benchmarks/regression_curve_gradient_boosting.png)
 
 ## Complexity matching
 
@@ -122,15 +277,36 @@ The exact mapping depends on backend capabilities:
 
 ForestFire itself is still timed independently after the reference fit for training benchmarks. The reference fit exists only to establish the complexity target for that grid cell.
 
+That complexity-matching flow applies to training only.
+
+Prediction is now decoupled from fitting in a simpler way:
+
+- one fixed training dataset is chosen per feature-count cell
+- each backend is trained once on that fixed dataset
+- only inference calls are timed across the prediction row grid
+- training cost is no longer paid inside the prediction timing loop
+
 ## Tasks
 
 - `task benchmark-training-rf`
 - `task benchmark-training-gbm`
 - `task benchmark-prediction-rf`
 - `task benchmark-prediction-gbm`
+- `task benchmark-training-micro-rf`
+- `task benchmark-training-micro-gbm`
+- `task benchmark-prediction-micro-rf`
+- `task benchmark-prediction-micro-gbm`
+- `task benchmark-moons`
+- `task benchmark-regression-surface`
+- `task benchmark-micro`
 - `task benchmark`
 
-The umbrella `task benchmark` runs the four family-specific train/predict grids.
+The task split is:
+
+- `task benchmark`: cross-library end-to-end train/predict grids
+- `task benchmark-micro`: ForestFire-only phase breakdowns
+- `task benchmark-moons`: two-dimensional probability-surface comparison on `make_moons`
+- `task benchmark-regression-surface`: one-dimensional prediction-curve comparison on a synthetic regression task
 
 ## Output artifacts
 
@@ -140,10 +316,22 @@ For each family/problem pair, the scripts write:
 
 - `training_grid_results_<family>_<problem>.json`
 - `prediction_grid_results_<family>_<problem>.json`
+- `training_micro_results_<family>_<problem>.json`
+- `prediction_micro_results_<family>_<problem>.json`
 - `training_grid_<family>_<problem>.png`
 - `prediction_grid_<family>_<problem>.png`
+- `training_micro_<family>_<problem>.png`
+- `prediction_micro_<family>_<problem>.png`
 - `training_summary_<family>_<problem>.md`
 - `prediction_summary_<family>_<problem>.md`
+- `training_micro_summary_<family>_<problem>.md`
+- `prediction_micro_summary_<family>_<problem>.md`
+- `moons_results_<family>.json`
+- `moons_probabilities_<family>.png`
+- `moons_summary_<family>.md`
+- `regression_curve_results_<family>.json`
+- `regression_curve_<family>.png`
+- `regression_curve_summary_<family>.md`
 
 The summary markdown files are generated from the measured results and call out:
 
@@ -151,6 +339,13 @@ The summary markdown files are generated from the measured results and call out:
 - median measured time by backend
 - scaling from the smallest to the largest row count
 - optimized-vs-base ForestFire speedups where applicable
+
+For the micro-benchmarks, the generated summaries instead focus on:
+
+- median time per ForestFire phase
+- preprocessing share of end-to-end training
+- optimized / compiled speedups over semantic prediction
+- scaling from the smallest to the largest batch size
 
 Artifacts are updated incrementally as the grid runs, so long benchmark executions still leave behind partial plots, JSON, and summaries instead of producing only all-or-nothing output.
 
@@ -214,17 +409,16 @@ The leaf-budget matching helps here too, but it does not eliminate all policy di
 
 ### Prediction
 
-Prediction is where the base-vs-optimized ForestFire comparison matters most.
+Prediction is now a predict-only benchmark over a fixed set of already-fitted models.
 
-As row counts grow, the optimized model should be the line to watch. The interesting questions are:
+As row counts grow, the interesting questions are:
 
 - how early does optimized inference separate from the base model?
 - does that gap widen as the row count grows?
-- does it widen more for RF than for GBM?
+- does the gap widen more for RF than for GBM?
+- how do the non-ForestFire backends compare when their training cost is not part of the measurement?
 
-That is the clearest direct measure of whether the runtime-lowering work is paying off in the workloads the project actually cares about.
-
-Because the base forest models are now used to derive a matching leaf budget for the non-ForestFire backends, the prediction plots are also less likely to be distorted by one library serving much larger trees.
+That is a much cleaner direct measure of runtime prediction behavior, because the benchmark no longer hides inference behind per-cell training cost.
 
 ## Interpreting backend differences
 
@@ -236,7 +430,11 @@ A few differences are structural, not accidental:
 - ForestFire’s RF and GBM behavior includes design choices other libraries do not share, especially:
 canaries for tree-growth and GBM-stage stopping, explicit optimized runtime lowering, and unified binning semantics shared across training, serialization, and inference
 
-So not every gap should be interpreted as “faster code” or “slower code” in isolation. Sometimes it reflects a genuinely different model-building policy.
+That warning matters most for training.
+
+For prediction, the main interpretation question is now:
+
+- how much faster is each backend at pure inference once model fitting has been paid for already?
 
 ## Documentation and generated summaries
 

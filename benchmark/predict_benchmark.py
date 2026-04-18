@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from typing import Protocol, cast
 
 from common import (
     DEFAULT_FEATURE_GRID,
@@ -26,11 +27,16 @@ from common import (
 )
 
 
+class PredictModel(Protocol):
+    def predict(self, X: object) -> object: ...
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark random-forest or gradient-boosting prediction across a "
-            "row/column grid with learnable synthetic data."
+            "row/column grid. Models are trained once per feature-count cell, "
+            "then only prediction is timed across row counts."
         )
     )
     parser.add_argument("--output-dir", type=Path, default=Path("docs/benchmarks"))
@@ -48,6 +54,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rows-grid", nargs="+", type=int, default=DEFAULT_ROW_GRID)
     parser.add_argument(
         "--feature-grid", nargs="+", type=int, default=DEFAULT_FEATURE_GRID
+    )
+    parser.add_argument(
+        "--train-rows",
+        type=int,
+        default=None,
+        help=(
+            "Fixed training row count used to fit each backend once per "
+            "feature-count cell. Defaults to the largest value in --rows-grid."
+        ),
     )
     parser.add_argument("--n-estimators", type=int, default=1000)
     parser.add_argument("--max-features", type=str, default="sqrt")
@@ -82,98 +97,102 @@ def build_config(
 def main() -> None:
     args = parse_args()
     ensure_output_dir(args.output_dir)
+    train_rows = args.train_rows or max(args.rows_grid)
     log(
         "prediction benchmark grid start | "
         f"family={args.family} | problems={list(args.problems)} | "
-        f"rows={list(args.rows_grid)} | features={list(args.feature_grid)} | "
-        f"estimators={args.n_estimators} | physical_cores={args.physical_cores}"
+        f"train_rows={train_rows} | rows={list(args.rows_grid)} | "
+        f"features={list(args.feature_grid)} | estimators={args.n_estimators} | "
+        f"physical_cores={args.physical_cores}"
     )
 
     results: list[BenchmarkResult] = []
     for problem in args.problems:
         result_prefix = f"{args.family}_{problem}"
-        for rows in args.rows_grid:
-            for n_features in args.feature_grid:
-                config = build_config(args, problem, rows, n_features)
+        for n_features in args.feature_grid:
+            train_config = build_config(args, problem, train_rows, n_features)
+            log(
+                "training benchmark models once | "
+                f"family={train_config.family} | problem={problem} | "
+                f"train_rows={train_rows} | features={n_features}"
+            )
+            X_train, y_train = generate_dataset(
+                problem, train_rows, n_features, train_config.seed
+            )
+            log(
+                "reference fit | "
+                f"backend=forestfire | problem={problem} | "
+                f"train_rows={train_rows} | features={n_features}"
+            )
+            (
+                reference_model,
+                reference_max_leaves,
+                reference_n_estimators,
+            ) = forestfire_reference_fit(train_config, X_train, y_train)
+            benchmark_config = with_reference_complexity(
+                train_config, reference_max_leaves, reference_n_estimators
+            )
+
+            fitted_models: dict[str, object] = {}
+            backend_errors: dict[str, str] = {}
+            for backend, fitter in PREDICT_BACKEND_FITTERS.items():
                 log(
-                    "dataset generation | "
-                    f"family={config.family} | problem={problem} | "
+                    "fit once for prediction-only benchmark | "
+                    f"backend={backend} | problem={problem} | "
+                    f"train_rows={train_rows} | features={n_features}"
+                )
+                try:
+                    if backend == "forestfire":
+                        fitted_models[backend] = reference_model
+                    elif backend == "forestfire_optimized":
+                        optimize_cores = max(1, os.cpu_count() or 1)
+                        fitted_models[backend] = reference_model.optimize_inference(
+                            physical_cores=optimize_cores
+                        )
+                    elif (
+                        benchmark_config.family == "gradient_boosting"
+                        and benchmark_config.n_estimators == 0
+                    ):
+                        raise RuntimeError(
+                            "ForestFire stopped before the first boosting "
+                            "stage; no comparable non-ForestFire GBM fit exists."
+                        )
+                    else:
+                        fitted_models[backend] = fitter(
+                            benchmark_config, X_train, y_train
+                        )
+                except Exception as exc:
+                    backend_errors[backend] = str(exc)
+
+            for rows in args.rows_grid:
+                predict_config = build_config(args, problem, rows, n_features)
+                log(
+                    "prediction dataset generation | "
+                    f"family={predict_config.family} | problem={problem} | "
                     f"rows={rows} | features={n_features}"
                 )
-                X, y = generate_dataset(problem, rows, n_features, config.seed)
-                log(
-                    "reference fit | "
-                    f"backend=forestfire | problem={problem} | "
-                    f"rows={rows} | features={n_features}"
-                )
-                (
-                    reference_model,
-                    reference_max_leaves,
-                    reference_n_estimators,
-                ) = forestfire_reference_fit(config, X, y)
-                log(
-                    "reference complexity | "
-                    f"problem={problem} | rows={rows} | "
-                    f"features={n_features} | max_leaves={reference_max_leaves} | "
-                    f"trained_trees={reference_n_estimators}"
-                )
-                benchmark_config = with_reference_complexity(
-                    config, reference_max_leaves, reference_n_estimators
+                X_predict, _ = generate_dataset(
+                    problem,
+                    rows,
+                    n_features,
+                    combo_seed(args.seed + 1, problem, rows, n_features),
                 )
 
-                for backend, fitter in PREDICT_BACKEND_FITTERS.items():
+                for backend in PREDICT_BACKEND_FITTERS:
                     log(
-                        "fit+predict | "
+                        "predict-only | "
                         f"backend={backend} | problem={problem} | "
                         f"rows={rows} | features={n_features}"
                     )
-                    try:
-                        if backend == "forestfire":
-                            model = reference_model
-                        elif backend == "forestfire_optimized":
-                            optimize_cores = max(1, os.cpu_count() or 1)
-                            model = reference_model.optimize_inference(
-                                physical_cores=optimize_cores
-                            )
-                        elif (
-                            benchmark_config.family == "gradient_boosting"
-                            and benchmark_config.n_estimators == 0
-                        ):
-                            raise RuntimeError(
-                                "ForestFire stopped before the first boosting "
-                                "stage; no comparable non-ForestFire GBM fit exists."
-                            )
-                        else:
-                            model = fitter(benchmark_config, X, y)
-                        predict_seconds = average_runtime(
-                            lambda: model.predict(X),
-                            benchmark_config.warmup_runs,
-                            benchmark_config.measurement_runs,
-                        )
+                    if backend in backend_errors:
+                        note = backend_errors[backend]
                         result = BenchmarkResult(
                             benchmark="prediction",
                             backend=backend,
                             family=benchmark_config.family,
                             problem=benchmark_config.problem,
                             n_estimators=benchmark_config.n_estimators,
-                            rows=benchmark_config.rows,
-                            n_features=benchmark_config.n_features,
-                            max_depth=benchmark_config.max_depth,
-                            min_samples_split=benchmark_config.min_samples_split,
-                            min_samples_leaf=benchmark_config.min_samples_leaf,
-                            max_features=benchmark_config.max_features,
-                            reference_max_leaves=reference_max_leaves,
-                            predict_seconds=predict_seconds,
-                        )
-                    except Exception as exc:
-                        note = str(exc)
-                        result = BenchmarkResult(
-                            benchmark="prediction",
-                            backend=backend,
-                            family=benchmark_config.family,
-                            problem=benchmark_config.problem,
-                            n_estimators=benchmark_config.n_estimators,
-                            rows=benchmark_config.rows,
+                            rows=predict_config.rows,
                             n_features=benchmark_config.n_features,
                             max_depth=benchmark_config.max_depth,
                             min_samples_split=benchmark_config.min_samples_split,
@@ -187,6 +206,46 @@ def main() -> None:
                             ),
                             note=note,
                         )
+                    else:
+                        model = fitted_models[backend]
+                        try:
+                            predict_seconds = average_runtime(
+                                lambda: cast(PredictModel, model).predict(X_predict),
+                                benchmark_config.warmup_runs,
+                                benchmark_config.measurement_runs,
+                            )
+                            result = BenchmarkResult(
+                                benchmark="prediction",
+                                backend=backend,
+                                family=benchmark_config.family,
+                                problem=benchmark_config.problem,
+                                n_estimators=benchmark_config.n_estimators,
+                                rows=predict_config.rows,
+                                n_features=benchmark_config.n_features,
+                                max_depth=benchmark_config.max_depth,
+                                min_samples_split=benchmark_config.min_samples_split,
+                                min_samples_leaf=benchmark_config.min_samples_leaf,
+                                max_features=benchmark_config.max_features,
+                                reference_max_leaves=reference_max_leaves,
+                                predict_seconds=predict_seconds,
+                            )
+                        except Exception as exc:
+                            result = BenchmarkResult(
+                                benchmark="prediction",
+                                backend=backend,
+                                family=benchmark_config.family,
+                                problem=benchmark_config.problem,
+                                n_estimators=benchmark_config.n_estimators,
+                                rows=predict_config.rows,
+                                n_features=benchmark_config.n_features,
+                                max_depth=benchmark_config.max_depth,
+                                min_samples_split=benchmark_config.min_samples_split,
+                                min_samples_leaf=benchmark_config.min_samples_leaf,
+                                max_features=benchmark_config.max_features,
+                                reference_max_leaves=reference_max_leaves,
+                                status="error",
+                                note=str(exc),
+                            )
                     print(format_result_line(result))
                     results.append(result)
 
@@ -204,7 +263,10 @@ def main() -> None:
                     metric="predict_seconds",
                     row_grid=args.rows_grid,
                     feature_grid=args.feature_grid,
-                    title_prefix=f"Prediction time | {args.family} | {problem}",
+                    title_prefix=(
+                        "Prediction time (predict-only) | "
+                        f"{args.family} | {problem} | trained on {train_rows} rows"
+                    ),
                     ylabel="predict time (seconds)",
                     output_path=args.output_dir
                     / f"prediction_grid_{result_prefix}.png",
@@ -216,7 +278,9 @@ def main() -> None:
                     output_path=args.output_dir
                     / f"prediction_summary_{result_prefix}.md",
                 )
-                cleanup_large_objects(X, y)
+                cleanup_large_objects(X_predict)
+
+            cleanup_large_objects(X_train, y_train, *fitted_models.values())
 
         log(f"writing prediction artifacts | problem={problem}")
         family_problem_results = [
@@ -233,7 +297,10 @@ def main() -> None:
             metric="predict_seconds",
             row_grid=args.rows_grid,
             feature_grid=args.feature_grid,
-            title_prefix=f"Prediction time | {args.family} | {problem}",
+            title_prefix=(
+                "Prediction time (predict-only) | "
+                f"{args.family} | {problem} | trained on {train_rows} rows"
+            ),
             ylabel="predict time (seconds)",
             output_path=args.output_dir / f"prediction_grid_{result_prefix}.png",
         )

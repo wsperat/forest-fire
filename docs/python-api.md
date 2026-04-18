@@ -6,6 +6,7 @@ The Python surface is centered on:
 - `train(...)`
 - `Model`
 - `OptimizedModel`
+- sklearn-compatible wrappers in `forestfire.tree`, `forestfire.forest`, and `forestfire.gbm`
 
 ## Training
 
@@ -19,6 +20,7 @@ train(
     criterion="auto",
     canaries=2,
     bins="auto",
+    histogram_bins=None,
     physical_cores=None,
     max_depth=None,
     min_samples_split=None,
@@ -31,6 +33,8 @@ train(
     bootstrap=False,
     top_gradient_fraction=None,
     other_gradient_fraction=None,
+    missing_value_strategy=None,
+    filter=None,
 )
 ```
 
@@ -79,9 +83,66 @@ Canaries are shuffled copies of already-preprocessed features used for automatic
 
 Current stopping behavior:
 
-- standard trees stop at the current node
-- oblivious trees stop the remaining depth growth
-- `gbm` stops adding new stages when the first/root split that would be taken is a canary
+- standard trees stop at the current node when no acceptable real split survives canary competition
+- oblivious trees stop the remaining depth growth when no acceptable real level-split survives canary competition
+- `gbm` stops adding new stages when no acceptable real root split survives canary competition
+
+Canaries are active for `dt` and `gbm`.
+
+Random forests are the exception:
+
+- `rf` deliberately ignores canaries during tree training
+- so `canaries` and `filter` do not affect random-forest growth policy
+
+#### `filter`
+
+`filter` controls how strict canary competition is once split candidates have been scored and ranked.
+
+Accepted forms:
+
+- `None`
+- positive integer
+- float in `[0, 1)`
+
+The ranking rule is:
+
+1. score split candidates as usual
+2. sort them from best to worst
+3. look only inside the allowed top window
+4. choose the best real feature inside that window
+5. if the window contains only canaries, stop growth under the usual canary rule
+
+`filter=None` is the default strict policy and is equivalent to `filter=1`:
+
+- only the single best-ranked candidate is eligible
+- if that candidate is a canary, the node stops
+
+If `filter` is an integer `n`:
+
+- the chosen real feature must appear within the top `n` scored candidates
+- canaries are still allowed to occupy earlier ranks
+- the selected split is the highest-ranked real split inside that top-`n` window
+
+Example:
+
+- `filter=3` means “after sorting all candidates, ignore canaries if needed, but only within the top 3 ranked candidates”
+
+If `filter` is a float `alpha` in `[0, 1)`:
+
+- ForestFire converts it into a top-window fraction of `1 - alpha`
+- if there are `k` scored candidates, the allowed window size is `ceil((1 - alpha) * k)`
+- the chosen split is again the highest-ranked real split inside that window
+
+Example:
+
+- `filter=0.95` means “look only at the top 5% of ranked candidates”
+
+A few practical details matter:
+
+- the window is computed over scored split candidates, not just over raw input columns
+- the exact candidate count can vary by algorithm and by node because `max_features`, tree type, and node-local feasibility all affect how many candidates are actually scorable
+- for oblivious trees, the competition happens at the next shared level-split
+- for `gbm`, the same logic is applied at the root of the next stage, and if no real split survives inside the allowed window, that whole stage is discarded and boosting stops
 
 #### `bins`
 
@@ -95,6 +156,35 @@ Current `auto` behavior:
 - per numeric feature, ForestFire picks the highest power of two up to `512`
 - each realized bin must contain at least two rows
 - the chosen count is capped by the number of distinct observed values
+
+`bins` applies when ForestFire is preprocessing raw training data into a
+`Table`. It controls the stored numeric representation of that table.
+
+#### `histogram_bins`
+
+Current values:
+
+- `None`
+- `"auto"`
+- integer `1..=128`
+
+Semantics:
+
+- `None`: reuse the numeric bins already present in the input training table
+- `"auto"` or an integer: rebuild the numeric training view at that resolution
+  before split search
+
+This is the estimator-facing control for histogram width. It is separate from
+`bins`:
+
+- `bins` controls how a raw Python input is preprocessed into a training table
+- `histogram_bins` controls the numeric resolution used by split-search histograms
+
+That distinction matters when:
+
+- you pass an already-built `Table` to `train(...)`
+- you want one stored table representation but a different histogram resolution
+  during fitting
 
 #### `physical_cores`
 
@@ -130,6 +220,40 @@ Only meaningful for `algorithm="gbm"`.
 - `top_gradient_fraction` keeps the largest-gradient rows
 - `other_gradient_fraction` samples additional rows from the remainder
 
+#### `missing_value_strategy`
+
+Controls how split search handles features with missing values.
+
+Accepted forms:
+
+- `"heuristic"`
+- `"optimal"`
+- `{"col_1": "heuristic", "col_2": "optimal", ...}`
+- `{"f0": "heuristic", "f1": "optimal", ...}`
+
+Semantics:
+
+- `"heuristic"`: choose the best split using only observed values first, then evaluate whether the missing rows should go left or right for that chosen split
+- `"optimal"`: evaluate missing-left vs missing-right while scoring every candidate split, then choose the overall best combination of split plus missing routing
+- dictionary form: apply the chosen strategy per feature, defaulting unspecified features to `"heuristic"`
+
+The dictionary keys use semantic feature indices:
+
+- `"col_1"` means feature index `0`
+- `"col_2"` means feature index `1`
+- `"f0"` means feature index `0`
+- `"f1"` means feature index `1`
+
+Tradeoff:
+
+- `"heuristic"` is much faster and is the default
+- `"optimal"` can be substantially slower because it expands the split search
+
+Current implementation note:
+
+- the strategy setting is implemented for the standard first-order tree training paths
+- the second-order boosting path still follows the existing missing-value implementation
+
 ## Supported input types
 
 - NumPy arrays
@@ -151,6 +275,111 @@ The key API distinction is:
 - inference should normally use raw inputs directly
 
 That means `Table` is a training-oriented preprocessing container, not the preferred prediction input type.
+
+## Sklearn wrappers
+
+ForestFire also exposes sklearn-compatible estimators on top of the Rust
+backend.
+
+Import paths:
+
+- `from forestfire.tree import ...`
+- `from forestfire.forest import ...`
+- `from forestfire.gbm import ...`
+
+Examples:
+
+```python
+from forestfire.tree import ObliviousRegressor
+from forestfire.forest import CARTRandomForestRegressor
+from forestfire.gbm import ExtraGBMRegressor
+
+tree = ObliviousRegressor(max_depth=4).fit(X, y)
+forest = CARTRandomForestRegressor(n_estimators=200).fit(X, y)
+gbm = ExtraGBMRegressor(n_estimators=100, learning_rate=0.05).fit(X, y)
+```
+
+Available wrappers:
+
+- `forestfire.tree`
+- `ID3Classifier`
+- `C45Classifier`
+- `CARTClassifier`
+- `ExtraTreeClassifier`
+- `ObliviousTreeClassifier`
+- `CARTRegressor`
+- `ExtraTreeRegressor`
+- `ObliviousTreeRegressor`
+
+- `forestfire.forest`
+- `ID3RandomForestClassifier`
+- `C45RandomForestClassifier`
+- `CARTRandomForestClassifier`
+- `ExtraRandomForestClassifier`
+- `ObliviousRandomForestClassifier`
+- `CARTRandomForestRegressor`
+- `ExtraRandomForestRegressor`
+- `ObliviousRandomForestRegressor`
+
+- `forestfire.gbm`
+- `CARTGBMClassifier`
+- `ExtraGBMClassifier`
+- `ObliviousGBMClassifier`
+- `CARTGBMRegressor`
+- `ExtraGBMRegressor`
+- `ObliviousGBMRegressor`
+
+Sklearn wrapper semantics:
+
+- they call the same Rust-backed `train(...)` API under the hood
+- `fit(...)`, `predict(...)`, and classifier `predict_proba(...)` are supported
+- fitted estimators expose `model_`
+- classifiers expose `classes_`
+- fitted estimators expose `n_features_in_` when the input shape is available
+- `get_params(...)` and `set_params(...)` are supported
+- `sample_weight` is currently rejected
+
+Wrapper defaults intentionally differ from raw `train(...)` in one place:
+
+- sklearn wrappers default to `canaries=0`
+
+That avoids canary-based early stopping surprising users on small sklearn-style
+toy datasets.
+
+## Missing values
+
+ForestFire accepts the common missing-value representations that usually appear
+through those inputs:
+
+- Python `None`
+- floating-point `NaN`
+- pandas/NumPy `NaN`
+- `polars` null values
+
+Training and prediction treat those values as missing rather than rejecting
+them.
+
+The split semantics are:
+
+- each feature reserves a separate missing bin
+- split search ignores that bin when choosing observed thresholds or branch groupings
+- the exact missing-row search behavior then depends on `missing_value_strategy`
+- if a feature had no missing rows at a learned split, a later missing value falls back to the node prediction instead of pretending that the feature had seen a trained missing branch
+
+Under `missing_value_strategy="heuristic"`:
+
+- choose the split from observed values first
+- then decide whether missing rows should go left or right for that chosen split
+
+Under `missing_value_strategy="optimal"`:
+
+- for each candidate split, evaluate both missing-left and missing-right
+- keep the best joint combination of split and missing routing
+
+That fallback is:
+
+- majority class or node probabilities for classification
+- node mean prediction for regression
 
 ## Tables and input handling
 
@@ -186,6 +415,9 @@ That combination is deliberate:
 - forcing at least two rows per realized bin avoids wasting domain size on near-empty bins
 - boolean storage keeps true binary columns cheap during both training and inference
 
+Each dense feature also reserves one extra bin for missing values so split
+search can handle missingness without rebucketing the data at every node.
+
 ### `SparseTable`
 
 `SparseTable` is binary-only. Internally it stores, per feature, the row positions where the value is `1`, so memory usage scales with the positive entries rather than the full dense shape.
@@ -204,6 +436,15 @@ This is useful because many sparse inputs are really presence/absence matrices. 
 ## Optimized inference
 
 `optimize_inference(...)` returns an `OptimizedModel` that preserves model semantics while lowering execution into a runtime-oriented representation.
+
+Python signature:
+
+```python
+optimized = model.optimize_inference(
+    physical_cores=None,
+    missing_features=None,
+)
+```
 
 Key runtime changes:
 
@@ -227,6 +468,34 @@ The runtime pipeline is:
 7. score rows through scalar or batch-oriented execution
 
 That is why optimized inference can reduce total latency even when the tree traversal itself is only moderately faster: it often avoids preprocessing columns that were never going to be used.
+
+### Missing checks in optimized runtimes
+
+By default, optimized runtimes preserve missing-aware inference for every used
+feature:
+
+```python
+optimized = model.optimize_inference()
+```
+
+If you know that only some semantic feature indices may be missing at
+prediction time, pass them explicitly:
+
+```python
+optimized = model.optimize_inference(missing_features=[0, 4, 9])
+```
+
+Semantics:
+
+- `missing_features=None`: keep missing checks for every used feature
+- `missing_features=[...]`: only optimized nodes that split on those semantic feature indices keep explicit missing handling
+- `missing_features=[]`: omit missing checks entirely in the optimized runtime
+
+This is a runtime-only optimization knob. Use it only when you control
+inference inputs and know which columns can actually be missing. Otherwise, the
+default is the safe choice. If an excluded feature later arrives missing, the
+optimized model will not execute the learned missing-specific branch for that
+split.
 
 ### Using runtime metadata
 

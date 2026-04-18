@@ -11,14 +11,14 @@ This summary is generated from the measured benchmark grid rather than being han
 
 ## Median measured time
 
-- `forestfire` median: `32.635071s`
-- `lightgbm` median: `75.119510s`
-- `sklearn` median: `19.479171s`
-- `xgboost` median: `103.549510s`
+- `forestfire` median: `26.816250s`
+- `lightgbm` median: `79.917237s`
+- `sklearn` median: `17.430685s`
+- `xgboost` median: `106.917697s`
 
 ## Scaling from smallest to largest row count
 
-- `forestfire` median growth ratio: `171.23x`
-- `lightgbm` median growth ratio: `31.48x`
-- `sklearn` median growth ratio: `135.06x`
-- `xgboost` median growth ratio: `24.07x`
+- `forestfire` median growth ratio: `168.78x`
+- `lightgbm` median growth ratio: `29.71x`
+- `sklearn` median growth ratio: `132.09x`
+- `xgboost` median growth ratio: `19.27x`

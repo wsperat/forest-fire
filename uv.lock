@@ -12,7 +12,7 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "forestfire",
+    "forestfire-ml",
     "forestfire-workspace",
 ]
 
@@ -419,17 +419,19 @@ wheels = [
 ]
 
 [[package]]
-name = "forestfire"
+name = "forestfire-ml"
 version = "0.4.0"
 source = { editable = "bindings/python" }
 dependencies = [
     { name = "numpy" },
-    { name = "pyarrow" },
 ]
 
 [package.optional-dependencies]
 polars = [
     { name = "polars" },
+]
+pyarrow = [
+    { name = "pyarrow" },
 ]
 
 [package.dev-dependencies]
@@ -444,9 +446,9 @@ dev = [
 requires-dist = [
     { name = "numpy", specifier = ">=2,<3" },
     { name = "polars", marker = "extra == 'polars'", specifier = ">=1,<2" },
-    { name = "pyarrow", specifier = ">=19,<20" },
+    { name = "pyarrow", marker = "extra == 'pyarrow'", specifier = ">=19,<20" },
 ]
-provides-extras = ["polars"]
+provides-extras = ["polars", "pyarrow"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{FeaturePreprocessing, Model, NumericBinBoundary};
+use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary};
 use forestfire_data::{DenseTable, NumericBins};
 
 fn and_table() -> DenseTable {
@@ -23,22 +23,47 @@ fn criterion_choice_table() -> DenseTable {
     DenseTable::with_options(
         vec![
             vec![0.0, 1.0],
-            vec![4.0, 1.0],
-            vec![4.0, 0.0],
-            vec![0.0, 1.0],
-            vec![5.0, 2.0],
-            vec![2.0, 4.0],
-            vec![1.0, 2.0],
+            vec![0.0, 0.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
         ],
-        vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        vec![0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         0,
-        NumericBins::Fixed(8),
+        NumericBins::Auto,
     )
     .unwrap()
 }
 
 fn canary_target_table() -> DenseTable {
     let x: Vec<Vec<f64>> = (0..8).map(|value| vec![value as f64]).collect();
+    let probe = DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
+    let canary_index = probe.n_features();
+    let mut observed_bins = (0..probe.n_rows())
+        .map(|row_idx| probe.binned_value(canary_index, row_idx))
+        .collect::<Vec<_>>();
+    observed_bins.sort_unstable();
+    observed_bins.dedup();
+    let threshold = observed_bins[observed_bins.len() / 2];
+    let y = (0..probe.n_rows())
+        .map(|row_idx| {
+            if probe.binned_value(canary_index, row_idx) >= threshold {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+
+    DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
+}
+
+fn canary_target_table_with_noise_feature() -> DenseTable {
+    let x: Vec<Vec<f64>> = (0..8)
+        .map(|value| vec![value as f64, (value % 2) as f64])
+        .collect();
     let probe = DenseTable::with_options(x.clone(), vec![0.0; 8], 1, NumericBins::Auto).unwrap();
     let canary_index = probe.n_features();
     let mut observed_bins = (0..probe.n_rows())
@@ -196,7 +221,7 @@ fn cart_can_choose_between_gini_and_entropy() {
         DecisionTreeAlgorithm::Cart,
         Criterion::Gini,
         Parallelism::sequential(),
-        options,
+        options.clone(),
     )
     .unwrap();
     let entropy_model = train_classifier(
@@ -204,7 +229,7 @@ fn cart_can_choose_between_gini_and_entropy() {
         DecisionTreeAlgorithm::Cart,
         Criterion::Entropy,
         Parallelism::sequential(),
-        options,
+        options.clone(),
     )
     .unwrap();
 
@@ -256,6 +281,42 @@ fn stops_oblivious_tree_growth_when_a_canary_wins() {
 }
 
 #[test]
+fn top_n_canary_filter_can_choose_real_classifier_split() {
+    let table = canary_target_table();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            canary_filter: CanaryFilter::TopN(2),
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let preds = model.predict_table(&table);
+
+    assert!(preds.iter().any(|pred| *pred != preds[0]));
+}
+
+#[test]
+fn top_fraction_canary_filter_can_choose_real_classifier_split() {
+    let table = canary_target_table_with_noise_feature();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            canary_filter: CanaryFilter::TopFraction(0.5),
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let preds = model.predict_table(&table);
+
+    assert!(preds.iter().any(|pred| *pred != preds[0]));
+}
+
+#[test]
 fn manually_built_classifier_models_serialize_for_each_tree_type() {
     let preprocessing = vec![
         FeaturePreprocessing::Binary,
@@ -270,6 +331,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     upper_bound: 10.0,
                 },
             ],
+            missing_bin: 128,
         },
     ];
     let options = DecisionTreeOptions::default();
@@ -295,6 +357,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     feature_index: 1,
                     fallback_class_index: 0,
                     branches: vec![(0, 0), (127, 1)],
+                    missing_child: None,
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.24,
@@ -303,7 +366,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,
@@ -328,6 +391,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     feature_index: 1,
                     fallback_class_index: 0,
                     branches: vec![(0, 0), (127, 1)],
+                    missing_child: None,
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.24,
@@ -336,7 +400,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,
@@ -360,6 +424,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::BinarySplit {
                     feature_index: 0,
                     threshold_bin: 0,
+                    missing_direction: crate::tree::shared::MissingBranchDirection::Node,
                     left_child: 0,
                     right_child: 1,
                     sample_count: 5,
@@ -370,7 +435,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,
@@ -394,6 +459,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::BinarySplit {
                     feature_index: 0,
                     threshold_bin: 0,
+                    missing_direction: crate::tree::shared::MissingBranchDirection::Node,
                     left_child: 0,
                     right_child: 1,
                     sample_count: 5,
@@ -404,7 +470,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             ],
             root: 2,
         },
-        options,
+        options: options.clone(),
         num_features: 2,
         feature_preprocessing: preprocessing.clone(),
         training_canaries: 0,
@@ -417,6 +483,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             splits: vec![ObliviousSplit {
                 feature_index: 0,
                 threshold_bin: 0,
+                missing_directions: Vec::new(),
                 sample_count: 4,
                 impurity: 0.5,
                 gain: 0.25,
@@ -442,6 +509,53 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
         assert!(json.contains(&format!("\"tree_type\":\"{tree_type}\"")));
         assert!(json.contains("\"task\":\"classification\""));
     }
+}
+
+#[test]
+fn cart_classifier_assigns_training_missing_values_to_best_child() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+
+    let model = train_cart(&table).unwrap();
+
+    assert_eq!(
+        model.predict_table(&table),
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    );
+    let wrapped = Model::DecisionTreeClassifier(model.clone());
+    assert_eq!(
+        wrapped.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        vec![0.0]
+    );
+}
+
+#[test]
+fn cart_classifier_defaults_unseen_missing_to_node_majority() {
+    let table = DenseTable::with_canaries(
+        vec![vec![0.0], vec![0.0], vec![1.0]],
+        vec![0.0, 0.0, 1.0],
+        0,
+    )
+    .unwrap();
+
+    let model = train_cart(&table).unwrap();
+
+    let wrapped = Model::DecisionTreeClassifier(model.clone());
+    assert_eq!(
+        wrapped.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        vec![0.0]
+    );
 }
 
 fn table_targets(table: &dyn TableAccess) -> Vec<f64> {

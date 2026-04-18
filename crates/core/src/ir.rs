@@ -283,7 +283,67 @@ pub struct Determinism {
 pub struct PreprocessingSection {
     pub included_in_model: bool,
     pub numeric_binning: NumericBinning,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categorical: Option<CategoricalTransformSection>,
     pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalTransformSection {
+    pub raw_feature_count: usize,
+    pub raw_features: Vec<InputFeature>,
+    pub strategy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub categorical_features: Option<Vec<usize>>,
+    pub target_smoothing: f64,
+    pub encoder: CategoricalEncoder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CategoricalEncoder {
+    Table {
+        column_names: Vec<String>,
+        numeric_features: Vec<usize>,
+        dummy_specs: Vec<CategoricalDummyFeature>,
+        target_specs: Vec<CategoricalTargetFeature>,
+    },
+    Fisher {
+        column_names: Vec<String>,
+        passthrough_features: Vec<usize>,
+        fisher_specs: Vec<CategoricalFisherFeature>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalDummyFeature {
+    pub feature_index: usize,
+    pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalTargetFeature {
+    pub feature_index: usize,
+    pub priors: Vec<f64>,
+    pub mapping: Vec<CategoricalMappingEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalFisherFeature {
+    pub feature_index: usize,
+    pub mapping: Vec<CategoricalRankEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalMappingEntry {
+    pub category: String,
+    pub encoded: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CategoricalRankEntry {
+    pub category: String,
+    pub rank: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -603,7 +663,7 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
                     criterion,
                     feature_preprocessing.clone(),
                     num_features,
-                    options,
+                    options.clone(),
                     training_canaries,
                     deserialized_class_labels.clone(),
                     tree,
@@ -634,15 +694,13 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
             .trees
             .into_iter()
             .map(|tree| {
-                single_model_from_ir_parts(
-                    task,
+                boosted_tree_model_from_ir_parts(
                     tree_type,
                     criterion,
                     feature_preprocessing.clone(),
                     num_features,
-                    options,
+                    options.clone(),
                     training_canaries,
-                    deserialized_class_labels.clone(),
                     tree,
                 )
             })
@@ -686,6 +744,84 @@ pub(crate) fn model_from_ir(ir: ModelPackageIr) -> Result<Model, IrError> {
         deserialized_class_labels,
         tree,
     )
+}
+
+fn boosted_tree_model_from_ir_parts(
+    tree_type: TreeType,
+    criterion: Criterion,
+    feature_preprocessing: Vec<FeaturePreprocessing>,
+    num_features: usize,
+    options: DecisionTreeOptions,
+    training_canaries: usize,
+    tree: TreeDefinition,
+) -> Result<Model, IrError> {
+    match (tree_type, tree) {
+        (
+            TreeType::Cart | TreeType::Randomized,
+            TreeDefinition::NodeTree {
+                nodes,
+                root_node_id,
+                ..
+            },
+        ) => Ok(Model::DecisionTreeRegressor(
+            DecisionTreeRegressor::from_ir_parts(
+                match tree_type {
+                    TreeType::Cart => RegressionTreeAlgorithm::Cart,
+                    TreeType::Randomized => RegressionTreeAlgorithm::Randomized,
+                    _ => unreachable!(),
+                },
+                criterion,
+                RegressionTreeStructure::Standard {
+                    nodes: rebuild_regressor_nodes(nodes)?,
+                    root: root_node_id,
+                },
+                RegressionTreeOptions {
+                    max_depth: options.max_depth,
+                    min_samples_split: options.min_samples_split,
+                    min_samples_leaf: options.min_samples_leaf,
+                    max_features: None,
+                    random_seed: 0,
+                    missing_value_strategies: Vec::new(),
+                    canary_filter: crate::CanaryFilter::default(),
+                },
+                num_features,
+                feature_preprocessing,
+                training_canaries,
+            ),
+        )),
+        (TreeType::Oblivious, TreeDefinition::ObliviousLevels { levels, leaves, .. }) => {
+            let leaf_sample_counts = rebuild_leaf_sample_counts(&leaves)?;
+            let leaf_variances = rebuild_leaf_variances(&leaves)?;
+            Ok(Model::DecisionTreeRegressor(
+                DecisionTreeRegressor::from_ir_parts(
+                    RegressionTreeAlgorithm::Oblivious,
+                    criterion,
+                    RegressionTreeStructure::Oblivious {
+                        splits: rebuild_regressor_oblivious_splits(levels)?,
+                        leaf_values: rebuild_regressor_leaf_values(leaves)?,
+                        leaf_sample_counts,
+                        leaf_variances,
+                    },
+                    RegressionTreeOptions {
+                        max_depth: options.max_depth,
+                        min_samples_split: options.min_samples_split,
+                        min_samples_leaf: options.min_samples_leaf,
+                        max_features: None,
+                        random_seed: 0,
+                        missing_value_strategies: Vec::new(),
+                        canary_filter: crate::CanaryFilter::default(),
+                    },
+                    num_features,
+                    feature_preprocessing,
+                    training_canaries,
+                ),
+            ))
+        }
+        (_, tree) => Err(IrError::UnsupportedRepresentation(match tree {
+            TreeDefinition::NodeTree { .. } => "node_tree".to_string(),
+            TreeDefinition::ObliviousLevels { .. } => "oblivious_levels".to_string(),
+        })),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -788,6 +924,8 @@ fn single_model_from_ir_parts(
                     min_samples_leaf: options.min_samples_leaf,
                     max_features: None,
                     random_seed: 0,
+                    missing_value_strategies: Vec::new(),
+                    canary_filter: crate::CanaryFilter::default(),
                 },
                 num_features,
                 feature_preprocessing,
@@ -817,6 +955,8 @@ fn single_model_from_ir_parts(
                         min_samples_leaf: options.min_samples_leaf,
                         max_features: None,
                         random_seed: 0,
+                        missing_value_strategies: Vec::new(),
+                        canary_filter: crate::CanaryFilter::default(),
                     },
                     num_features,
                     feature_preprocessing,
@@ -917,6 +1057,8 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         min_samples_leaf: training.min_samples_leaf.unwrap_or(1),
         max_features: None,
         random_seed: 0,
+        missing_value_strategies: Vec::new(),
+        canary_filter: crate::CanaryFilter::default(),
     }
 }
 
@@ -939,6 +1081,11 @@ fn feature_preprocessing_from_ir(
                 })?;
                 *slot = Some(FeaturePreprocessing::Numeric {
                     bin_boundaries: boundaries.clone(),
+                    missing_bin: boundaries
+                        .iter()
+                        .map(|boundary| boundary.bin)
+                        .max()
+                        .map_or(0, |bin| bin.saturating_add(1)),
                 });
             }
             FeatureBinning::Binary { feature_index } => {
@@ -1046,6 +1193,7 @@ fn rebuild_classifier_nodes(
                     ClassifierTreeNode::BinarySplit {
                         feature_index,
                         threshold_bin,
+                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
                         left_child: children.left,
                         right_child: children.right,
                         sample_count: stats.sample_count,
@@ -1076,6 +1224,7 @@ fn rebuild_classifier_nodes(
                             .into_iter()
                             .map(|branch| (branch.bin, branch.child))
                             .collect(),
+                        missing_child: None,
                         sample_count: stats.sample_count,
                         impurity: stats.impurity.unwrap_or(0.0),
                         gain: stats.gain.unwrap_or(0.0),
@@ -1129,6 +1278,8 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
                     RegressionNode::BinarySplit {
                         feature_index,
                         threshold_bin,
+                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
+                        missing_value: 0.0,
                         left_child: children.left,
                         right_child: children.right,
                         sample_count: stats.sample_count,
@@ -1161,6 +1312,7 @@ fn rebuild_classifier_oblivious_splits(
             } => ClassifierObliviousSplit {
                 feature_index,
                 threshold_bin,
+                missing_directions: Vec::new(),
                 sample_count: level.stats.sample_count,
                 impurity: level.stats.impurity.unwrap_or(0.0),
                 gain: level.stats.gain.unwrap_or(0.0),
@@ -1168,6 +1320,7 @@ fn rebuild_classifier_oblivious_splits(
             ObliviousSplit::BooleanTest { feature_index, .. } => ClassifierObliviousSplit {
                 feature_index,
                 threshold_bin: 0,
+                missing_directions: Vec::new(),
                 sample_count: level.stats.sample_count,
                 impurity: level.stats.impurity.unwrap_or(0.0),
                 gain: level.stats.gain.unwrap_or(0.0),
@@ -1396,7 +1549,7 @@ fn preprocessing(model: &Model) -> PreprocessingSection {
         .iter()
         .enumerate()
         .map(|(feature_index, preprocessing)| match preprocessing {
-            FeaturePreprocessing::Numeric { bin_boundaries } => FeatureBinning::Numeric {
+            FeaturePreprocessing::Numeric { bin_boundaries, .. } => FeatureBinning::Numeric {
                 feature_index,
                 boundaries: bin_boundaries.clone(),
             },
@@ -1410,6 +1563,7 @@ fn preprocessing(model: &Model) -> PreprocessingSection {
             kind: "rank_bin_128".to_string(),
             features,
         },
+        categorical: None,
         notes: "Numeric features use serialized training-time rank bins. Binary features are serialized as booleans. Missing values and categorical encodings are not implemented in IR v1."
             .to_string(),
     }
@@ -1513,7 +1667,7 @@ pub(crate) fn threshold_upper_bound(
     threshold_bin: u16,
 ) -> Option<f64> {
     match preprocessing.get(feature_index)? {
-        FeaturePreprocessing::Numeric { bin_boundaries } => bin_boundaries
+        FeaturePreprocessing::Numeric { bin_boundaries, .. } => bin_boundaries
             .iter()
             .find(|boundary| boundary.bin == threshold_bin)
             .map(|boundary| boundary.upper_bound),

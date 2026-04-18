@@ -1,4 +1,5 @@
 use super::*;
+use crate::tree::shared::MissingBranchDirection;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone)]
@@ -41,7 +42,8 @@ pub(super) fn train_oblivious_structure(
     }];
     let mut splits = Vec::new();
 
-    for depth in 0..options.max_depth {
+    let max_depth = options.max_depth;
+    for depth in 0..max_depth {
         if leaves
             .iter()
             .all(|leaf| leaf.len() < options.min_samples_split)
@@ -49,11 +51,11 @@ pub(super) fn train_oblivious_structure(
             break;
         }
         let feature_indices = candidate_feature_indices(
-            table.binned_feature_count(),
+            table,
             options.max_features,
             node_seed(options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
-        let best_split = if parallelism.enabled() {
+        let split_candidates = if parallelism.enabled() {
             feature_indices
                 .into_par_iter()
                 .filter_map(|feature_index| {
@@ -68,7 +70,7 @@ pub(super) fn train_oblivious_structure(
                         options.min_samples_leaf,
                     )
                 })
-                .max_by(|left, right| left.score.total_cmp(&right.score))
+                .collect::<Vec<_>>()
         } else {
             feature_indices
                 .into_iter()
@@ -84,15 +86,20 @@ pub(super) fn train_oblivious_structure(
                         options.min_samples_leaf,
                     )
                 })
-                .max_by(|left, right| left.score.total_cmp(&right.score))
+                .collect::<Vec<_>>()
         };
 
-        let Some(best_split) = best_split.filter(|candidate| candidate.score > 0.0) else {
+        let Some(best_split) = select_best_non_canary_candidate(
+            table,
+            split_candidates,
+            options.canary_filter,
+            |candidate| candidate.score,
+            |candidate| candidate.feature_index,
+        )
+        .selected
+        .filter(|candidate| candidate.score > 0.0) else {
             break;
         };
-        if table.is_canary_binned_feature(best_split.feature_index) {
-            break;
-        }
 
         leaves = split_oblivious_leaves_in_place(
             table,
@@ -106,6 +113,7 @@ pub(super) fn train_oblivious_structure(
         splits.push(ObliviousSplit {
             feature_index: best_split.feature_index,
             threshold_bin: best_split.threshold_bin,
+            missing_directions: Vec::new(),
             sample_count: table.n_rows(),
             impurity: total_impurity,
             gain: best_split.score,
@@ -219,6 +227,7 @@ fn split_oblivious_leaves_in_place(
             table,
             feature_index,
             threshold_bin,
+            MissingBranchDirection::Right,
             &mut row_indices[leaf.start..leaf.end],
         );
         let mid = leaf.start + left_count;
@@ -327,9 +336,15 @@ fn score_numeric_oblivious_split_fast(
     let mut threshold_scores = vec![0.0; bin_cap];
     let mut observed_any = false;
 
+    let mut bin_class_counts = vec![vec![0usize; num_classes]; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
+
     for leaf in leaves {
-        let mut bin_class_counts = vec![vec![0usize; num_classes]; bin_cap];
-        let mut observed_bins = vec![false; bin_cap];
+        for counts in &mut bin_class_counts {
+            counts.fill(0);
+        }
+        observed_bins.fill(false);
+
         for row_idx in &row_indices[leaf.start..leaf.end] {
             let bin = table.binned_value(feature_index, *row_idx) as usize;
             if bin >= bin_cap {
@@ -340,9 +355,9 @@ fn score_numeric_oblivious_split_fast(
         }
 
         let observed_bins: Vec<usize> = observed_bins
-            .into_iter()
+            .iter()
             .enumerate()
-            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .filter_map(|(bin, seen)| (*seen).then_some(bin))
             .collect();
         if observed_bins.len() <= 1 {
             continue;

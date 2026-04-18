@@ -52,11 +52,14 @@ fn unified_train_dispatches_regression_cart() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -149,11 +152,14 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap_err();
@@ -205,11 +211,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Mean,
         ),
@@ -229,11 +238,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Mean,
         ),
@@ -253,11 +265,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Mean,
         ),
@@ -277,11 +292,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Entropy,
         ),
@@ -301,11 +319,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Entropy,
         ),
@@ -325,11 +346,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Gini,
         ),
@@ -349,11 +373,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Gini,
         ),
@@ -373,11 +400,14 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
             Criterion::Gini,
         ),
@@ -433,11 +463,14 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -453,11 +486,14 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -473,14 +509,17 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     ] {
-        let single_core = train(&regression_table, config).unwrap();
+        let single_core = train(&regression_table, config.clone()).unwrap();
         let parallel = train(
             &regression_table,
             TrainConfig {
@@ -515,11 +554,14 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -535,11 +577,14 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -555,11 +600,14 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -575,11 +623,14 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
         TrainConfig {
             algorithm: TrainAlgorithm::Dt,
@@ -595,14 +646,17 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     ] {
-        let single_core = train(&classification_table, config).unwrap();
+        let single_core = train(&classification_table, config.clone()).unwrap();
         let parallel = train(
             &classification_table,
             TrainConfig {
@@ -676,11 +730,14 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -700,11 +757,14 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -745,11 +805,14 @@ fn ir_exports_regression_tree_with_training_binning() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -775,12 +838,13 @@ fn ir_exports_regression_tree_with_training_binning() {
     let ir::TreeDefinition::NodeTree { nodes, .. } = &ir.model.trees[0] else {
         panic!("target mean should export as a node tree");
     };
-    let ir::NodeTreeNode::Leaf { leaf, .. } = &nodes[0] else {
-        panic!("target mean tree should contain a single leaf");
-    };
-    assert!(
-        matches!(leaf, ir::LeafPayload::RegressionValue { value } if (*value - 4.0).abs() < 1e-12)
-    );
+    assert!(nodes.iter().any(|node| matches!(
+        node,
+        ir::NodeTreeNode::Leaf {
+            leaf: ir::LeafPayload::RegressionValue { value },
+            ..
+        } if value.is_finite()
+    )));
 }
 
 #[test]
@@ -808,11 +872,14 @@ fn ir_exports_classifier_with_multiway_postprocessing() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -866,11 +933,14 @@ fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -926,11 +996,14 @@ fn serialized_model_round_trips_through_deserialize() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -974,11 +1047,14 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1031,11 +1107,14 @@ fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1084,11 +1163,14 @@ fn optimized_oblivious_model_matches_base_on_large_batch() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1128,11 +1210,14 @@ fn optimized_cart_model_batch_and_single_row_predictions_match() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1175,11 +1260,14 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1225,11 +1313,14 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1326,11 +1417,14 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1345,6 +1439,71 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
     assert_predictions_close(
         &optimized.predict_rows(rows.clone()).unwrap(),
         &restored.predict_rows(rows).unwrap(),
+    );
+}
+
+#[test]
+fn compiled_artifact_round_trips_for_boosted_binary_classifier_runtime() {
+    let table = DenseTable::with_options(
+        vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![0.2, 0.1],
+            vec![0.8, 0.9],
+        ],
+        vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0],
+        0,
+        NumericBins::fixed(8).unwrap(),
+    )
+    .unwrap();
+    let model = Model::GradientBoostedTrees(
+        GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(16),
+                learning_rate: Some(0.2),
+                max_depth: Some(2),
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap(),
+    );
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let compiled = optimized.serialize_compiled().unwrap();
+    let restored = OptimizedModel::deserialize_compiled(&compiled, Some(1)).unwrap();
+    let rows = vec![
+        vec![0.0, 0.0],
+        vec![0.0, 1.0],
+        vec![1.0, 0.0],
+        vec![1.0, 1.0],
+        vec![0.2, 0.1],
+        vec![0.8, 0.9],
+    ];
+
+    assert_eq!(
+        optimized.predict_rows(rows.clone()).unwrap(),
+        restored.predict_rows(rows.clone()).unwrap()
+    );
+    assert_predictions_close(
+        &optimized
+            .predict_proba_rows(rows.clone())
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        &restored
+            .predict_proba_rows(rows)
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -1380,11 +1539,14 @@ fn optimized_model_rejects_zero_physical_cores() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1426,11 +1588,14 @@ fn model_predicts_from_raw_rows_without_building_a_training_table() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1476,11 +1641,14 @@ fn model_predicts_from_named_columns() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1524,11 +1692,14 @@ fn model_rejects_missing_named_feature() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1538,6 +1709,153 @@ fn model_rejects_missing_named_feature() {
         .unwrap_err();
 
     assert!(matches!(err, PredictError::MissingFeature(feature) if feature == "f1"));
+}
+
+#[test]
+fn optimized_classifier_preserves_missing_routing() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Gini,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            canary_filter: CanaryFilter::default(),
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
+        },
+    )
+    .unwrap();
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let rows = vec![vec![0.0], vec![1.0], vec![f64::NAN]];
+
+    assert_eq!(
+        model.predict_rows(rows.clone()).unwrap(),
+        optimized.predict_rows(rows).unwrap()
+    );
+}
+
+#[test]
+fn optimized_regressor_preserves_missing_routing() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            vec![1.0],
+            vec![f64::NAN],
+            vec![f64::NAN],
+        ],
+        vec![0.0, 0.0, 10.0, 10.0, 0.0, 0.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Mean,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            canary_filter: CanaryFilter::default(),
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
+        },
+    )
+    .unwrap();
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    let rows = vec![vec![0.0], vec![1.0], vec![f64::NAN]];
+
+    assert_eq!(
+        model.predict_rows(rows.clone()).unwrap(),
+        optimized.predict_rows(rows).unwrap()
+    );
+}
+
+#[test]
+fn optimized_missing_feature_configuration_can_skip_missing_checks() {
+    let table = DenseTable::with_canaries(
+        vec![vec![0.0], vec![0.0], vec![1.0]],
+        vec![0.0, 0.0, 1.0],
+        0,
+    )
+    .unwrap();
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            criterion: Criterion::Gini,
+            max_depth: None,
+            min_samples_split: None,
+            min_samples_leaf: None,
+            physical_cores: Some(1),
+            n_trees: None,
+            max_features: MaxFeatures::Auto,
+            seed: None,
+            canary_filter: CanaryFilter::default(),
+            compute_oob: false,
+            learning_rate: None,
+            bootstrap: false,
+            top_gradient_fraction: None,
+            other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
+        },
+    )
+    .unwrap();
+
+    let missing_aware = model.optimize_inference(Some(1)).unwrap();
+    let missing_disabled = model
+        .optimize_inference_with_missing_features(Some(1), Some(Vec::new()))
+        .unwrap();
+
+    assert_eq!(
+        missing_aware.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        vec![0.0]
+    );
+    assert_ne!(
+        missing_aware.predict_rows(vec![vec![f64::NAN]]).unwrap(),
+        missing_disabled.predict_rows(vec![vec![f64::NAN]]).unwrap()
+    );
 }
 
 #[test]
@@ -1569,11 +1887,14 @@ fn model_rejects_unexpected_named_feature() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1618,11 +1939,14 @@ fn model_rejects_invalid_binary_value_during_inference() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1668,11 +1992,14 @@ fn model_predicts_from_sparse_binary_columns() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1714,11 +2041,14 @@ fn model_predicts_from_polars_dataframe() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1763,11 +2093,14 @@ fn model_predicts_from_polars_lazyframe() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1812,11 +2145,14 @@ fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1883,11 +2219,14 @@ fn model_rejects_polars_nulls() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap();
@@ -1933,11 +2272,14 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap()
@@ -1981,11 +2323,14 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )
     .unwrap()

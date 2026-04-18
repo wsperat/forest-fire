@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::error::Error;
 
 use forestfire_core::{
-    Criterion, MaxFeatures, Model, OptimizedModel, Task, TrainAlgorithm, TrainConfig, TreeType,
-    train,
+    CanaryFilter, Criterion, MaxFeatures, MissingValueStrategyConfig, Model, OptimizedModel, Task,
+    TrainAlgorithm, TrainConfig, TreeType, train,
 };
 use forestfire_data::{NumericBins, Table};
 
@@ -59,11 +59,14 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -101,11 +104,14 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 n_trees: None,
                 max_features: MaxFeatures::Auto,
                 seed: None,
+                canary_filter: CanaryFilter::default(),
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
                 top_gradient_fraction: None,
                 other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
             },
         )?;
         let preds = model.predict_rows(x.clone())?;
@@ -148,11 +154,14 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )?;
     let optimized = model.optimize_inference(Some(1))?;
@@ -208,11 +217,14 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             n_trees: None,
             max_features: MaxFeatures::Auto,
             seed: None,
+            canary_filter: CanaryFilter::default(),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
             top_gradient_fraction: None,
             other_gradient_fraction: None,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            histogram_bins: None,
         },
     )?;
 

@@ -9,3 +9,4 @@ description = "Tabular data preprocessing and storage for ForestFire."
 [dependencies]
 arrow.workspace = true
 rand.workspace = true
+serde = { version = "1.0", features = ["derive"] }

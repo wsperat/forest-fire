@@ -41,3 +41,6 @@ extend_skip = [".cache", ".git", ".venv", "target"]
 
 [tool.ruff]
 extend-exclude = [".cache", ".git", ".venv", "target"]
+
+[tool.mypy]
+exclude = '(^|/)(\.cache|\.git|\.venv|target)(/|$)'

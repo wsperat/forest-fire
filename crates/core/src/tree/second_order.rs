@@ -12,8 +12,9 @@ use crate::tree::regressor::{
     RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::tree::shared::{
-    FeatureHistogram, HistogramBin, build_feature_histograms, build_feature_histograms_parallel,
-    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
+    build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
+    node_seed, partition_rows_for_binary_split, select_best_non_canary_candidate,
     subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, capture_feature_preprocessing};
@@ -23,7 +24,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 /// Extra controls required by second-order tree training.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SecondOrderRegressionTreeOptions {
     pub tree_options: RegressionTreeOptions,
     pub l2_regularization: f64,
@@ -113,7 +114,7 @@ impl Display for SecondOrderRegressionTreeError {
 
 impl Error for SecondOrderRegressionTreeError {}
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct BuildContext<'a> {
     table: &'a dyn TableAccess,
     gradients: &'a [f64],
@@ -148,6 +149,32 @@ struct StandardNodeEvaluation {
     parent_strength: f64,
     histograms: Option<Vec<SecondOrderFeatureHistogram>>,
     best_split: Option<SplitChoice>,
+    blocked_by_canary: bool,
+}
+
+struct ActiveNode {
+    node_index: usize,
+    depth: usize,
+    start: usize,
+    end: usize,
+    histograms: Option<Vec<SecondOrderFeatureHistogram>>,
+}
+
+struct FrontierNodeEvaluation {
+    node_index: usize,
+    depth: usize,
+    start: usize,
+    end: usize,
+    evaluation: StandardNodeEvaluation,
+}
+
+struct PendingSplit {
+    node_index: usize,
+    depth: usize,
+    start: usize,
+    mid: usize,
+    end: usize,
+    evaluation: StandardNodeEvaluation,
 }
 
 #[derive(Debug, Clone)]
@@ -186,7 +213,7 @@ impl ObliviousLeafState {
         self.end - self.start
     }
 
-    fn prediction(&self, options: SecondOrderRegressionTreeOptions) -> f64 {
+    fn prediction(&self, options: &SecondOrderRegressionTreeOptions) -> f64 {
         leaf_value(
             self.gradient_sum,
             self.hessian_sum,
@@ -305,11 +332,15 @@ fn train_second_order_regressor(
     parallelism: Parallelism,
     options: SecondOrderRegressionTreeOptions,
 ) -> Result<SecondOrderRegressionTreeTrainingResult, SecondOrderRegressionTreeError> {
-    validate_inputs(train_set, gradients, hessians, options)?;
+    validate_inputs(train_set, gradients, hessians, &options)?;
 
     let (structure, root_canary_selected) = match algorithm {
         RegressionTreeAlgorithm::Cart | RegressionTreeAlgorithm::Randomized => {
-            let mut nodes = Vec::new();
+            let mut nodes = vec![RegressionNode::Leaf {
+                value: 0.0,
+                sample_count: 0,
+                variance: None,
+            }];
             let mut rows: Vec<usize> = (0..train_set.n_rows()).collect();
             let context = BuildContext {
                 table: train_set,
@@ -317,18 +348,13 @@ fn train_second_order_regressor(
                 hessians,
                 parallelism,
                 algorithm,
-                options,
+                options: options.clone(),
             };
             let mut root_canary_selected = false;
-            // This path mirrors the first-order standard-tree builders: one
-            // mutable row-index buffer, histogram-backed split scoring, and
-            // optional canary detection at the root.
-            let root = build_standard_node(
+            let root = train_standard_structure(
                 &context,
                 &mut nodes,
                 &mut rows,
-                0,
-                None,
                 &mut root_canary_selected,
             );
             (
@@ -339,7 +365,7 @@ fn train_second_order_regressor(
         RegressionTreeAlgorithm::Oblivious => {
             // Oblivious trees are grown a level at a time because every node at
             // the same depth shares the same feature/threshold pair.
-            train_oblivious_structure(train_set, gradients, hessians, parallelism, options)
+            train_oblivious_structure(train_set, gradients, hessians, parallelism, options.clone())
         }
     };
 
@@ -361,7 +387,7 @@ fn validate_inputs(
     train_set: &dyn TableAccess,
     gradients: &[f64],
     hessians: &[f64],
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
 ) -> Result<(), SecondOrderRegressionTreeError> {
     if train_set.n_rows() == 0 {
         return Err(SecondOrderRegressionTreeError::EmptyRows);
@@ -411,6 +437,244 @@ fn validate_inputs(
     Ok(())
 }
 
+fn train_standard_structure(
+    context: &BuildContext<'_>,
+    nodes: &mut Vec<RegressionNode>,
+    rows: &mut [usize],
+    root_canary_selected: &mut bool,
+) -> usize {
+    let root = 0usize;
+    let mut frontier = vec![ActiveNode {
+        node_index: root,
+        depth: 0,
+        start: 0,
+        end: rows.len(),
+        histograms: None,
+    }];
+
+    while !frontier.is_empty() {
+        let evaluations = if context.parallelism.enabled() {
+            frontier
+                .into_par_iter()
+                .map(|active| FrontierNodeEvaluation {
+                    node_index: active.node_index,
+                    depth: active.depth,
+                    start: active.start,
+                    end: active.end,
+                    evaluation: evaluate_standard_node(
+                        context,
+                        &rows[active.start..active.end],
+                        active.depth,
+                        active.histograms,
+                    ),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            frontier
+                .into_iter()
+                .map(|active| FrontierNodeEvaluation {
+                    node_index: active.node_index,
+                    depth: active.depth,
+                    start: active.start,
+                    end: active.end,
+                    evaluation: evaluate_standard_node(
+                        context,
+                        &rows[active.start..active.end],
+                        active.depth,
+                        active.histograms,
+                    ),
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut pending_splits = Vec::new();
+
+        for FrontierNodeEvaluation {
+            node_index,
+            depth,
+            start,
+            end,
+            evaluation,
+        } in evaluations
+        {
+            match evaluation.best_split {
+                Some(split) if split.gain > context.options.min_gain_to_split => {
+                    let left_count = partition_rows_for_binary_split(
+                        context.table,
+                        split.feature_index,
+                        split.threshold_bin,
+                        MissingBranchDirection::Right,
+                        &mut rows[start..end],
+                    );
+                    let mid = start + left_count;
+
+                    let left_child = push_leaf(nodes, evaluation.leaf_prediction, mid - start);
+                    let right_child = push_leaf(nodes, evaluation.leaf_prediction, end - mid);
+                    nodes[node_index] = RegressionNode::BinarySplit {
+                        feature_index: split.feature_index,
+                        threshold_bin: split.threshold_bin,
+                        missing_direction: MissingBranchDirection::Node,
+                        missing_value: evaluation.leaf_prediction,
+                        left_child,
+                        right_child,
+                        sample_count: evaluation.sample_count,
+                        impurity: evaluation.parent_strength,
+                        gain: split.gain,
+                        variance: None,
+                    };
+                    pending_splits.push(PendingSplit {
+                        node_index,
+                        depth,
+                        start,
+                        mid: start,
+                        end,
+                        evaluation,
+                    });
+                }
+                _ => {
+                    if depth == 0 && evaluation.blocked_by_canary {
+                        *root_canary_selected = true;
+                    }
+                    nodes[node_index] = RegressionNode::Leaf {
+                        value: evaluation.leaf_prediction,
+                        sample_count: evaluation.sample_count,
+                        variance: None,
+                    };
+                }
+            }
+        }
+
+        pending_splits.sort_unstable_by_key(|pending| pending.start);
+        partition_pending_splits_in_place(
+            context.table,
+            rows,
+            &mut pending_splits,
+            context.parallelism,
+        );
+
+        frontier = if context.parallelism.enabled() {
+            pending_splits
+                .into_par_iter()
+                .flat_map_iter(|pending| {
+                    let parent_histograms = pending
+                        .evaluation
+                        .histograms
+                        .expect("splittable second-order node must retain histograms");
+                    let left_len = pending.mid - pending.start;
+                    let right_len = pending.end - pending.mid;
+                    let (left_histograms, right_histograms) = if left_len <= right_len {
+                        let left_histograms = build_second_order_feature_histograms(
+                            context.table,
+                            context.gradients,
+                            context.hessians,
+                            &rows[pending.start..pending.mid],
+                            Parallelism::sequential(),
+                        );
+                        let right_histograms =
+                            subtract_feature_histograms(&parent_histograms, &left_histograms);
+                        (left_histograms, right_histograms)
+                    } else {
+                        let right_histograms = build_second_order_feature_histograms(
+                            context.table,
+                            context.gradients,
+                            context.hessians,
+                            &rows[pending.mid..pending.end],
+                            Parallelism::sequential(),
+                        );
+                        let left_histograms =
+                            subtract_feature_histograms(&parent_histograms, &right_histograms);
+                        (left_histograms, right_histograms)
+                    };
+                    let left_child = match &nodes[pending.node_index] {
+                        RegressionNode::BinarySplit { left_child, .. } => *left_child,
+                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                    };
+                    let right_child = match &nodes[pending.node_index] {
+                        RegressionNode::BinarySplit { right_child, .. } => *right_child,
+                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                    };
+                    [
+                        ActiveNode {
+                            node_index: left_child,
+                            depth: pending.depth + 1,
+                            start: pending.start,
+                            end: pending.mid,
+                            histograms: Some(left_histograms),
+                        },
+                        ActiveNode {
+                            node_index: right_child,
+                            depth: pending.depth + 1,
+                            start: pending.mid,
+                            end: pending.end,
+                            histograms: Some(right_histograms),
+                        },
+                    ]
+                })
+                .collect::<Vec<_>>()
+        } else {
+            pending_splits
+                .into_iter()
+                .flat_map(|pending| {
+                    let parent_histograms = pending
+                        .evaluation
+                        .histograms
+                        .expect("splittable second-order node must retain histograms");
+                    let left_len = pending.mid - pending.start;
+                    let right_len = pending.end - pending.mid;
+                    let (left_histograms, right_histograms) = if left_len <= right_len {
+                        let left_histograms = build_second_order_feature_histograms(
+                            context.table,
+                            context.gradients,
+                            context.hessians,
+                            &rows[pending.start..pending.mid],
+                            Parallelism::sequential(),
+                        );
+                        let right_histograms =
+                            subtract_feature_histograms(&parent_histograms, &left_histograms);
+                        (left_histograms, right_histograms)
+                    } else {
+                        let right_histograms = build_second_order_feature_histograms(
+                            context.table,
+                            context.gradients,
+                            context.hessians,
+                            &rows[pending.mid..pending.end],
+                            Parallelism::sequential(),
+                        );
+                        let left_histograms =
+                            subtract_feature_histograms(&parent_histograms, &right_histograms);
+                        (left_histograms, right_histograms)
+                    };
+                    let left_child = match &nodes[pending.node_index] {
+                        RegressionNode::BinarySplit { left_child, .. } => *left_child,
+                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                    };
+                    let right_child = match &nodes[pending.node_index] {
+                        RegressionNode::BinarySplit { right_child, .. } => *right_child,
+                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                    };
+                    [
+                        ActiveNode {
+                            node_index: left_child,
+                            depth: pending.depth + 1,
+                            start: pending.start,
+                            end: pending.mid,
+                            histograms: Some(left_histograms),
+                        },
+                        ActiveNode {
+                            node_index: right_child,
+                            depth: pending.depth + 1,
+                            start: pending.mid,
+                            end: pending.end,
+                            histograms: Some(right_histograms),
+                        },
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+    }
+
+    root
+}
+
 fn train_oblivious_structure(
     table: &dyn TableAccess,
     gradients: &[f64],
@@ -430,7 +694,8 @@ fn train_oblivious_structure(
     let mut splits = Vec::new();
 
     let mut root_canary_selected = false;
-    for depth in 0..options.tree_options.max_depth {
+    let max_depth = options.tree_options.max_depth;
+    for depth in 0..max_depth {
         if leaves
             .iter()
             .all(|leaf| leaf.len() < options.tree_options.min_samples_split)
@@ -442,11 +707,11 @@ fn train_oblivious_structure(
         // faithful to their "one split per depth" structure while still allowing
         // forest/boosting-style stochasticity.
         let feature_indices = candidate_feature_indices(
-            table.binned_feature_count(),
+            table,
             options.tree_options.max_features,
             node_seed(options.tree_options.random_seed, depth, &[], 0x0B11_A10Cu64),
         );
-        let best_split = if parallelism.enabled() {
+        let split_candidates = if parallelism.enabled() {
             feature_indices
                 .into_par_iter()
                 .filter_map(|feature_index| {
@@ -457,10 +722,10 @@ fn train_oblivious_structure(
                         hessians,
                         feature_index,
                         &leaves,
-                        options,
+                        &options,
                     )
                 })
-                .max_by(|left, right| left.gain.total_cmp(&right.gain))
+                .collect::<Vec<_>>()
         } else {
             feature_indices
                 .into_iter()
@@ -472,22 +737,27 @@ fn train_oblivious_structure(
                         hessians,
                         feature_index,
                         &leaves,
-                        options,
+                        &options,
                     )
                 })
-                .max_by(|left, right| left.gain.total_cmp(&right.gain))
+                .collect::<Vec<_>>()
         };
-
-        let Some(best_split) = best_split.filter(|split| split.gain > options.min_gain_to_split)
+        let selection = select_best_non_canary_candidate(
+            table,
+            split_candidates,
+            options.tree_options.canary_filter,
+            |candidate| candidate.gain,
+            |candidate| candidate.feature_index,
+        );
+        let Some(best_split) = selection
+            .selected
+            .filter(|split| split.gain > options.min_gain_to_split)
         else {
-            break;
-        };
-        if table.is_canary_binned_feature(best_split.feature_index) {
-            if depth == 0 {
+            if depth == 0 && selection.blocked_by_canary {
                 root_canary_selected = true;
             }
             break;
-        }
+        };
 
         leaves = split_oblivious_leaves_in_place(
             table,
@@ -520,7 +790,10 @@ fn train_oblivious_structure(
     (
         RegressionTreeStructure::Oblivious {
             splits,
-            leaf_values: leaves.iter().map(|leaf| leaf.prediction(options)).collect(),
+            leaf_values: leaves
+                .iter()
+                .map(|leaf| leaf.prediction(&options))
+                .collect(),
             leaf_sample_counts: leaves.iter().map(ObliviousLeafState::len).collect(),
             leaf_variances: vec![None; leaves.len()],
         },
@@ -528,111 +801,90 @@ fn train_oblivious_structure(
     )
 }
 
-fn build_standard_node(
-    context: &BuildContext<'_>,
-    nodes: &mut Vec<RegressionNode>,
+fn partition_pending_splits_in_place(
+    table: &dyn TableAccess,
     rows: &mut [usize],
-    depth: usize,
-    histograms: Option<Vec<SecondOrderFeatureHistogram>>,
-    root_canary_selected: &mut bool,
-) -> usize {
-    let evaluation = evaluate_standard_node(context, rows, depth, histograms);
+    pending_splits: &mut [PendingSplit],
+    parallelism: Parallelism,
+) {
+    if pending_splits.is_empty() {
+        return;
+    }
+    partition_pending_splits_recursive(table, rows, pending_splits, 0, parallelism);
+}
 
-    match evaluation.best_split {
-        Some(split)
-            if split.gain > context.options.min_gain_to_split
-                && !context.table.is_canary_binned_feature(split.feature_index) =>
-        {
-            let histograms = evaluation
-                .histograms
-                .expect("splittable second-order node must retain histograms");
-            let left_count = partition_rows_for_binary_split(
-                context.table,
-                split.feature_index,
-                split.threshold_bin,
-                rows,
-            );
-            let (left_rows, right_rows) = rows.split_at_mut(left_count);
-            let (left_child, right_child) = if left_rows.len() <= right_rows.len() {
-                let left_histograms = build_second_order_feature_histograms(
-                    context.table,
-                    context.gradients,
-                    context.hessians,
+fn partition_pending_splits_recursive(
+    table: &dyn TableAccess,
+    rows: &mut [usize],
+    pending_splits: &mut [PendingSplit],
+    base_offset: usize,
+    parallelism: Parallelism,
+) {
+    if pending_splits.is_empty() {
+        return;
+    }
+    if pending_splits.len() == 1 {
+        let pending = &mut pending_splits[0];
+        let local_start = pending.start - base_offset;
+        let local_end = pending.end - base_offset;
+        let split = pending
+            .evaluation
+            .best_split
+            .expect("pending split must retain split choice");
+        let left_count = partition_rows_for_binary_split(
+            table,
+            split.feature_index,
+            split.threshold_bin,
+            MissingBranchDirection::Right,
+            &mut rows[local_start..local_end],
+        );
+        pending.mid = pending.start + left_count;
+        return;
+    }
+
+    let pending_len = pending_splits.len();
+    let mid_index = pending_len / 2;
+    let split_start = pending_splits[mid_index].start;
+    let split_offset = split_start - base_offset;
+    let (left_rows, right_rows) = rows.split_at_mut(split_offset);
+    let (left_pending, right_pending) = pending_splits.split_at_mut(mid_index);
+
+    if parallelism.enabled() && pending_len >= 4 {
+        rayon::join(
+            || {
+                partition_pending_splits_recursive(
+                    table,
                     left_rows,
-                    context.parallelism,
-                );
-                let right_histograms = subtract_feature_histograms(&histograms, &left_histograms);
-                (
-                    build_standard_node(
-                        context,
-                        nodes,
-                        left_rows,
-                        depth + 1,
-                        Some(left_histograms),
-                        root_canary_selected,
-                    ),
-                    build_standard_node(
-                        context,
-                        nodes,
-                        right_rows,
-                        depth + 1,
-                        Some(right_histograms),
-                        root_canary_selected,
-                    ),
+                    left_pending,
+                    base_offset,
+                    parallelism,
                 )
-            } else {
-                let right_histograms = build_second_order_feature_histograms(
-                    context.table,
-                    context.gradients,
-                    context.hessians,
+            },
+            || {
+                partition_pending_splits_recursive(
+                    table,
                     right_rows,
-                    context.parallelism,
-                );
-                let left_histograms = subtract_feature_histograms(&histograms, &right_histograms);
-                (
-                    build_standard_node(
-                        context,
-                        nodes,
-                        left_rows,
-                        depth + 1,
-                        Some(left_histograms),
-                        root_canary_selected,
-                    ),
-                    build_standard_node(
-                        context,
-                        nodes,
-                        right_rows,
-                        depth + 1,
-                        Some(right_histograms),
-                        root_canary_selected,
-                    ),
+                    right_pending,
+                    split_start,
+                    parallelism,
                 )
-            };
-
-            push_node(
-                nodes,
-                RegressionNode::BinarySplit {
-                    feature_index: split.feature_index,
-                    threshold_bin: split.threshold_bin,
-                    left_child,
-                    right_child,
-                    sample_count: evaluation.sample_count,
-                    impurity: evaluation.parent_strength,
-                    gain: split.gain,
-                    variance: None,
-                },
-            )
-        }
-        Some(split)
-            if split.gain > context.options.min_gain_to_split
-                && context.table.is_canary_binned_feature(split.feature_index) =>
-        {
-            if depth == 0 {
-                *root_canary_selected = true;
-            }
-            push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count)
-        }
-        _ => push_leaf(nodes, evaluation.leaf_prediction, evaluation.sample_count),
+            },
+        );
+    } else {
+        partition_pending_splits_recursive(
+            table,
+            left_rows,
+            left_pending,
+            base_offset,
+            parallelism,
+        );
+        partition_pending_splits_recursive(
+            table,
+            right_rows,
+            right_pending,
+            split_start,
+            parallelism,
+        );
     }
 }
 
@@ -666,6 +918,7 @@ fn evaluate_standard_node(
             parent_strength,
             histograms: None,
             best_split: None,
+            blocked_by_canary: false,
         };
     }
 
@@ -679,7 +932,7 @@ fn evaluate_standard_node(
         )
     });
     let feature_indices = candidate_feature_indices(
-        context.table.binned_feature_count(),
+        context.table,
         context.options.tree_options.max_features,
         node_seed(
             context.options.tree_options.random_seed,
@@ -688,28 +941,36 @@ fn evaluate_standard_node(
             0xA11C_E5E1u64,
         ),
     );
-    let best_split = if context.parallelism.enabled() {
+    let split_candidates = if context.parallelism.enabled() {
         feature_indices
             .into_par_iter()
             .filter_map(|feature_index| {
                 score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
             })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+            .collect::<Vec<_>>()
     } else {
         feature_indices
             .into_iter()
             .filter_map(|feature_index| {
                 score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
             })
-            .max_by(|left, right| left.gain.total_cmp(&right.gain))
+            .collect::<Vec<_>>()
     };
+    let selection = select_best_non_canary_candidate(
+        context.table,
+        split_candidates,
+        context.options.tree_options.canary_filter,
+        |candidate| candidate.gain,
+        |candidate| candidate.feature_index,
+    );
 
     StandardNodeEvaluation {
         sample_count,
         leaf_prediction,
         parent_strength,
         histograms: Some(histograms),
-        best_split,
+        best_split: selection.selected,
+        blocked_by_canary: selection.blocked_by_canary,
     }
 }
 
@@ -798,6 +1059,7 @@ fn score_feature_from_hist(
         FeatureHistogram::Binary {
             false_bin,
             true_bin,
+            ..
         } => score_binary_split_from_stats(
             context,
             feature_index,
@@ -839,7 +1101,7 @@ fn score_binary_split_from_stats(
     right_hessian_sum: f64,
 ) -> Option<SplitChoice> {
     if !children_are_splittable(
-        context.options,
+        &context.options,
         left_count,
         left_hessian_sum,
         right_count,
@@ -892,7 +1154,7 @@ fn score_numeric_split_from_hist(
         let right_hessian_sum = total_hessian_sum - left_hessian_sum;
 
         if !children_are_splittable(
-            context.options,
+            &context.options,
             left_count,
             left_hessian_sum,
             right_count,
@@ -955,7 +1217,7 @@ fn score_randomized_split_from_hist(
     let right_gradient_sum = total_gradient_sum - left_gradient_sum;
     let right_hessian_sum = total_hessian_sum - left_hessian_sum;
     if !children_are_splittable(
-        context.options,
+        &context.options,
         left_count,
         left_hessian_sum,
         right_count,
@@ -986,7 +1248,7 @@ fn score_oblivious_split(
     hessians: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
 ) -> Option<SplitChoice> {
     if table.is_binary_binned_feature(feature_index) {
         return score_binary_oblivious_split(
@@ -1005,14 +1267,18 @@ fn score_oblivious_split(
         return None;
     }
     let mut threshold_gains = vec![0.0; bin_cap];
-    let mut found_valid = vec![false; bin_cap];
-    let mut observed_any = false;
+    let mut threshold_valid = vec![true; bin_cap];
+
+    let mut bin_count = vec![0usize; bin_cap];
+    let mut bin_gradient_sum = vec![0.0; bin_cap];
+    let mut bin_hessian_sum = vec![0.0; bin_cap];
+    let mut observed_bins = vec![false; bin_cap];
 
     for leaf in leaves {
-        let mut bin_count = vec![0usize; bin_cap];
-        let mut bin_gradient_sum = vec![0.0; bin_cap];
-        let mut bin_hessian_sum = vec![0.0; bin_cap];
-        let mut observed_bins = vec![false; bin_cap];
+        bin_count.fill(0);
+        bin_gradient_sum.fill(0.0);
+        bin_hessian_sum.fill(0.0);
+        observed_bins.fill(false);
 
         for row_idx in &row_indices[leaf.start..leaf.end] {
             let bin = table.binned_value(feature_index, *row_idx) as usize;
@@ -1023,18 +1289,18 @@ fn score_oblivious_split(
         }
 
         let observed_bins = observed_bins
-            .into_iter()
+            .iter()
             .enumerate()
-            .filter_map(|(bin, seen)| seen.then_some(bin))
+            .filter_map(|(bin, seen)| (*seen).then_some(bin))
             .collect::<Vec<_>>();
         if observed_bins.len() <= 1 {
-            continue;
+            return None;
         }
-        observed_any = true;
 
         let mut left_count = 0usize;
         let mut left_gradient_sum = 0.0;
         let mut left_hessian_sum = 0.0;
+        let mut leaf_valid = vec![false; bin_cap];
         for &bin in &observed_bins {
             left_count += bin_count[bin];
             left_gradient_sum += bin_gradient_sum[bin];
@@ -1051,7 +1317,7 @@ fn score_oblivious_split(
             ) {
                 continue;
             }
-            found_valid[bin] = true;
+            leaf_valid[bin] = true;
             threshold_gains[bin] += split_gain(
                 left_gradient_sum,
                 left_hessian_sum,
@@ -1062,16 +1328,15 @@ fn score_oblivious_split(
                 options.l2_regularization,
             );
         }
-    }
-
-    if !observed_any {
-        return None;
+        for threshold_bin in 0..bin_cap {
+            threshold_valid[threshold_bin] &= leaf_valid[threshold_bin];
+        }
     }
 
     threshold_gains
         .into_iter()
         .enumerate()
-        .filter(|(bin, gain)| found_valid[*bin] && *gain > options.min_gain_to_split)
+        .filter(|(bin, gain)| threshold_valid[*bin] && *gain > options.min_gain_to_split)
         .max_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(threshold_bin, gain)| SplitChoice {
             feature_index,
@@ -1087,10 +1352,9 @@ fn score_binary_oblivious_split(
     hessians: &[f64],
     feature_index: usize,
     leaves: &[ObliviousLeafState],
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
 ) -> Option<SplitChoice> {
     let mut gain = 0.0;
-    let mut found_valid = false;
 
     for leaf in leaves {
         let mut left_count = 0usize;
@@ -1116,9 +1380,8 @@ fn score_binary_oblivious_split(
             right_count,
             right_hessian_sum,
         ) {
-            continue;
+            return None;
         }
-        found_valid = true;
         gain += split_gain(
             left_gradient_sum,
             left_hessian_sum,
@@ -1130,7 +1393,7 @@ fn score_binary_oblivious_split(
         );
     }
 
-    (found_valid && gain > options.min_gain_to_split).then_some(SplitChoice {
+    (gain > options.min_gain_to_split).then_some(SplitChoice {
         feature_index,
         threshold_bin: 0,
         gain,
@@ -1152,6 +1415,7 @@ fn split_oblivious_leaves_in_place(
             table,
             feature_index,
             threshold_bin,
+            MissingBranchDirection::Right,
             &mut row_indices[leaf.start..leaf.end],
         );
         let mid = leaf.start + left_count;
@@ -1176,7 +1440,7 @@ fn split_oblivious_leaves_in_place(
 }
 
 fn children_are_splittable(
-    options: SecondOrderRegressionTreeOptions,
+    options: &SecondOrderRegressionTreeOptions,
     left_count: usize,
     left_hessian_sum: f64,
     right_count: usize,
@@ -1378,7 +1642,7 @@ mod tests {
             &gradients,
             &hessians,
             Parallelism::sequential(),
-            options,
+            options.clone(),
         )
         .unwrap();
         let parallel = train_cart_regressor_from_gradients_and_hessians(
@@ -1386,7 +1650,7 @@ mod tests {
             &gradients,
             &hessians,
             Parallelism::with_threads(2),
-            options,
+            options.clone(),
         )
         .unwrap();
 
@@ -1420,7 +1684,7 @@ mod tests {
             &gradients,
             &hessians,
             Parallelism::sequential(),
-            options,
+            options.clone(),
         )
         .unwrap();
         let parallel = train_randomized_regressor_from_gradients_and_hessians(
