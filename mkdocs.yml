@@ -36,6 +36,9 @@ nav:
   - Rust API: rust-api.md
   - Examples: examples.md
   - Training: training.md
+  - Builders:
+      - Lookahead Builder: lookahead-builder.md
+      - Beam Builder: beam-builder.md
   - Categorical Strategies: categorical-strategies.md
   - Oblique Splits: oblique-splits.md
   - Models And Introspection: models.md

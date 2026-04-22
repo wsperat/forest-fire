@@ -83,6 +83,42 @@ Current implementation details:
 - all candidate feature pairs available at a node are considered
 - axis-aligned and oblique candidates compete inside the same canary-filtered ranking
 
+## Builders
+
+ForestFire also separates tree family from tree-construction strategy.
+
+The public builders are:
+
+- `greedy`
+- `lookahead`
+- `beam`
+
+At a high level:
+
+- `greedy` ranks candidates by immediate node-local score only
+- `lookahead` shortlists the strongest immediate candidates and re-ranks them by
+  following the single best continuation up to `lookahead_depth`
+- `beam` uses the same shortlist idea, but keeps up to `beam_width`
+  continuations alive while estimating future score
+
+The builder controls how a node decides which split to take. It does not change:
+
+- the split family itself
+- the missing-value semantics of the learner
+- the leaf payload semantics
+
+Related parameters:
+
+- `lookahead_depth`
+- `lookahead_top_k`
+- `lookahead_weight`
+- `beam_width`
+
+For the detailed algorithmic behavior, see:
+
+- [Lookahead Builder](lookahead-builder.md)
+- [Beam Builder](beam-builder.md)
+
 ## Task detection
 
 With `task="auto"`:
