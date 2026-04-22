@@ -179,6 +179,60 @@
               "type": "string"
             }
           }
+        },
+        {
+          "type": "object",
+          "required": [
+            "feature_indices",
+            "feature_names",
+            "missing_directions",
+            "operator",
+            "split_type",
+            "threshold",
+            "weights"
+          ],
+          "properties": {
+            "feature_indices": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0.0
+              }
+            },
+            "feature_names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "missing_directions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "operator": {
+              "type": "string"
+            },
+            "split_type": {
+              "type": "string",
+              "enum": [
+                "oblique_linear_combination"
+              ]
+            },
+            "threshold": {
+              "type": "number",
+              "format": "double"
+            },
+            "weights": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            }
+          }
         }
       ]
     },

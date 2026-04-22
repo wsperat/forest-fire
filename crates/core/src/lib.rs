@@ -1701,7 +1701,13 @@ fn predict_binary_regressor_column_major_matrix(
         || binary_regressor_nodes_require_rowwise_raw(nodes)
     {
         return (0..matrix.n_rows)
-            .map(|_| predict_binary_regressor_row(nodes, |_| 0, |_| f64::NAN))
+            .map(|row_index| {
+                predict_binary_regressor_row(
+                    nodes,
+                    |feature_index| matrix.column(feature_index).value_at(row_index),
+                    |_| f64::NAN,
+                )
+            })
             .collect();
     }
     let mut outputs = vec![0.0; matrix.n_rows];
