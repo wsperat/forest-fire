@@ -294,6 +294,12 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     if config.lookahead_depth == 0 {
         return Err(TrainError::InvalidLookaheadDepth(config.lookahead_depth));
     }
+    if config.lookahead_top_k == 0 {
+        return Err(TrainError::InvalidLookaheadTopK(config.lookahead_top_k));
+    }
+    if !config.lookahead_weight.is_finite() || config.lookahead_weight < 0.0 {
+        return Err(TrainError::InvalidLookaheadWeight(config.lookahead_weight));
+    }
     config.canary_filter.validate()?;
 
     // Parallelism is installed around the whole training call so nested trainers
@@ -314,6 +320,8 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 missing_value_strategies: missing_value_strategies.clone(),
                 canary_filter: config.canary_filter,
                 lookahead_depth: config.lookahead_depth,
+                lookahead_top_k: config.lookahead_top_k,
+                lookahead_weight: config.lookahead_weight,
             },
         ),
         TrainAlgorithm::Rf => train_random_forest(
@@ -334,6 +342,8 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 seed: config.seed,
                 compute_oob: config.compute_oob,
                 lookahead_depth: config.lookahead_depth,
+                lookahead_top_k: config.lookahead_top_k,
+                lookahead_weight: config.lookahead_weight,
             },
         ),
         TrainAlgorithm::Gbm => train_gradient_boosting(
@@ -361,6 +371,8 @@ pub(crate) struct SingleModelConfig {
     pub(crate) missing_value_strategies: Vec<crate::MissingValueStrategy>,
     pub(crate) canary_filter: crate::CanaryFilter,
     pub(crate) lookahead_depth: usize,
+    pub(crate) lookahead_top_k: usize,
+    pub(crate) lookahead_weight: f64,
 }
 
 /// Internal single-tree config with optional per-node feature subsampling.
@@ -391,6 +403,8 @@ pub(crate) struct RandomForestConfig {
     pub(crate) seed: Option<u64>,
     pub(crate) compute_oob: bool,
     pub(crate) lookahead_depth: usize,
+    pub(crate) lookahead_top_k: usize,
+    pub(crate) lookahead_weight: f64,
 }
 
 pub(crate) fn train_single_model(
@@ -426,6 +440,8 @@ pub(crate) fn train_single_model_with_feature_subset(
                 missing_value_strategies,
                 canary_filter,
                 lookahead_depth,
+                lookahead_top_k,
+                lookahead_weight,
             },
         max_features,
         random_seed,
@@ -441,6 +457,8 @@ pub(crate) fn train_single_model_with_feature_subset(
         split_strategy,
         builder,
         lookahead_depth,
+        lookahead_top_k,
+        lookahead_weight,
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -453,6 +471,8 @@ pub(crate) fn train_single_model_with_feature_subset(
         split_strategy,
         builder,
         lookahead_depth,
+        lookahead_top_k,
+        lookahead_weight,
     };
 
     match (task, tree_type, criterion) {

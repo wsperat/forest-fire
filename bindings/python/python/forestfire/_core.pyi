@@ -34,6 +34,8 @@ def train(
     min_samples_split: int | None = None,
     min_samples_leaf: int | None = None,
     lookahead_depth: int = 1,
+    lookahead_top_k: int = 8,
+    lookahead_weight: float = 1.0,
     n_trees: int | None = None,
     max_features: str | int | None = None,
     seed: int | None = None,

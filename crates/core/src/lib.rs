@@ -343,6 +343,10 @@ pub struct TrainConfig {
     /// evaluate candidate splits by also considering recursively chosen
     /// descendants up to the requested horizon.
     pub lookahead_depth: usize,
+    /// Number of highest immediate-gain candidates to rescore with lookahead.
+    pub lookahead_top_k: usize,
+    /// Weight applied to future split value when lookahead rescoring is enabled.
+    pub lookahead_weight: f64,
 }
 
 impl Default for TrainConfig {
@@ -370,6 +374,8 @@ impl Default for TrainConfig {
             missing_value_strategy: MissingValueStrategyConfig::heuristic(),
             histogram_bins: None,
             lookahead_depth: 1,
+            lookahead_top_k: 8,
+            lookahead_weight: 1.0,
         }
     }
 }
@@ -412,6 +418,8 @@ pub enum TrainError {
     InvalidMinSamplesSplit(usize),
     InvalidMinSamplesLeaf(usize),
     InvalidLookaheadDepth(usize),
+    InvalidLookaheadTopK(usize),
+    InvalidLookaheadWeight(f64),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
     InvalidCanaryFilterTopN(usize),
@@ -477,6 +485,16 @@ impl Display for TrainError {
             }
             TrainError::InvalidLookaheadDepth(value) => {
                 write!(f, "lookahead_depth must be at least 1. Received {}.", value)
+            }
+            TrainError::InvalidLookaheadTopK(value) => {
+                write!(f, "lookahead_top_k must be at least 1. Received {}.", value)
+            }
+            TrainError::InvalidLookaheadWeight(value) => {
+                write!(
+                    f,
+                    "lookahead_weight must be finite and non-negative. Received {}.",
+                    value
+                )
             }
             TrainError::InvalidTreeCount(n_trees) => {
                 write!(

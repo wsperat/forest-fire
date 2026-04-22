@@ -85,6 +85,8 @@ pub struct DecisionTreeOptions {
     pub split_strategy: SplitStrategy,
     pub builder: BuilderStrategy,
     pub lookahead_depth: usize,
+    pub lookahead_top_k: usize,
+    pub lookahead_weight: f64,
 }
 
 impl Default for DecisionTreeOptions {
@@ -100,6 +102,8 @@ impl Default for DecisionTreeOptions {
             split_strategy: SplitStrategy::AxisAligned,
             builder: BuilderStrategy::Greedy,
             lookahead_depth: 1,
+            lookahead_top_k: 8,
+            lookahead_weight: 1.0,
         }
     }
 }
@@ -1325,19 +1329,12 @@ fn rank_standard_split_choices(
             .map(StandardSplitChoice::Axis)
             .collect()
     };
-    candidates
-        .into_iter()
-        .map(|choice| RankedStandardSplitChoice {
-            ranking_score: standard_split_ranking_score(
-                context,
-                rows,
-                depth,
-                &choice,
-                lookahead_depth,
-            ),
-            choice,
-        })
-        .collect()
+    rank_shortlisted_candidates(
+        candidates,
+        context.options.lookahead_top_k,
+        StandardSplitChoice::score,
+        |choice| standard_split_ranking_score(context, rows, depth, choice, lookahead_depth),
+    )
 }
 
 fn standard_split_ranking_score(
@@ -1371,9 +1368,15 @@ fn standard_split_ranking_score(
         ),
     };
     let (left_rows, right_rows) = partitioned_rows.split_at_mut(left_count);
-    immediate
-        + best_standard_split_lookahead_score(context, left_rows, depth + 1, lookahead_depth - 1)
-        + best_standard_split_lookahead_score(context, right_rows, depth + 1, lookahead_depth - 1)
+    let future =
+        best_standard_split_lookahead_score(context, left_rows, depth + 1, lookahead_depth - 1)
+            + best_standard_split_lookahead_score(
+                context,
+                right_rows,
+                depth + 1,
+                lookahead_depth - 1,
+            );
+    immediate + context.options.lookahead_weight * future
 }
 
 fn best_standard_split_lookahead_score(
@@ -1742,20 +1745,16 @@ fn rank_multiway_split_choices(
     metric: MultiwayMetric,
     candidates: Vec<MultiwaySplitChoice>,
 ) -> Vec<RankedMultiwaySplitChoice> {
-    candidates
-        .into_iter()
-        .map(|choice| RankedMultiwaySplitChoice {
-            ranking_score: multiway_split_ranking_score(
-                context,
-                rows,
-                depth,
-                metric,
-                &choice,
-                context.options.effective_lookahead_depth(),
-            ),
+    rank_shortlisted_multiway_candidates(candidates, context.options.lookahead_top_k, |choice| {
+        multiway_split_ranking_score(
+            context,
+            rows,
+            depth,
+            metric,
             choice,
-        })
-        .collect()
+            context.options.effective_lookahead_depth(),
+        )
+    })
 }
 
 fn multiway_split_ranking_score(
@@ -1779,19 +1778,19 @@ fn multiway_split_ranking_score(
         choice.missing_branch_bin,
         &mut partitioned_rows,
     );
-    immediate
-        + branch_ranges
-            .into_iter()
-            .map(|(_, start, end)| {
-                best_multiway_split_lookahead_score(
-                    context,
-                    &mut partitioned_rows[start..end],
-                    depth + 1,
-                    metric,
-                    lookahead_depth - 1,
-                )
-            })
-            .sum::<f64>()
+    let future = branch_ranges
+        .into_iter()
+        .map(|(_, start, end)| {
+            best_multiway_split_lookahead_score(
+                context,
+                &mut partitioned_rows[start..end],
+                depth + 1,
+                metric,
+                lookahead_depth - 1,
+            )
+        })
+        .sum::<f64>();
+    immediate + context.options.lookahead_weight * future
 }
 
 fn best_multiway_split_lookahead_score(
@@ -1838,6 +1837,70 @@ fn best_multiway_split_lookahead_score(
     )
     .selected
     .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+}
+
+fn rank_shortlisted_candidates(
+    candidates: Vec<StandardSplitChoice>,
+    top_k: usize,
+    immediate_score: fn(&StandardSplitChoice) -> f64,
+    rescore: impl Fn(&StandardSplitChoice) -> f64,
+) -> Vec<RankedStandardSplitChoice> {
+    let mut shortlist = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| (index, immediate_score(choice)))
+        .collect::<Vec<_>>();
+    shortlist.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let shortlisted = shortlist
+        .into_iter()
+        .take(top_k)
+        .map(|(index, _)| index)
+        .collect::<std::collections::BTreeSet<_>>();
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(index, choice)| {
+            let ranking_score = if shortlisted.contains(&index) {
+                rescore(&choice)
+            } else {
+                immediate_score(&choice)
+            };
+            RankedStandardSplitChoice {
+                choice,
+                ranking_score,
+            }
+        })
+        .collect()
+}
+
+fn rank_shortlisted_multiway_candidates(
+    candidates: Vec<MultiwaySplitChoice>,
+    top_k: usize,
+    rescore: impl Fn(&MultiwaySplitChoice) -> f64,
+) -> Vec<RankedMultiwaySplitChoice> {
+    let mut shortlist = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| (index, choice.score))
+        .collect::<Vec<_>>();
+    shortlist.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let shortlisted = shortlist
+        .into_iter()
+        .take(top_k)
+        .map(|(index, _)| index)
+        .collect::<std::collections::BTreeSet<_>>();
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(index, choice)| RankedMultiwaySplitChoice {
+            ranking_score: if shortlisted.contains(&index) {
+                rescore(&choice)
+            } else {
+                choice.score
+            },
+            choice,
+        })
+        .collect()
 }
 
 struct BuildContext<'a> {

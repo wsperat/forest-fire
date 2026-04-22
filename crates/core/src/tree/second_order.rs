@@ -821,10 +821,11 @@ fn train_oblivious_structure(
         };
         let selection = select_best_non_canary_candidate(
             table,
-            split_candidates
-                .into_iter()
-                .map(|candidate| RankedSplitChoice {
-                    ranking_score: oblivious_split_ranking_score(
+            rank_shortlisted_oblivious_candidates(
+                split_candidates,
+                options.tree_options.lookahead_top_k,
+                |candidate| {
+                    oblivious_split_ranking_score(
                         table,
                         &row_indices,
                         gradients,
@@ -832,12 +833,11 @@ fn train_oblivious_structure(
                         &leaves,
                         &options,
                         depth,
-                        &candidate,
+                        candidate,
                         options.tree_options.effective_lookahead_depth(),
-                    ),
-                    choice: candidate,
-                })
-                .collect::<Vec<_>>(),
+                    )
+                },
+            ),
             options.tree_options.canary_filter,
             |candidate| candidate.ranking_score,
             |candidate| candidate.choice.feature_index,
@@ -1144,19 +1144,12 @@ fn rank_standard_split_choices(
             .map(StandardSplitChoice::Axis)
             .collect()
     };
-    candidates
-        .into_iter()
-        .map(|choice| RankedStandardSplitChoice {
-            ranking_score: standard_split_ranking_score(
-                context,
-                rows,
-                depth,
-                &choice,
-                lookahead_depth,
-            ),
-            choice,
-        })
-        .collect()
+    rank_shortlisted_candidates(
+        candidates,
+        context.options.tree_options.lookahead_top_k,
+        StandardSplitChoice::gain,
+        |choice| standard_split_ranking_score(context, rows, depth, choice, lookahead_depth),
+    )
 }
 
 fn standard_split_ranking_score(
@@ -1193,9 +1186,15 @@ fn standard_split_ranking_score(
         ),
     };
     let (left_rows, right_rows) = partitioned_rows.split_at_mut(left_count);
-    immediate
-        + best_standard_split_lookahead_score(context, left_rows, depth + 1, lookahead_depth - 1)
-        + best_standard_split_lookahead_score(context, right_rows, depth + 1, lookahead_depth - 1)
+    let future =
+        best_standard_split_lookahead_score(context, left_rows, depth + 1, lookahead_depth - 1)
+            + best_standard_split_lookahead_score(
+                context,
+                right_rows,
+                depth + 1,
+                lookahead_depth - 1,
+            );
+    immediate + context.options.tree_options.lookahead_weight * future
 }
 
 fn best_standard_split_lookahead_score(
@@ -1255,6 +1254,37 @@ fn best_standard_split_lookahead_score(
     )
     .selected
     .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+}
+
+fn rank_shortlisted_candidates(
+    candidates: Vec<StandardSplitChoice>,
+    top_k: usize,
+    immediate_score: fn(&StandardSplitChoice) -> f64,
+    rescore: impl Fn(&StandardSplitChoice) -> f64,
+) -> Vec<RankedStandardSplitChoice> {
+    let mut shortlist = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| (index, immediate_score(choice)))
+        .collect::<Vec<_>>();
+    shortlist.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let shortlisted = shortlist
+        .into_iter()
+        .take(top_k)
+        .map(|(index, _)| index)
+        .collect::<std::collections::BTreeSet<_>>();
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(index, choice)| RankedStandardSplitChoice {
+            ranking_score: if shortlisted.contains(&index) {
+                rescore(&choice)
+            } else {
+                immediate_score(&choice)
+            },
+            choice,
+        })
+        .collect()
 }
 
 fn collect_oblique_split_choices(
@@ -1915,17 +1945,17 @@ fn oblivious_split_ranking_score(
         candidate.feature_index,
         candidate.threshold_bin,
     );
-    immediate
-        + best_oblivious_split_lookahead_score(
-            table,
-            &mut next_row_indices,
-            gradients,
-            hessians,
-            next_leaves,
-            options,
-            depth + 1,
-            lookahead_depth - 1,
-        )
+    let future = best_oblivious_split_lookahead_score(
+        table,
+        &mut next_row_indices,
+        gradients,
+        hessians,
+        next_leaves,
+        options,
+        depth + 1,
+        lookahead_depth - 1,
+    );
+    immediate + options.tree_options.lookahead_weight * future
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1969,10 +1999,11 @@ fn best_oblivious_split_lookahead_score(
         .collect::<Vec<_>>();
     select_best_non_canary_candidate(
         table,
-        split_candidates
-            .into_iter()
-            .map(|candidate| RankedSplitChoice {
-                ranking_score: oblivious_split_ranking_score(
+        rank_shortlisted_oblivious_candidates(
+            split_candidates,
+            options.tree_options.lookahead_top_k,
+            |candidate| {
+                oblivious_split_ranking_score(
                     table,
                     row_indices,
                     gradients,
@@ -1980,18 +2011,47 @@ fn best_oblivious_split_lookahead_score(
                     &leaves,
                     options,
                     depth,
-                    &candidate,
+                    candidate,
                     lookahead_depth,
-                ),
-                choice: candidate,
-            })
-            .collect::<Vec<_>>(),
+                )
+            },
+        ),
         options.tree_options.canary_filter,
         |candidate| candidate.ranking_score,
         |candidate| candidate.choice.feature_index,
     )
     .selected
     .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+}
+
+fn rank_shortlisted_oblivious_candidates(
+    candidates: Vec<SplitChoice>,
+    top_k: usize,
+    rescore: impl Fn(&SplitChoice) -> f64,
+) -> Vec<RankedSplitChoice> {
+    let mut shortlist = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| (index, candidate.gain))
+        .collect::<Vec<_>>();
+    shortlist.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let shortlisted = shortlist
+        .into_iter()
+        .take(top_k)
+        .map(|(index, _)| index)
+        .collect::<std::collections::BTreeSet<_>>();
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(index, choice)| RankedSplitChoice {
+            ranking_score: if shortlisted.contains(&index) {
+                rescore(&choice)
+            } else {
+                choice.gain
+            },
+            choice,
+        })
+        .collect()
 }
 
 fn children_are_splittable(

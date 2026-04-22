@@ -126,6 +126,8 @@ impl RandomForest {
                         missing_value_strategies: config.missing_value_strategies.clone(),
                         canary_filter: crate::CanaryFilter::default(),
                         lookahead_depth: config.lookahead_depth,
+                        lookahead_top_k: config.lookahead_top_k,
+                        lookahead_weight: config.lookahead_weight,
                     },
                     max_features: Some(max_features),
                     random_seed: tree_seed,

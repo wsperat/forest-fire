@@ -95,10 +95,11 @@ pub(super) fn train_oblivious_structure(
                 .collect::<Vec<_>>()
         };
 
-        let ranked_candidates = split_candidates
-            .into_iter()
-            .map(|candidate| RankedObliviousSplitCandidate {
-                ranking_score: oblivious_split_ranking_score(
+        let ranked_candidates = rank_shortlisted_oblivious_candidates(
+            split_candidates,
+            options.lookahead_top_k,
+            |candidate| {
+                oblivious_split_ranking_score(
                     table,
                     &row_indices,
                     class_indices,
@@ -107,12 +108,11 @@ pub(super) fn train_oblivious_structure(
                     criterion,
                     &options,
                     depth,
-                    &candidate,
+                    candidate,
                     options.effective_lookahead_depth(),
-                ),
-                candidate,
-            })
-            .collect::<Vec<_>>();
+                )
+            },
+        );
 
         let Some(best_split) = select_best_non_canary_candidate(
             table,
@@ -463,18 +463,18 @@ fn oblivious_split_ranking_score(
         candidate.feature_index,
         candidate.threshold_bin,
     );
-    immediate
-        + best_oblivious_split_lookahead_score(
-            table,
-            &mut next_row_indices,
-            class_indices,
-            num_classes,
-            next_leaves,
-            criterion,
-            options,
-            depth + 1,
-            lookahead_depth - 1,
-        )
+    let future = best_oblivious_split_lookahead_score(
+        table,
+        &mut next_row_indices,
+        class_indices,
+        num_classes,
+        next_leaves,
+        criterion,
+        options,
+        depth + 1,
+        lookahead_depth - 1,
+    );
+    immediate + options.lookahead_weight * future
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -520,10 +520,11 @@ fn best_oblivious_split_lookahead_score(
         .collect::<Vec<_>>();
     select_best_non_canary_candidate(
         table,
-        split_candidates
-            .into_iter()
-            .map(|candidate| RankedObliviousSplitCandidate {
-                ranking_score: oblivious_split_ranking_score(
+        rank_shortlisted_oblivious_candidates(
+            split_candidates,
+            options.lookahead_top_k,
+            |candidate| {
+                oblivious_split_ranking_score(
                     table,
                     row_indices,
                     class_indices,
@@ -532,16 +533,45 @@ fn best_oblivious_split_lookahead_score(
                     criterion,
                     options,
                     depth,
-                    &candidate,
+                    candidate,
                     lookahead_depth,
-                ),
-                candidate,
-            })
-            .collect::<Vec<_>>(),
+                )
+            },
+        ),
         options.canary_filter,
         |candidate| candidate.ranking_score,
         |candidate| candidate.candidate.feature_index,
     )
     .selected
     .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+}
+
+fn rank_shortlisted_oblivious_candidates(
+    candidates: Vec<ObliviousSplitCandidate>,
+    top_k: usize,
+    rescore: impl Fn(&ObliviousSplitCandidate) -> f64,
+) -> Vec<RankedObliviousSplitCandidate> {
+    let mut shortlist = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| (index, candidate.score))
+        .collect::<Vec<_>>();
+    shortlist.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let shortlisted = shortlist
+        .into_iter()
+        .take(top_k)
+        .map(|(index, _)| index)
+        .collect::<std::collections::BTreeSet<_>>();
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(index, candidate)| RankedObliviousSplitCandidate {
+            ranking_score: if shortlisted.contains(&index) {
+                rescore(&candidate)
+            } else {
+                candidate.score
+            },
+            candidate,
+        })
+        .collect()
 }
