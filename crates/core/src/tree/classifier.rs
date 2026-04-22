@@ -29,8 +29,8 @@ use crate::tree::shared::{
     partition_rows_for_binary_split, select_best_non_canary_candidate,
 };
 use crate::{
-    CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
-    SplitStrategy, capture_feature_preprocessing,
+    BuilderStrategy, CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy,
+    Parallelism, SplitStrategy, capture_feature_preprocessing,
 };
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
@@ -83,6 +83,7 @@ pub struct DecisionTreeOptions {
     pub missing_value_strategies: Vec<MissingValueStrategy>,
     pub canary_filter: CanaryFilter,
     pub split_strategy: SplitStrategy,
+    pub builder: BuilderStrategy,
     pub lookahead_depth: usize,
 }
 
@@ -97,7 +98,17 @@ impl Default for DecisionTreeOptions {
             missing_value_strategies: Vec::new(),
             canary_filter: CanaryFilter::default(),
             split_strategy: SplitStrategy::AxisAligned,
+            builder: BuilderStrategy::Greedy,
             lookahead_depth: 1,
+        }
+    }
+}
+
+impl DecisionTreeOptions {
+    fn effective_lookahead_depth(&self) -> usize {
+        match self.builder {
+            BuilderStrategy::Greedy => 1,
+            BuilderStrategy::Lookahead => self.lookahead_depth,
         }
     }
 }
@@ -1129,7 +1140,7 @@ fn build_binary_node_in_place_with_hist(
         &current_class_counts,
         &split_candidates,
         &feature_indices,
-        context.options.lookahead_depth,
+        context.options.effective_lookahead_depth(),
     );
     let best_split = select_best_non_canary_candidate(
         context.table,
@@ -1740,7 +1751,7 @@ fn rank_multiway_split_choices(
                 depth,
                 metric,
                 &choice,
-                context.options.lookahead_depth,
+                context.options.effective_lookahead_depth(),
             ),
             choice,
         })

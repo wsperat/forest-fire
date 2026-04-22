@@ -24,6 +24,7 @@ def train(
     task: str = "auto",
     tree_type: str = "cart",
     split_strategy: str = "axis_aligned",
+    builder: str = "greedy",
     criterion: str = "auto",
     canaries: int = 2,
     bins: str | int = "auto",

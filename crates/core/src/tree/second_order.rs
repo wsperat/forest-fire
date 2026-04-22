@@ -833,7 +833,7 @@ fn train_oblivious_structure(
                         &options,
                         depth,
                         &candidate,
-                        options.tree_options.lookahead_depth,
+                        options.tree_options.effective_lookahead_depth(),
                     ),
                     choice: candidate,
                 })
@@ -1069,7 +1069,7 @@ fn evaluate_standard_node(
             depth,
             &split_candidates,
             &feature_indices,
-            context.options.tree_options.lookahead_depth,
+            context.options.tree_options.effective_lookahead_depth(),
         ),
         context.options.tree_options.canary_filter,
         |candidate| candidate.ranking_score,

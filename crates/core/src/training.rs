@@ -6,8 +6,8 @@
 //! to "shared configuration policy" versus "algorithm-specific learning logic".
 
 use crate::{
-    Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest, SplitStrategy, Task,
-    TrainAlgorithm, TrainConfig, TrainError, TreeType, tree,
+    BuilderStrategy, Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest,
+    SplitStrategy, Task, TrainAlgorithm, TrainConfig, TrainError, TreeType, tree,
 };
 use forestfire_data::{
     BinnedColumnKind, NumericBins, TableAccess, numeric_bin_boundaries, numeric_missing_bin,
@@ -305,6 +305,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 task: config.task,
                 tree_type: config.tree_type,
                 split_strategy: config.split_strategy,
+                builder: config.builder,
                 criterion,
                 parallelism,
                 max_depth,
@@ -321,6 +322,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 task: config.task,
                 tree_type: config.tree_type,
                 split_strategy: config.split_strategy,
+                builder: config.builder,
                 criterion,
                 parallelism,
                 n_trees: config.n_trees.unwrap_or(1000),
@@ -350,6 +352,7 @@ pub(crate) struct SingleModelConfig {
     pub(crate) task: Task,
     pub(crate) tree_type: TreeType,
     pub(crate) split_strategy: SplitStrategy,
+    pub(crate) builder: BuilderStrategy,
     pub(crate) criterion: Criterion,
     pub(crate) parallelism: Parallelism,
     pub(crate) max_depth: usize,
@@ -376,6 +379,7 @@ pub(crate) struct RandomForestConfig {
     pub(crate) task: Task,
     pub(crate) tree_type: TreeType,
     pub(crate) split_strategy: SplitStrategy,
+    pub(crate) builder: BuilderStrategy,
     pub(crate) criterion: Criterion,
     pub(crate) parallelism: Parallelism,
     pub(crate) n_trees: usize,
@@ -413,6 +417,7 @@ pub(crate) fn train_single_model_with_feature_subset(
                 task,
                 tree_type,
                 split_strategy,
+                builder,
                 criterion,
                 parallelism,
                 max_depth,
@@ -434,6 +439,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         missing_value_strategies: missing_value_strategies.clone(),
         canary_filter,
         split_strategy,
+        builder,
         lookahead_depth,
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
@@ -445,6 +451,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         missing_value_strategies,
         canary_filter,
         split_strategy,
+        builder,
         lookahead_depth,
     };
 

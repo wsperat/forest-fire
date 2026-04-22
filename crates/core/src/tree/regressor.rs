@@ -21,8 +21,8 @@ use crate::tree::shared::{
     select_best_non_canary_candidate, subtract_feature_histograms,
 };
 use crate::{
-    CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
-    SplitStrategy, capture_feature_preprocessing,
+    BuilderStrategy, CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy,
+    Parallelism, SplitStrategy, capture_feature_preprocessing,
 };
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
@@ -48,6 +48,7 @@ pub struct RegressionTreeOptions {
     pub missing_value_strategies: Vec<MissingValueStrategy>,
     pub canary_filter: CanaryFilter,
     pub split_strategy: SplitStrategy,
+    pub builder: BuilderStrategy,
     pub lookahead_depth: usize,
 }
 
@@ -62,12 +63,20 @@ impl Default for RegressionTreeOptions {
             missing_value_strategies: Vec::new(),
             canary_filter: CanaryFilter::default(),
             split_strategy: SplitStrategy::AxisAligned,
+            builder: BuilderStrategy::Greedy,
             lookahead_depth: 1,
         }
     }
 }
 
 impl RegressionTreeOptions {
+    pub(crate) fn effective_lookahead_depth(&self) -> usize {
+        match self.builder {
+            BuilderStrategy::Greedy => 1,
+            BuilderStrategy::Lookahead => self.lookahead_depth,
+        }
+    }
+
     fn missing_value_strategy(&self, feature_index: usize) -> MissingValueStrategy {
         self.missing_value_strategies
             .get(feature_index)
@@ -1019,7 +1028,7 @@ fn build_binary_node_in_place_with_hist(
         depth,
         &split_candidates,
         &feature_indices,
-        context.options.lookahead_depth,
+        context.options.effective_lookahead_depth(),
     );
     let best_split = select_best_non_canary_candidate(
         context.table,
@@ -1540,7 +1549,7 @@ fn train_oblivious_structure(
                     &options,
                     depth,
                     &candidate,
-                    options.lookahead_depth,
+                    options.effective_lookahead_depth(),
                 ),
                 candidate,
             })

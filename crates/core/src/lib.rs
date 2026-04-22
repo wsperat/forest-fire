@@ -161,6 +161,14 @@ pub enum SplitStrategy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuilderStrategy {
+    /// Rank splits by immediate local gain only.
+    Greedy,
+    /// Rank splits by a finite lookahead horizon.
+    Lookahead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxFeatures {
     /// Task-aware default: `sqrt` for classification, `third` for regression.
     Auto,
@@ -291,6 +299,8 @@ pub struct TrainConfig {
     pub tree_type: TreeType,
     /// Split family used by binary tree learners.
     pub split_strategy: SplitStrategy,
+    /// Tree-construction strategy used to rank candidate splits.
+    pub builder: BuilderStrategy,
     /// Split criterion. [`Criterion::Auto`] is resolved by the trainer.
     pub criterion: Criterion,
     /// Maximum tree depth.
@@ -342,6 +352,7 @@ impl Default for TrainConfig {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            builder: BuilderStrategy::Greedy,
             criterion: Criterion::Auto,
             max_depth: None,
             min_samples_split: None,

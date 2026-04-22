@@ -108,7 +108,7 @@ pub(super) fn train_oblivious_structure(
                     &options,
                     depth,
                     &candidate,
-                    options.lookahead_depth,
+                    options.effective_lookahead_depth(),
                 ),
                 candidate,
             })

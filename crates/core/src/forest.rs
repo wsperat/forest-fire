@@ -117,6 +117,7 @@ impl RandomForest {
                         task: config.task,
                         tree_type: config.tree_type,
                         split_strategy: config.split_strategy,
+                        builder: config.builder,
                         criterion,
                         parallelism: per_tree_parallelism,
                         max_depth: config.max_depth,
