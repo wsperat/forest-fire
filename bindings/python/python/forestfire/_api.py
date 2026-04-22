@@ -105,6 +105,7 @@ def train(
     x: Any,
     y: Any = None,
     *,
+    split_strategy: str = "axis_aligned",
     categorical_strategy: str | None = None,
     categorical_features: str | list[str | int] | None = None,
     target_smoothing: float = 20.0,
@@ -114,6 +115,7 @@ def train(
         _core.train(
             x,
             y,
+            split_strategy=split_strategy,
             categorical_strategy=categorical_strategy,
             categorical_features=categorical_features,
             target_smoothing=target_smoothing,

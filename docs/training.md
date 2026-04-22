@@ -49,6 +49,40 @@ Why multiple tree types exist:
 - `randomized` introduces stochasticity into split search, which is useful both as a standalone learner and as the basis for extra-trees-style ensembles
 - `oblivious` enforces one split per depth across the tree, which makes the final model more regular and easier to lower into compact runtime layouts
 
+## Split strategies
+
+ForestFire separates the tree family from the split family.
+
+The public split strategies are:
+
+- `axis_aligned`
+- `oblique`
+
+`axis_aligned` is the default and means ordinary one-feature threshold splits.
+
+`oblique` means a sparse pairwise linear split:
+
+```text
+w1 * x_i + w2 * x_j <= t
+```
+
+Current support matrix:
+
+- `axis_aligned`: all supported tree families
+- `oblique`: `dt`, `rf`, and `gbm` when `tree_type` is `cart` or `randomized`
+
+Not currently supported for:
+
+- `id3`
+- `c45`
+- `oblivious`
+
+Current implementation details:
+
+- oblique nodes are currently pairwise, not arbitrary `k`-feature hyperplanes
+- all candidate feature pairs available at a node are considered
+- axis-aligned and oblique candidates compete inside the same canary-filtered ranking
+
 ## Task detection
 
 With `task="auto"`:
@@ -123,7 +157,8 @@ prediction time falls back to the node prediction instead:
 Current implementation note:
 
 - the strategy toggle is implemented for the standard first-order tree builders
-- the second-order boosting path currently uses the existing missing-value behavior rather than a separate heuristic-vs-optimal toggle
+- the second-order boosting path uses the same learned missing-routing semantics,
+  but it does not expose a separate heuristic-vs-optimal toggle
 
 ## Categorical features
 
@@ -423,6 +458,17 @@ sorted by their owned row ranges, then partitioned through a recursive
 divide-and-conquer pass over disjoint slices of the shared row-index buffer.
 That keeps the in-place row-buffer model intact while allowing non-overlapping
 partitions to run concurrently.
+
+Oblique splitting now participates in that same frontier flow for standard
+second-order `cart` and `randomized` boosting trees.
+
+In that mode:
+
+- axis-aligned and oblique candidates are ranked together at each active node
+- oblique candidates are still sparse pairwise linear splits
+- all candidate feature pairs available at the node are considered
+- per-feature missing routing is learned for the two participating features and
+  replayed at inference time
 
 ### Histograms and child reuse
 

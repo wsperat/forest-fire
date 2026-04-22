@@ -66,7 +66,9 @@ fn collect_tree_used_features(tree: &ir::TreeDefinition, used: &mut BTreeSet<usi
                 match node {
                     ir::NodeTreeNode::Leaf { .. } => {}
                     ir::NodeTreeNode::BinaryBranch { split, .. } => {
-                        used.insert(binary_split_feature_index(split));
+                        for feature_index in binary_split_feature_indices(split) {
+                            used.insert(feature_index);
+                        }
                     }
                     ir::NodeTreeNode::MultiwayBranch { split, .. } => {
                         used.insert(split.feature_index);
@@ -91,7 +93,7 @@ fn tree_definition_primary_feature(tree: &ir::TreeDefinition) -> Option<usize> {
         } => nodes.iter().find_map(|node| match node {
             ir::NodeTreeNode::Leaf { node_id, .. } if node_id == root_node_id => None,
             ir::NodeTreeNode::BinaryBranch { node_id, split, .. } if node_id == root_node_id => {
-                Some(binary_split_feature_index(split))
+                binary_split_feature_indices(split).into_iter().next()
             }
             ir::NodeTreeNode::MultiwayBranch { node_id, split, .. } if node_id == root_node_id => {
                 Some(split.feature_index)
@@ -104,10 +106,13 @@ fn tree_definition_primary_feature(tree: &ir::TreeDefinition) -> Option<usize> {
     }
 }
 
-fn binary_split_feature_index(split: &ir::BinarySplit) -> usize {
+fn binary_split_feature_indices(split: &ir::BinarySplit) -> Vec<usize> {
     match split {
         ir::BinarySplit::NumericBinThreshold { feature_index, .. }
-        | ir::BinarySplit::BooleanTest { feature_index, .. } => *feature_index,
+        | ir::BinarySplit::BooleanTest { feature_index, .. } => vec![*feature_index],
+        ir::BinarySplit::ObliqueLinearCombination {
+            feature_indices, ..
+        } => feature_indices.clone(),
     }
 }
 

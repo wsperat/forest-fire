@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::error::Error;
 
 use forestfire_core::{
-    CanaryFilter, Criterion, MaxFeatures, MissingValueStrategyConfig, Model, OptimizedModel, Task,
-    TrainAlgorithm, TrainConfig, TreeType, train,
+    CanaryFilter, Criterion, MaxFeatures, MissingValueStrategyConfig, Model, OptimizedModel,
+    SplitStrategy, Task, TrainAlgorithm, TrainConfig, TreeType, train,
 };
 use forestfire_data::{NumericBins, Table};
 
@@ -50,6 +50,7 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 algorithm: TrainAlgorithm::Dt,
                 task: Task::Regression,
                 tree_type,
+                split_strategy: SplitStrategy::AxisAligned,
                 criterion,
                 max_depth: None,
 
@@ -95,6 +96,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 algorithm: TrainAlgorithm::Dt,
                 task: Task::Classification,
                 tree_type,
+                split_strategy: SplitStrategy::AxisAligned,
                 criterion,
                 max_depth: None,
 
@@ -145,6 +147,7 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Classification,
             tree_type: TreeType::Cart,
+            split_strategy: SplitStrategy::AxisAligned,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -208,6 +211,7 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Regression,
             tree_type: TreeType::Cart,
+            split_strategy: SplitStrategy::AxisAligned,
             criterion: Criterion::Mean,
             max_depth: None,
 

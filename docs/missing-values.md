@@ -150,6 +150,37 @@ The chosen design keeps missingness inside the tree learner:
 - split scoring reasons about it
 - prediction reproduces the learned routing
 
+## Oblique split behavior
+
+Oblique splits now follow the same general missing-value principle, but they
+need one extra rule because two features participate in the same node.
+
+An oblique split currently has the form:
+
+```text
+w1 * x_i + w2 * x_j <= t
+```
+
+For those nodes, missing values are handled per participating feature rather
+than as one undifferentiated “oblique node is missing” case.
+
+That means:
+
+- feature `x_i` learns its own missing direction
+- feature `x_j` learns its own missing direction
+- a row missing only one of those features is routed using that feature’s
+  learned direction
+
+If both participating features are missing:
+
+- the node first checks whether the two learned directions agree
+- if they do, it follows that shared direction
+- if they disagree, the tie is resolved by the feature with the larger absolute
+  oblique weight
+
+So oblique missing routing is still explicit learned tree semantics, not a
+serving-time imputation trick.
+
 ## Relation to optimized inference
 
 Optimized runtimes preserve the same missing-value semantics as the semantic
@@ -180,3 +211,10 @@ internally rather than a fully separate heuristic-vs-optimal strategy choice.
 That means the public missing-value semantics are aligned across the library,
 but the configurable search strategy is not yet equally rich in every internal
 trainer.
+
+For oblique splits specifically, the current implementation is:
+
+- first-order trees: learned per-feature missing directions
+- second-order GBM trees: learned per-feature missing directions as well
+- configurable `heuristic` vs `optimal` missing strategy: still a first-order
+  tree-builder setting rather than a separate GBM toggle

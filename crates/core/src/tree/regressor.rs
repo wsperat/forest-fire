@@ -10,6 +10,11 @@ use crate::ir::{
     ObliviousLevel, ObliviousSplit as IrObliviousSplit, TrainingMetadata, TreeDefinition,
     criterion_name, feature_name, threshold_upper_bound,
 };
+use crate::tree::oblique::{
+    all_feature_pairs, matched_canary_feature_pairs, missing_mask_for_pair, normalize_weights,
+    oblique_feature_value, partition_rows_for_oblique_split, projected_rows_for_pair,
+    resolve_oblique_missing_direction,
+};
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
     candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
@@ -17,7 +22,7 @@ use crate::tree::shared::{
 };
 use crate::{
     CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
-    capture_feature_preprocessing,
+    SplitStrategy, capture_feature_preprocessing,
 };
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
@@ -42,6 +47,7 @@ pub struct RegressionTreeOptions {
     pub random_seed: u64,
     pub missing_value_strategies: Vec<MissingValueStrategy>,
     pub canary_filter: CanaryFilter,
+    pub split_strategy: SplitStrategy,
 }
 
 impl Default for RegressionTreeOptions {
@@ -54,6 +60,7 @@ impl Default for RegressionTreeOptions {
             random_seed: 0,
             missing_value_strategies: Vec::new(),
             canary_filter: CanaryFilter::default(),
+            split_strategy: SplitStrategy::AxisAligned,
         }
     }
 }
@@ -135,6 +142,19 @@ pub(crate) enum RegressionNode {
         gain: f64,
         variance: Option<f64>,
     },
+    ObliqueSplit {
+        feature_indices: Vec<usize>,
+        weights: Vec<f64>,
+        missing_directions: Vec<MissingBranchDirection>,
+        threshold: f64,
+        missing_value: f64,
+        left_child: usize,
+        right_child: usize,
+        sample_count: usize,
+        impurity: f64,
+        gain: f64,
+        variance: Option<f64>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -183,6 +203,37 @@ struct BinarySplitChoice {
     threshold_bin: u16,
     score: f64,
     missing_direction: MissingBranchDirection,
+}
+
+#[derive(Debug, Clone)]
+struct ObliqueSplitChoice {
+    feature_indices: Vec<usize>,
+    weights: Vec<f64>,
+    missing_directions: Vec<MissingBranchDirection>,
+    threshold: f64,
+    score: f64,
+}
+
+#[derive(Debug, Clone)]
+enum StandardSplitChoice {
+    Axis(BinarySplitChoice),
+    Oblique(ObliqueSplitChoice),
+}
+
+impl StandardSplitChoice {
+    fn score(&self) -> f64 {
+        match self {
+            Self::Axis(choice) => choice.score,
+            Self::Oblique(choice) => choice.score,
+        }
+    }
+
+    fn ranking_feature_index(&self) -> usize {
+        match self {
+            Self::Axis(choice) => choice.feature_index,
+            Self::Oblique(choice) => choice.feature_indices[0],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -459,6 +510,45 @@ impl DecisionTreeRegressor {
                                 *right_child
                             };
                         }
+                        RegressionNode::ObliqueSplit {
+                            feature_indices,
+                            weights,
+                            missing_directions,
+                            threshold,
+                            missing_value,
+                            left_child,
+                            right_child,
+                            ..
+                        } => {
+                            let missing_mask = missing_mask_for_pair(
+                                table,
+                                [feature_indices[0], feature_indices[1]],
+                                row_idx,
+                            );
+                            if let Some(go_left) = resolve_oblique_missing_direction(
+                                missing_mask,
+                                [weights[0], weights[1]],
+                                [missing_directions[0], missing_directions[1]],
+                            ) {
+                                node_index = if go_left { *left_child } else { *right_child };
+                                continue;
+                            }
+                            if missing_mask != 0 {
+                                return *missing_value;
+                            }
+                            let projection = weights
+                                .iter()
+                                .zip(feature_indices.iter())
+                                .map(|(weight, feature_index)| {
+                                    *weight * table.feature_value(*feature_index, row_idx)
+                                })
+                                .sum::<f64>();
+                            node_index = if projection <= *threshold {
+                                *left_child
+                            } else {
+                                *right_child
+                            };
+                        }
                     }
                 }
             }
@@ -577,6 +667,51 @@ impl DecisionTreeRegressor {
                                     variance: *variance,
                                 },
                             },
+                            RegressionNode::ObliqueSplit {
+                                feature_indices,
+                                weights,
+                                missing_directions,
+                                threshold,
+                                left_child,
+                                right_child,
+                                sample_count,
+                                impurity,
+                                gain,
+                                variance,
+                                ..
+                            } => NodeTreeNode::BinaryBranch {
+                                node_id,
+                                depth: depths[node_id],
+                                split: BinarySplit::ObliqueLinearCombination {
+                                    feature_indices: feature_indices.clone(),
+                                    feature_names: feature_indices
+                                        .iter()
+                                        .map(|feature_index| feature_name(*feature_index))
+                                        .collect(),
+                                    weights: weights.clone(),
+                                    missing_directions: missing_directions
+                                        .iter()
+                                        .map(|direction| match direction {
+                                            MissingBranchDirection::Left => "left".to_string(),
+                                            MissingBranchDirection::Right => "right".to_string(),
+                                            MissingBranchDirection::Node => "node".to_string(),
+                                        })
+                                        .collect(),
+                                    operator: "<=".to_string(),
+                                    threshold: *threshold,
+                                },
+                                children: BinaryChildren {
+                                    left: *left_child,
+                                    right: *right_child,
+                                },
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: Some(*impurity),
+                                    gain: Some(*gain),
+                                    class_counts: None,
+                                    variance: *variance,
+                                },
+                            },
                         })
                         .collect(),
                 }
@@ -664,6 +799,11 @@ fn populate_depths(nodes: &[RegressionNode], node_id: usize, depth: usize, depth
     match &nodes[node_id] {
         RegressionNode::Leaf { .. } => {}
         RegressionNode::BinarySplit {
+            left_child,
+            right_child,
+            ..
+        }
+        | RegressionNode::ObliqueSplit {
             left_child,
             right_child,
             ..
@@ -828,56 +968,78 @@ fn build_binary_node_in_place_with_hist(
     );
     let split_candidates = if context.parallelism.enabled() {
         feature_indices
-            .into_par_iter()
+            .par_iter()
             .filter_map(|feature_index| {
                 if let Some(histograms) = histograms.as_ref() {
                     score_binary_split_choice_from_hist(
                         context,
-                        &histograms[feature_index],
-                        feature_index,
+                        &histograms[*feature_index],
+                        *feature_index,
                         rows,
                     )
                 } else {
-                    score_binary_split_choice(context, feature_index, rows)
+                    score_binary_split_choice(context, *feature_index, rows)
                 }
             })
             .collect::<Vec<_>>()
     } else {
         feature_indices
-            .into_iter()
+            .iter()
             .filter_map(|feature_index| {
                 if let Some(histograms) = histograms.as_ref() {
                     score_binary_split_choice_from_hist(
                         context,
-                        &histograms[feature_index],
-                        feature_index,
+                        &histograms[*feature_index],
+                        *feature_index,
                         rows,
                     )
                 } else {
-                    score_binary_split_choice(context, feature_index, rows)
+                    score_binary_split_choice(context, *feature_index, rows)
                 }
             })
             .collect::<Vec<_>>()
     };
-    let best_split = select_best_non_canary_candidate(
-        context.table,
-        split_candidates,
-        context.options.canary_filter,
-        |candidate| candidate.score,
-        |candidate| candidate.feature_index,
-    )
-    .selected;
+    let best_split = if matches!(context.options.split_strategy, SplitStrategy::Oblique) {
+        select_best_non_canary_candidate(
+            context.table,
+            score_oblique_split_choices(context, rows, &split_candidates, &feature_indices),
+            context.options.canary_filter,
+            |candidate| candidate.score(),
+            |candidate| candidate.ranking_feature_index(),
+        )
+        .selected
+    } else {
+        select_best_non_canary_candidate(
+            context.table,
+            split_candidates,
+            context.options.canary_filter,
+            |candidate| candidate.score,
+            |candidate| candidate.feature_index,
+        )
+        .selected
+        .map(StandardSplitChoice::Axis)
+    };
 
     match best_split {
-        Some(best_split) if best_split.score > 0.0 => {
+        Some(best_split) if best_split.score() > 0.0 => {
             let impurity = regression_loss(rows, context.targets, context.criterion);
-            let left_count = partition_rows_for_binary_split(
-                context.table,
-                best_split.feature_index,
-                best_split.threshold_bin,
-                best_split.missing_direction,
-                rows,
-            );
+            let left_count = match &best_split {
+                StandardSplitChoice::Axis(choice) => partition_rows_for_binary_split(
+                    context.table,
+                    choice.feature_index,
+                    choice.threshold_bin,
+                    choice.missing_direction,
+                    rows,
+                ),
+                StandardSplitChoice::Oblique(choice) => partition_rows_for_oblique_split(
+                    context.table,
+                    [choice.feature_indices[0], choice.feature_indices[1]],
+                    [choice.weights[0], choice.weights[1]],
+                    choice.threshold,
+                    [choice.missing_directions[0], choice.missing_directions[1]],
+                    rows,
+                ),
+            };
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
             let (left_child, right_child) = if let Some(histograms) = histograms {
                 if left_rows.len() <= right_rows.len() {
@@ -935,22 +1097,230 @@ fn build_binary_node_in_place_with_hist(
 
             push_node(
                 nodes,
-                RegressionNode::BinarySplit {
-                    feature_index: best_split.feature_index,
-                    threshold_bin: best_split.threshold_bin,
-                    missing_direction: best_split.missing_direction,
-                    missing_value: leaf_value,
-                    left_child,
-                    right_child,
-                    sample_count: rows.len(),
-                    impurity,
-                    gain: best_split.score,
-                    variance: leaf_variance,
+                match best_split {
+                    StandardSplitChoice::Axis(best_split) => RegressionNode::BinarySplit {
+                        feature_index: best_split.feature_index,
+                        threshold_bin: best_split.threshold_bin,
+                        missing_direction: best_split.missing_direction,
+                        missing_value: leaf_value,
+                        left_child,
+                        right_child,
+                        sample_count: rows.len(),
+                        impurity,
+                        gain: best_split.score,
+                        variance: leaf_variance,
+                    },
+                    StandardSplitChoice::Oblique(best_split) => RegressionNode::ObliqueSplit {
+                        feature_indices: best_split.feature_indices,
+                        weights: best_split.weights,
+                        missing_directions: best_split.missing_directions,
+                        threshold: best_split.threshold,
+                        missing_value: leaf_value,
+                        left_child,
+                        right_child,
+                        sample_count: rows.len(),
+                        impurity,
+                        gain: best_split.score,
+                        variance: leaf_variance,
+                    },
                 },
             )
         }
         _ => push_leaf(nodes, leaf_value, rows.len(), leaf_variance),
     }
+}
+
+fn score_oblique_split_choices(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    axis_candidates: &[BinarySplitChoice],
+    candidate_features: &[usize],
+) -> Vec<StandardSplitChoice> {
+    if !matches!(context.options.split_strategy, SplitStrategy::Oblique)
+        || rows.len() < context.options.min_samples_leaf * 2
+    {
+        return axis_candidates
+            .iter()
+            .cloned()
+            .map(StandardSplitChoice::Axis)
+            .collect();
+    }
+
+    let real_features = candidate_features
+        .iter()
+        .copied()
+        .filter(|feature_index| *feature_index < context.table.n_features())
+        .collect::<Vec<_>>();
+    if real_features.len() < 2 {
+        return axis_candidates
+            .iter()
+            .cloned()
+            .map(StandardSplitChoice::Axis)
+            .collect();
+    }
+
+    let mut ranked = axis_candidates
+        .iter()
+        .cloned()
+        .map(StandardSplitChoice::Axis)
+        .collect::<Vec<_>>();
+    let real_pairs = all_feature_pairs(&real_features);
+    let mut candidates = collect_oblique_regression_candidates(context, rows, &real_pairs);
+    let canary_pairs = matched_canary_feature_pairs(context.table, &real_features);
+    candidates.extend(collect_oblique_regression_candidates(
+        context,
+        rows,
+        &canary_pairs,
+    ));
+    ranked.extend(candidates.into_iter().map(StandardSplitChoice::Oblique));
+    ranked
+}
+
+fn collect_oblique_regression_candidates(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    feature_pairs: &[[usize; 2]],
+) -> Vec<ObliqueSplitChoice> {
+    let parent_loss = regression_loss(rows, context.targets, context.criterion);
+    let mut candidates = Vec::new();
+    for &feature_pair in feature_pairs {
+        let observed_rows = rows
+            .iter()
+            .copied()
+            .filter(|row_index| missing_mask_for_pair(context.table, feature_pair, *row_index) == 0)
+            .collect::<Vec<_>>();
+        if observed_rows.len() < context.options.min_samples_leaf * 2 {
+            continue;
+        }
+        let Some(weights) = oblique_regression_weights(
+            context.table,
+            &observed_rows,
+            context.targets,
+            feature_pair,
+        ) else {
+            continue;
+        };
+        let Some(projected) =
+            projected_rows_for_pair(context.table, &observed_rows, feature_pair, weights)
+        else {
+            continue;
+        };
+
+        let mut missing_rows_by_mask = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for &row_index in rows {
+            let mask = missing_mask_for_pair(context.table, feature_pair, row_index) as usize;
+            if mask != 0 {
+                missing_rows_by_mask[mask].push(row_index);
+            }
+        }
+        let direction_choices_0 =
+            if missing_rows_by_mask[1].is_empty() && missing_rows_by_mask[3].is_empty() {
+                vec![MissingBranchDirection::Node]
+            } else {
+                vec![MissingBranchDirection::Left, MissingBranchDirection::Right]
+            };
+        let direction_choices_1 =
+            if missing_rows_by_mask[2].is_empty() && missing_rows_by_mask[3].is_empty() {
+                vec![MissingBranchDirection::Node]
+            } else {
+                vec![MissingBranchDirection::Left, MissingBranchDirection::Right]
+            };
+
+        for split_index in 0..projected.len().saturating_sub(1) {
+            if projected[split_index].value == projected[split_index + 1].value {
+                continue;
+            }
+            let threshold = (projected[split_index].value + projected[split_index + 1].value) / 2.0;
+            for &direction_0 in &direction_choices_0 {
+                for &direction_1 in &direction_choices_1 {
+                    let missing_directions = [direction_0, direction_1];
+                    let mut left_rows = projected[..split_index + 1]
+                        .iter()
+                        .map(|projected_row| projected_row.row_index)
+                        .collect::<Vec<_>>();
+                    let mut right_rows = projected[split_index + 1..]
+                        .iter()
+                        .map(|projected_row| projected_row.row_index)
+                        .collect::<Vec<_>>();
+                    for mask in [1u8, 2, 3] {
+                        let target_rows = &missing_rows_by_mask[mask as usize];
+                        if target_rows.is_empty() {
+                            continue;
+                        }
+                        let Some(go_left) =
+                            resolve_oblique_missing_direction(mask, weights, missing_directions)
+                        else {
+                            continue;
+                        };
+                        if go_left {
+                            left_rows.extend(target_rows.iter().copied());
+                        } else {
+                            right_rows.extend(target_rows.iter().copied());
+                        }
+                    }
+                    if left_rows.len() < context.options.min_samples_leaf
+                        || right_rows.len() < context.options.min_samples_leaf
+                    {
+                        continue;
+                    }
+                    let score = match context.criterion {
+                        Criterion::Mean | Criterion::Median => {
+                            parent_loss
+                                - (regression_loss(&left_rows, context.targets, context.criterion)
+                                    + regression_loss(
+                                        &right_rows,
+                                        context.targets,
+                                        context.criterion,
+                                    ))
+                        }
+                        _ => unreachable!("regression criterion only supports mean or median"),
+                    };
+                    if !score.is_finite() {
+                        continue;
+                    }
+                    candidates.push(ObliqueSplitChoice {
+                        feature_indices: vec![feature_pair[0], feature_pair[1]],
+                        weights: vec![weights[0], weights[1]],
+                        missing_directions: vec![direction_0, direction_1],
+                        threshold,
+                        score,
+                    });
+                }
+            }
+        }
+    }
+    candidates
+}
+
+fn oblique_regression_weights(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    targets: &[f64],
+    feature_pair: [usize; 2],
+) -> Option<[f64; 2]> {
+    let feature_values = rows
+        .iter()
+        .map(|&row_index| {
+            Some([
+                oblique_feature_value(table, feature_pair[0], row_index)?,
+                oblique_feature_value(table, feature_pair[1], row_index)?,
+            ])
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mean_target = rows
+        .iter()
+        .map(|row_index| targets[*row_index])
+        .sum::<f64>()
+        / rows.len() as f64;
+    let mean_x0 = feature_values.iter().map(|values| values[0]).sum::<f64>() / rows.len() as f64;
+    let mean_x1 = feature_values.iter().map(|values| values[1]).sum::<f64>() / rows.len() as f64;
+    let mut weights = [0.0; 2];
+    for (&row_index, values) in rows.iter().zip(feature_values.iter()) {
+        let centered_target = targets[row_index] - mean_target;
+        weights[0] += (values[0] - mean_x0) * centered_target;
+        weights[1] += (values[1] - mean_x1) * centered_target;
+    }
+    normalize_weights(weights)
 }
 
 fn train_oblivious_structure(
@@ -2331,7 +2701,7 @@ fn push_node(nodes: &mut Vec<RegressionNode>, node: RegressionNode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary};
+    use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary, SplitStrategy};
     use forestfire_data::{DenseTable, NumericBins};
 
     fn quadratic_table() -> DenseTable {
@@ -2379,6 +2749,34 @@ mod tests {
         DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
     }
 
+    fn oblique_canary_target_table() -> DenseTable {
+        let x = vec![
+            vec![0.0, 9.0],
+            vec![1.0, 4.0],
+            vec![2.0, 7.0],
+            vec![3.0, 2.0],
+            vec![4.0, 8.0],
+            vec![5.0, 1.0],
+            vec![6.0, 6.0],
+            vec![7.0, 3.0],
+            vec![8.0, 5.0],
+            vec![9.0, 0.0],
+        ];
+        let probe =
+            DenseTable::with_options(x.clone(), vec![0.0; x.len()], 1, NumericBins::Fixed(32))
+                .unwrap();
+        let left_canary = probe.n_features();
+        let right_canary = left_canary + 1;
+        let y = (0..probe.n_rows())
+            .map(|row_idx| {
+                probe.binned_value(left_canary, row_idx) as f64
+                    - probe.binned_value(right_canary, row_idx) as f64
+            })
+            .collect::<Vec<_>>();
+
+        DenseTable::with_options(x, y, 1, NumericBins::Fixed(32)).unwrap()
+    }
+
     fn randomized_permutation_table() -> DenseTable {
         DenseTable::with_options(
             vec![
@@ -2398,6 +2796,25 @@ mod tests {
             vec![0.0, 1.0, 2.5, 3.5, 4.0, 5.0, 6.5, 7.5, 2.0, 4.5, 6.0, 8.5],
             0,
             NumericBins::Fixed(8),
+        )
+        .unwrap()
+    }
+
+    fn oblique_regression_table() -> DenseTable {
+        DenseTable::with_options(
+            vec![
+                vec![-2.0, 1.0],
+                vec![1.0, -2.0],
+                vec![-1.0, 2.0],
+                vec![2.0, -1.0],
+                vec![-3.0, 1.0],
+                vec![1.0, -3.0],
+                vec![-1.0, 3.0],
+                vec![3.0, -1.0],
+            ],
+            vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+            0,
+            NumericBins::Fixed(64),
         )
         .unwrap()
     }
@@ -2490,6 +2907,57 @@ mod tests {
                 .unwrap()
         );
         assert!(unique_serializations.len() >= 4);
+    }
+
+    #[test]
+    fn cart_regressor_supports_oblique_split_strategy() {
+        let table = oblique_regression_table();
+        let model = train_cart_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            RegressionTreeOptions {
+                max_depth: 1,
+                max_features: Some(2),
+                split_strategy: SplitStrategy::Oblique,
+                ..RegressionTreeOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(model.predict_table(&table), table_targets(&table));
+        match model.structure() {
+            RegressionTreeStructure::Standard { nodes, root } => {
+                assert!(matches!(nodes[*root], RegressionNode::ObliqueSplit { .. }));
+            }
+            RegressionTreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+        }
+    }
+
+    #[test]
+    fn randomized_regressor_supports_oblique_split_strategy() {
+        let table = oblique_regression_table();
+        let model = train_randomized_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            RegressionTreeOptions {
+                max_depth: 1,
+                max_features: Some(2),
+                random_seed: 11,
+                split_strategy: SplitStrategy::Oblique,
+                ..RegressionTreeOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(model.predict_table(&table), table_targets(&table));
+        match model.structure() {
+            RegressionTreeStructure::Standard { nodes, root } => {
+                assert!(matches!(nodes[*root], RegressionNode::ObliqueSplit { .. }));
+            }
+            RegressionTreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+        }
     }
 
     #[test]
@@ -2589,6 +3057,93 @@ mod tests {
         let preds = model.predict_table(&table);
 
         assert!(preds.iter().any(|pred| *pred != preds[0]));
+    }
+
+    #[test]
+    fn oblique_canary_filter_blocks_oblique_regression_growth_when_canary_pair_wins() {
+        let table = oblique_canary_target_table();
+        let model = train_cart_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            RegressionTreeOptions {
+                canary_filter: CanaryFilter::TopN(1),
+                split_strategy: SplitStrategy::Oblique,
+                max_depth: 1,
+                ..RegressionTreeOptions::default()
+            },
+        )
+        .unwrap();
+        let preds = model.predict_table(&table);
+
+        assert!(preds.iter().all(|pred| *pred == preds[0]));
+        assert_ne!(preds, table_targets(&table));
+    }
+
+    #[test]
+    fn oblique_regressor_routes_missing_features_independently() {
+        let table = DenseTable::with_options(
+            vec![
+                vec![f64::NAN, 1.0],
+                vec![1.0, f64::NAN],
+                vec![f64::NAN, f64::NAN],
+                vec![2.0, 2.0],
+            ],
+            vec![0.0; 4],
+            0,
+            NumericBins::Fixed(16),
+        )
+        .unwrap();
+        let model = DecisionTreeRegressor {
+            algorithm: RegressionTreeAlgorithm::Cart,
+            criterion: Criterion::Mean,
+            structure: RegressionTreeStructure::Standard {
+                nodes: vec![
+                    RegressionNode::Leaf {
+                        value: -1.0,
+                        sample_count: 2,
+                        variance: None,
+                    },
+                    RegressionNode::Leaf {
+                        value: 1.0,
+                        sample_count: 2,
+                        variance: None,
+                    },
+                    RegressionNode::ObliqueSplit {
+                        feature_indices: vec![0, 1],
+                        weights: vec![1.0, 0.5],
+                        missing_directions: vec![
+                            crate::tree::shared::MissingBranchDirection::Left,
+                            crate::tree::shared::MissingBranchDirection::Right,
+                        ],
+                        threshold: 1.5,
+                        missing_value: 0.0,
+                        left_child: 0,
+                        right_child: 1,
+                        sample_count: 4,
+                        impurity: 0.0,
+                        gain: 1.0,
+                        variance: None,
+                    },
+                ],
+                root: 2,
+            },
+            options: RegressionTreeOptions::default(),
+            num_features: 2,
+            feature_preprocessing: vec![
+                FeaturePreprocessing::Numeric {
+                    bin_boundaries: vec![],
+                    missing_bin: 16,
+                },
+                FeaturePreprocessing::Numeric {
+                    bin_boundaries: vec![],
+                    missing_bin: 16,
+                },
+            ],
+            training_canaries: 0,
+        };
+
+        assert_eq!(model.predict_table(&table), vec![-1.0, 1.0, -1.0, 1.0]);
     }
 
     #[test]

@@ -83,6 +83,15 @@ pub(crate) enum OptimizedBinaryClassifierNode {
         missing_jump_index: Option<usize>,
         missing_probabilities: Option<Vec<f64>>,
     },
+    ObliqueBranch {
+        feature_indices: [usize; 2],
+        weights: [f64; 2],
+        missing_directions: [super::tree::shared::MissingBranchDirection; 2],
+        threshold: f64,
+        jump_index: usize,
+        jump_if_greater: bool,
+        missing_probabilities: Vec<f64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +105,15 @@ pub(crate) enum OptimizedBinaryRegressorNode {
         missing_bin: Option<u16>,
         missing_jump_index: Option<usize>,
         missing_value: Option<f64>,
+    },
+    ObliqueBranch {
+        feature_indices: [usize; 2],
+        weights: [f64; 2],
+        missing_directions: [super::tree::shared::MissingBranchDirection; 2],
+        threshold: f64,
+        jump_index: usize,
+        jump_if_greater: bool,
+        missing_value: f64,
     },
 }
 

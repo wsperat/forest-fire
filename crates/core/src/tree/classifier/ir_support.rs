@@ -26,6 +26,11 @@ fn populate_depths(nodes: &[TreeNode], node_id: usize, depth: usize, depths: &mu
             left_child,
             right_child,
             ..
+        }
+        | TreeNode::ObliqueSplit {
+            left_child,
+            right_child,
+            ..
         } => {
             populate_depths(nodes, *left_child, depth + 1, depths);
             populate_depths(nodes, *right_child, depth + 1, depths);
@@ -63,6 +68,32 @@ pub(super) fn binary_split_ir(
             ),
             comparison_dtype: "uint16".to_string(),
         },
+    }
+}
+
+pub(super) fn oblique_split_ir(
+    feature_indices: &[usize],
+    weights: &[f64],
+    missing_directions: &[crate::tree::shared::MissingBranchDirection],
+    threshold: f64,
+) -> BinarySplit {
+    BinarySplit::ObliqueLinearCombination {
+        feature_indices: feature_indices.to_vec(),
+        feature_names: feature_indices
+            .iter()
+            .map(|feature_index| feature_name(*feature_index))
+            .collect(),
+        weights: weights.to_vec(),
+        missing_directions: missing_directions
+            .iter()
+            .map(|direction| match direction {
+                crate::tree::shared::MissingBranchDirection::Left => "left".to_string(),
+                crate::tree::shared::MissingBranchDirection::Right => "right".to_string(),
+                crate::tree::shared::MissingBranchDirection::Node => "node".to_string(),
+            })
+            .collect(),
+        operator: "<=".to_string(),
+        threshold,
     }
 }
 

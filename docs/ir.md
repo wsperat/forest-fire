@@ -135,6 +135,18 @@ That includes:
 - randomized trees, which are structurally like CART but differ in how candidate splits are chosen
 - `id3` and `c45`, whose learned structure may include multiway branches
 
+For binary node trees, the IR can now also represent oblique splits in addition
+to ordinary axis-aligned threshold splits.
+
+Those oblique splits are currently sparse and pairwise:
+
+```text
+w1 * x_i + w2 * x_j <= t
+```
+
+So the IR stores not only the participating feature indices and weights, but
+also the learned missing-direction metadata for those two features.
+
 ### `oblivious_levels`
 
 This is used for oblivious trees.
@@ -250,6 +262,22 @@ So the IR is effectively saying:
 
 That is why categorical IR support required more than just flipping a boolean
 flag. The transform had to become part of the semantic contract.
+
+### Missing semantics in the IR
+
+Missing-value behavior is also part of the IR contract.
+
+For ordinary axis-aligned binary nodes, that means the IR-compatible semantic
+tree distinguishes:
+
+- missing goes left
+- missing goes right
+- missing falls back to the node prediction if no missing route was learned
+
+For oblique nodes, the IR preserves the learned missing-direction metadata for
+each participating feature separately. That matters because the optimized
+runtime and deserialized semantic model both need to replay the same routing
+decision before evaluating the linear projection.
 
 ## Output schema and postprocessing
 

@@ -99,3 +99,7 @@ One more behavioral detail matters in practice:
 - candidate splits are chosen from the non-missing bins
 - after the best observed split is found, the learner evaluates routing missing rows left vs right and stores the better choice
 - if a split feature had no missing values at training time, a later missing value falls back to the node prediction: majority class for classification and node mean for regression
+
+If you enable `split_strategy="oblique"` for `cart` or `randomized`, the split
+itself becomes a sparse two-feature linear test, and missing routing is learned
+independently for each participating feature.

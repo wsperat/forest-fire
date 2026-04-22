@@ -116,6 +116,7 @@ impl RandomForest {
                     base: training::SingleModelConfig {
                         task: config.task,
                         tree_type: config.tree_type,
+                        split_strategy: config.split_strategy,
                         criterion,
                         parallelism: per_tree_parallelism,
                         max_depth: config.max_depth,

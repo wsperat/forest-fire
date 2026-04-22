@@ -3,6 +3,7 @@ use forestfire_data::{BINARY_MISSING_BIN, TableAccess};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 const MIX_MULTIPLIER_A: u64 = 0xBF58_476D_1CE4_E5B9;
@@ -26,7 +27,7 @@ pub(crate) trait HistogramBin: Clone {
     fn is_observed(&self) -> bool;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum MissingBranchDirection {
     Left,
     Right,

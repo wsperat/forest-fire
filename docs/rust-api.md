@@ -34,9 +34,20 @@ The intended Rust lifecycle is:
 - `TrainAlgorithm`
 - `Task`
 - `TreeType`
+- `SplitStrategy`
 - `Criterion`
 - `Model`
 - `OptimizedModel`
+
+`TrainConfig::split_strategy` selects the split family:
+
+- `SplitStrategy::AxisAligned`
+- `SplitStrategy::Oblique`
+
+Current support:
+
+- `AxisAligned`: all supported tree families
+- `Oblique`: `dt`, `rf`, and `gbm` when `tree_type` is `Cart` or `Randomized`
 
 ## Core capabilities
 

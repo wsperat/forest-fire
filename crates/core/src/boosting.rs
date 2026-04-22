@@ -184,6 +184,7 @@ impl GradientBoostedTrees {
             random_seed: 0,
             missing_value_strategies,
             canary_filter: config.canary_filter,
+            split_strategy: config.split_strategy,
         };
         let tree_options = SecondOrderRegressionTreeOptions {
             tree_options,

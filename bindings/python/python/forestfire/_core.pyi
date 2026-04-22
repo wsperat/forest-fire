@@ -23,6 +23,7 @@ def train(
     algorithm: str = "dt",
     task: str = "auto",
     tree_type: str = "cart",
+    split_strategy: str = "axis_aligned",
     criterion: str = "auto",
     canaries: int = 2,
     bins: str | int = "auto",

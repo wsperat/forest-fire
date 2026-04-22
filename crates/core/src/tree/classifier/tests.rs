@@ -1,5 +1,5 @@
 use super::*;
-use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary};
+use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary, SplitStrategy};
 use forestfire_data::{DenseTable, NumericBins};
 
 fn and_table() -> DenseTable {
@@ -85,6 +85,37 @@ fn canary_target_table_with_noise_feature() -> DenseTable {
     DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
 }
 
+fn oblique_canary_target_table() -> DenseTable {
+    let x = vec![
+        vec![0.0, 9.0],
+        vec![1.0, 4.0],
+        vec![2.0, 7.0],
+        vec![3.0, 2.0],
+        vec![4.0, 8.0],
+        vec![5.0, 1.0],
+        vec![6.0, 6.0],
+        vec![7.0, 3.0],
+        vec![8.0, 5.0],
+        vec![9.0, 0.0],
+    ];
+    let probe =
+        DenseTable::with_options(x.clone(), vec![0.0; x.len()], 1, NumericBins::Fixed(32)).unwrap();
+    let left_canary = probe.n_features();
+    let right_canary = left_canary + 1;
+    let y = (0..probe.n_rows())
+        .map(|row_idx| {
+            if probe.binned_value(left_canary, row_idx) <= probe.binned_value(right_canary, row_idx)
+            {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
+
+    DenseTable::with_options(x, y, 1, NumericBins::Fixed(32)).unwrap()
+}
+
 fn randomized_permutation_table() -> DenseTable {
     DenseTable::with_options(
         vec![
@@ -104,6 +135,25 @@ fn randomized_permutation_table() -> DenseTable {
         vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0],
         0,
         NumericBins::Fixed(8),
+    )
+    .unwrap()
+}
+
+fn oblique_classification_table() -> DenseTable {
+    DenseTable::with_options(
+        vec![
+            vec![-2.0, 1.0],
+            vec![1.0, -2.0],
+            vec![-1.0, 2.0],
+            vec![2.0, -1.0],
+            vec![-3.0, 1.0],
+            vec![1.0, -3.0],
+            vec![-1.0, 3.0],
+            vec![3.0, -1.0],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+        0,
+        NumericBins::Fixed(64),
     )
     .unwrap()
 }
@@ -197,6 +247,57 @@ fn randomized_classifier_is_repeatable_for_fixed_seed_and_varies_across_seeds() 
             .unwrap()
     );
     assert!(unique_serializations.len() >= 4);
+}
+
+#[test]
+fn cart_classifier_supports_oblique_split_strategy() {
+    let table = oblique_classification_table();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 1,
+            max_features: Some(2),
+            split_strategy: SplitStrategy::Oblique,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(model.predict_table(&table), table_targets(&table));
+    match model.structure() {
+        TreeStructure::Standard { nodes, root } => {
+            assert!(matches!(nodes[*root], TreeNode::ObliqueSplit { .. }));
+        }
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    }
+}
+
+#[test]
+fn randomized_classifier_supports_oblique_split_strategy() {
+    let table = oblique_classification_table();
+    let model = train_randomized_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 1,
+            max_features: Some(2),
+            random_seed: 11,
+            split_strategy: SplitStrategy::Oblique,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(model.predict_table(&table), table_targets(&table));
+    match model.structure() {
+        TreeStructure::Standard { nodes, root } => {
+            assert!(matches!(nodes[*root], TreeNode::ObliqueSplit { .. }));
+        }
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    }
 }
 
 #[test]
@@ -314,6 +415,93 @@ fn top_fraction_canary_filter_can_choose_real_classifier_split() {
     let preds = model.predict_table(&table);
 
     assert!(preds.iter().any(|pred| *pred != preds[0]));
+}
+
+#[test]
+fn oblique_canary_filter_blocks_oblique_growth_when_canary_pair_wins() {
+    let table = oblique_canary_target_table();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            canary_filter: CanaryFilter::TopN(1),
+            split_strategy: SplitStrategy::Oblique,
+            max_depth: 1,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let preds = model.predict_table(&table);
+
+    assert!(preds.iter().all(|pred| *pred == preds[0]));
+    assert_ne!(preds, table_targets(&table));
+}
+
+#[test]
+fn oblique_classifier_routes_missing_features_independently() {
+    let table = DenseTable::with_options(
+        vec![
+            vec![f64::NAN, 1.0],
+            vec![1.0, f64::NAN],
+            vec![f64::NAN, f64::NAN],
+            vec![2.0, 2.0],
+        ],
+        vec![0.0; 4],
+        0,
+        NumericBins::Fixed(16),
+    )
+    .unwrap();
+    let model = DecisionTreeClassifier {
+        algorithm: DecisionTreeAlgorithm::Cart,
+        criterion: Criterion::Gini,
+        structure: TreeStructure::Standard {
+            nodes: vec![
+                TreeNode::Leaf {
+                    class_index: 0,
+                    sample_count: 2,
+                    class_counts: vec![2, 0],
+                },
+                TreeNode::Leaf {
+                    class_index: 1,
+                    sample_count: 2,
+                    class_counts: vec![0, 2],
+                },
+                TreeNode::ObliqueSplit {
+                    feature_indices: vec![0, 1],
+                    weights: vec![1.0, 0.5],
+                    missing_directions: vec![
+                        crate::tree::shared::MissingBranchDirection::Left,
+                        crate::tree::shared::MissingBranchDirection::Right,
+                    ],
+                    threshold: 1.5,
+                    left_child: 0,
+                    right_child: 1,
+                    sample_count: 4,
+                    impurity: 0.0,
+                    gain: 1.0,
+                    class_counts: vec![2, 2],
+                },
+            ],
+            root: 2,
+        },
+        options: DecisionTreeOptions::default(),
+        class_labels: vec![0.0, 1.0],
+        num_features: 2,
+        feature_preprocessing: vec![
+            FeaturePreprocessing::Numeric {
+                bin_boundaries: vec![],
+                missing_bin: 16,
+            },
+            FeaturePreprocessing::Numeric {
+                bin_boundaries: vec![],
+                missing_bin: 16,
+            },
+        ],
+        training_canaries: 0,
+    };
+
+    assert_eq!(model.predict_table(&table), vec![0.0, 1.0, 0.0, 1.0]);
 }
 
 #[test]

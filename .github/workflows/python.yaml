@@ -31,7 +31,7 @@ jobs:
           uv --version
           cargo --version
       - name: Sync Python dependencies
-        run: uv sync --all-extras
+        run: uv sync --all-extras --all-groups
       - name: Lock file check
         run: uv lock --locked
       - name: isort (check only)
