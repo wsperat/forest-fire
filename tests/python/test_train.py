@@ -1657,20 +1657,24 @@ def test_train_supports_oblique_split_strategy_for_cart_classifier() -> None:
     assert np.array_equal(optimized.predict(x), y)
 
 
-def test_train_rejects_unsupported_oblique_split_strategy_for_gbm() -> None:
+def test_train_supports_oblique_split_strategy_for_gbm() -> None:
     x = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])
 
-    with pytest.raises(ValueError, match="Unsupported split strategy"):
-        train(
-            x,
-            y,
-            algorithm="gbm",
-            task="classification",
-            tree_type="cart",
-            split_strategy="oblique",
-            canaries=0,
-        )
+    model = train(
+        x,
+        y,
+        algorithm="gbm",
+        task="classification",
+        tree_type="cart",
+        split_strategy="oblique",
+        n_trees=4,
+        max_depth=1,
+        canaries=0,
+    )
+
+    preds = model.predict(x)
+    assert preds.shape == y.shape
 
 
 def test_train_cart_regressor() -> None:

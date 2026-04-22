@@ -198,10 +198,10 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
 }
 
 #[test]
-fn unified_train_rejects_unsupported_oblique_strategy_combinations() {
+fn unified_train_accepts_oblique_strategy_for_gbm_cart() {
     let table = oblique_classification_table();
 
-    let err = train(
+    let model = train(
         &table,
         TrainConfig {
             algorithm: TrainAlgorithm::Gbm,
@@ -209,21 +209,15 @@ fn unified_train_rejects_unsupported_oblique_strategy_combinations() {
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::Oblique,
             criterion: Criterion::Auto,
+            n_trees: Some(4),
+            max_depth: Some(1),
             physical_cores: Some(1),
             ..TrainConfig::default()
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(matches!(
-        err,
-        TrainError::UnsupportedSplitStrategy {
-            algorithm: TrainAlgorithm::Gbm,
-            task: Task::Classification,
-            tree_type: TreeType::Cart,
-            split_strategy: SplitStrategy::Oblique,
-        }
-    ));
+    assert!(matches!(model, Model::GradientBoostedTrees(_)));
 }
 
 #[test]

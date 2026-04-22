@@ -7,6 +7,10 @@
 //! split gain and leaf values are computed: boosting provides per-row gradients
 //! and Hessians, and this learner turns them into Newton-style trees.
 
+use crate::tree::oblique::{
+    OBLIQUE_SHORTLIST_SIZE, matched_canary_feature_pairs, normalize_weights, oblique_feature_value,
+    partition_rows_for_oblique_split, projected_rows_for_pair, shortlist_real_features,
+};
 use crate::tree::regressor::{
     DecisionTreeRegressor, ObliviousSplit, RegressionNode, RegressionTreeAlgorithm,
     RegressionTreeOptions, RegressionTreeStructure,
@@ -17,7 +21,7 @@ use crate::tree::shared::{
     node_seed, partition_rows_for_binary_split, select_best_non_canary_candidate,
     subtract_feature_histograms,
 };
-use crate::{Criterion, Parallelism, capture_feature_preprocessing};
+use crate::{Criterion, Parallelism, SplitStrategy, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::error::Error;
@@ -137,6 +141,36 @@ struct SplitChoice {
     gain: f64,
 }
 
+#[derive(Debug, Clone)]
+struct ObliqueSplitChoice {
+    feature_indices: Vec<usize>,
+    weights: Vec<f64>,
+    threshold: f64,
+    gain: f64,
+}
+
+#[derive(Debug, Clone)]
+enum StandardSplitChoice {
+    Axis(SplitChoice),
+    Oblique(ObliqueSplitChoice),
+}
+
+impl StandardSplitChoice {
+    fn gain(&self) -> f64 {
+        match self {
+            Self::Axis(choice) => choice.gain,
+            Self::Oblique(choice) => choice.gain,
+        }
+    }
+
+    fn ranking_feature_index(&self) -> usize {
+        match self {
+            Self::Axis(choice) => choice.feature_index,
+            Self::Oblique(choice) => choice.feature_indices[0],
+        }
+    }
+}
+
 /// Result of evaluating one standard node before mutating the shared row buffer.
 ///
 /// Keeping node evaluation separate from child recursion is the first step
@@ -148,7 +182,7 @@ struct StandardNodeEvaluation {
     leaf_prediction: f64,
     parent_strength: f64,
     histograms: Option<Vec<SecondOrderFeatureHistogram>>,
-    best_split: Option<SplitChoice>,
+    best_split: Option<StandardSplitChoice>,
     blocked_by_canary: bool,
 }
 
@@ -496,30 +530,53 @@ fn train_standard_structure(
             evaluation,
         } in evaluations
         {
-            match evaluation.best_split {
-                Some(split) if split.gain > context.options.min_gain_to_split => {
-                    let left_count = partition_rows_for_binary_split(
-                        context.table,
-                        split.feature_index,
-                        split.threshold_bin,
-                        MissingBranchDirection::Right,
-                        &mut rows[start..end],
-                    );
+            match evaluation.best_split.clone() {
+                Some(split) if split.gain() > context.options.min_gain_to_split => {
+                    let left_count = match &split {
+                        StandardSplitChoice::Axis(split) => partition_rows_for_binary_split(
+                            context.table,
+                            split.feature_index,
+                            split.threshold_bin,
+                            MissingBranchDirection::Right,
+                            &mut rows[start..end],
+                        ),
+                        StandardSplitChoice::Oblique(split) => partition_rows_for_oblique_split(
+                            context.table,
+                            [split.feature_indices[0], split.feature_indices[1]],
+                            [split.weights[0], split.weights[1]],
+                            split.threshold,
+                            &mut rows[start..end],
+                        ),
+                    };
                     let mid = start + left_count;
 
                     let left_child = push_leaf(nodes, evaluation.leaf_prediction, mid - start);
                     let right_child = push_leaf(nodes, evaluation.leaf_prediction, end - mid);
-                    nodes[node_index] = RegressionNode::BinarySplit {
-                        feature_index: split.feature_index,
-                        threshold_bin: split.threshold_bin,
-                        missing_direction: MissingBranchDirection::Node,
-                        missing_value: evaluation.leaf_prediction,
-                        left_child,
-                        right_child,
-                        sample_count: evaluation.sample_count,
-                        impurity: evaluation.parent_strength,
-                        gain: split.gain,
-                        variance: None,
+                    nodes[node_index] = match split {
+                        StandardSplitChoice::Axis(split) => RegressionNode::BinarySplit {
+                            feature_index: split.feature_index,
+                            threshold_bin: split.threshold_bin,
+                            missing_direction: MissingBranchDirection::Node,
+                            missing_value: evaluation.leaf_prediction,
+                            left_child,
+                            right_child,
+                            sample_count: evaluation.sample_count,
+                            impurity: evaluation.parent_strength,
+                            gain: split.gain,
+                            variance: None,
+                        },
+                        StandardSplitChoice::Oblique(split) => RegressionNode::ObliqueSplit {
+                            feature_indices: split.feature_indices,
+                            weights: split.weights,
+                            threshold: split.threshold,
+                            missing_value: evaluation.leaf_prediction,
+                            left_child,
+                            right_child,
+                            sample_count: evaluation.sample_count,
+                            impurity: evaluation.parent_strength,
+                            gain: split.gain,
+                            variance: None,
+                        },
                     };
                     pending_splits.push(PendingSplit {
                         node_index,
@@ -585,18 +642,14 @@ fn train_standard_structure(
                         (left_histograms, right_histograms)
                     };
                     let left_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { left_child, .. } => *left_child,
+                        RegressionNode::BinarySplit { left_child, .. }
+                        | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
-                        RegressionNode::ObliqueSplit { .. } => {
-                            unreachable!("second-order trees do not support oblique splits")
-                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { right_child, .. } => *right_child,
+                        RegressionNode::BinarySplit { right_child, .. }
+                        | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
-                        RegressionNode::ObliqueSplit { .. } => {
-                            unreachable!("second-order trees do not support oblique splits")
-                        }
                     };
                     [
                         ActiveNode {
@@ -650,18 +703,14 @@ fn train_standard_structure(
                         (left_histograms, right_histograms)
                     };
                     let left_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { left_child, .. } => *left_child,
+                        RegressionNode::BinarySplit { left_child, .. }
+                        | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
-                        RegressionNode::ObliqueSplit { .. } => {
-                            unreachable!("second-order trees do not support oblique splits")
-                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { right_child, .. } => *right_child,
+                        RegressionNode::BinarySplit { right_child, .. }
+                        | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
-                        RegressionNode::ObliqueSplit { .. } => {
-                            unreachable!("second-order trees do not support oblique splits")
-                        }
                     };
                     [
                         ActiveNode {
@@ -842,14 +891,24 @@ fn partition_pending_splits_recursive(
         let split = pending
             .evaluation
             .best_split
+            .clone()
             .expect("pending split must retain split choice");
-        let left_count = partition_rows_for_binary_split(
-            table,
-            split.feature_index,
-            split.threshold_bin,
-            MissingBranchDirection::Right,
-            &mut rows[local_start..local_end],
-        );
+        let left_count = match split {
+            StandardSplitChoice::Axis(split) => partition_rows_for_binary_split(
+                table,
+                split.feature_index,
+                split.threshold_bin,
+                MissingBranchDirection::Right,
+                &mut rows[local_start..local_end],
+            ),
+            StandardSplitChoice::Oblique(split) => partition_rows_for_oblique_split(
+                table,
+                [split.feature_indices[0], split.feature_indices[1]],
+                [split.weights[0], split.weights[1]],
+                split.threshold,
+                &mut rows[local_start..local_end],
+            ),
+        };
         pending.mid = pending.start + left_count;
         return;
     }
@@ -968,13 +1027,33 @@ fn evaluate_standard_node(
             })
             .collect::<Vec<_>>()
     };
-    let selection = select_best_non_canary_candidate(
-        context.table,
-        split_candidates,
-        context.options.tree_options.canary_filter,
-        |candidate| candidate.gain,
-        |candidate| candidate.feature_index,
-    );
+    let selection = if matches!(
+        context.options.tree_options.split_strategy,
+        SplitStrategy::Oblique
+    ) && matches!(
+        context.algorithm,
+        RegressionTreeAlgorithm::Cart | RegressionTreeAlgorithm::Randomized
+    ) {
+        select_best_non_canary_candidate(
+            context.table,
+            score_standard_split_choices(context, rows, &split_candidates),
+            context.options.tree_options.canary_filter,
+            |candidate| candidate.gain(),
+            |candidate| candidate.ranking_feature_index(),
+        )
+    } else {
+        let selection = select_best_non_canary_candidate(
+            context.table,
+            split_candidates,
+            context.options.tree_options.canary_filter,
+            |candidate| candidate.gain,
+            |candidate| candidate.feature_index,
+        );
+        crate::tree::shared::CanarySelection {
+            selected: selection.selected.map(StandardSplitChoice::Axis),
+            blocked_by_canary: selection.blocked_by_canary,
+        }
+    };
 
     StandardNodeEvaluation {
         sample_count,
@@ -984,6 +1063,151 @@ fn evaluate_standard_node(
         best_split: selection.selected,
         blocked_by_canary: selection.blocked_by_canary,
     }
+}
+
+fn score_standard_split_choices(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    axis_candidates: &[SplitChoice],
+) -> Vec<StandardSplitChoice> {
+    let shortlisted = shortlist_real_features(
+        &axis_candidates
+            .iter()
+            .map(|candidate| (candidate.feature_index, candidate.gain))
+            .collect::<Vec<_>>(),
+        context.table.n_features(),
+        OBLIQUE_SHORTLIST_SIZE,
+    );
+    let mut ranked = axis_candidates
+        .iter()
+        .cloned()
+        .map(StandardSplitChoice::Axis)
+        .collect::<Vec<_>>();
+    if shortlisted.len() < 2 {
+        return ranked;
+    }
+
+    let real_pairs = shortlisted
+        .iter()
+        .enumerate()
+        .flat_map(|(left_index, &left_feature)| {
+            shortlisted[left_index + 1..]
+                .iter()
+                .map(move |&right_feature| [left_feature, right_feature])
+        })
+        .collect::<Vec<_>>();
+    ranked.extend(
+        collect_oblique_split_choices(context, rows, &real_pairs)
+            .into_iter()
+            .map(StandardSplitChoice::Oblique),
+    );
+    let canary_pairs = matched_canary_feature_pairs(context.table, &shortlisted);
+    ranked.extend(
+        collect_oblique_split_choices(context, rows, &canary_pairs)
+            .into_iter()
+            .map(StandardSplitChoice::Oblique),
+    );
+    ranked
+}
+
+fn collect_oblique_split_choices(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    feature_pairs: &[[usize; 2]],
+) -> Vec<ObliqueSplitChoice> {
+    let stats = node_stats(rows, context.gradients, context.hessians);
+    let mut candidates = Vec::new();
+    for &feature_pair in feature_pairs {
+        let Some(weights) =
+            oblique_second_order_weights(context.table, rows, context.gradients, feature_pair)
+        else {
+            continue;
+        };
+        let Some(projected) = projected_rows_for_pair(context.table, rows, feature_pair, weights)
+        else {
+            continue;
+        };
+        let total_gradient_sum = projected
+            .iter()
+            .map(|projected_row| context.gradients[projected_row.row_index])
+            .sum::<f64>();
+        let total_hessian_sum = projected
+            .iter()
+            .map(|projected_row| context.hessians[projected_row.row_index])
+            .sum::<f64>();
+        let mut left_gradient_sum = 0.0;
+        let mut left_hessian_sum = 0.0;
+        for split_index in 0..projected.len().saturating_sub(1) {
+            let row_index = projected[split_index].row_index;
+            left_gradient_sum += context.gradients[row_index];
+            left_hessian_sum += context.hessians[row_index];
+            let left_count = split_index + 1;
+            let right_count = projected.len() - left_count;
+            let right_gradient_sum = total_gradient_sum - left_gradient_sum;
+            let right_hessian_sum = total_hessian_sum - left_hessian_sum;
+            if !children_are_splittable(
+                &context.options,
+                left_count,
+                left_hessian_sum,
+                right_count,
+                right_hessian_sum,
+            ) || projected[split_index].value == projected[split_index + 1].value
+            {
+                continue;
+            }
+            let gain = split_gain(
+                left_gradient_sum,
+                left_hessian_sum,
+                right_gradient_sum,
+                right_hessian_sum,
+                stats.gradient_sum,
+                stats.hessian_sum,
+                context.options.l2_regularization,
+            );
+            if !gain.is_finite() {
+                continue;
+            }
+            let threshold = (projected[split_index].value + projected[split_index + 1].value) / 2.0;
+            candidates.push(ObliqueSplitChoice {
+                feature_indices: vec![feature_pair[0], feature_pair[1]],
+                weights: vec![weights[0], weights[1]],
+                threshold,
+                gain,
+            });
+        }
+    }
+    candidates
+}
+
+fn oblique_second_order_weights(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    gradients: &[f64],
+    feature_pair: [usize; 2],
+) -> Option<[f64; 2]> {
+    let feature_values = rows
+        .iter()
+        .map(|&row_index| {
+            Some([
+                oblique_feature_value(table, feature_pair[0], row_index)?,
+                oblique_feature_value(table, feature_pair[1], row_index)?,
+            ])
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mean_gradient = rows
+        .iter()
+        .map(|row_index| gradients[*row_index])
+        .sum::<f64>()
+        / rows.len() as f64;
+    let mean_x0 = feature_values.iter().map(|values| values[0]).sum::<f64>() / rows.len() as f64;
+    let mean_x1 = feature_values.iter().map(|values| values[1]).sum::<f64>() / rows.len() as f64;
+    let mut weights = [0.0; 2];
+    for (&row_index, values) in rows.iter().zip(feature_values.iter()) {
+        let centered_gradient = gradients[row_index] - mean_gradient;
+        weights[0] += (values[0] - mean_x0) * centered_gradient;
+        weights[1] += (values[1] - mean_x1) * centered_gradient;
+    }
+    normalize_weights(weights)
 }
 
 fn node_stats(rows: &[usize], gradients: &[f64], hessians: &[f64]) -> NodeStats {
@@ -1519,6 +1743,25 @@ mod tests {
         .unwrap()
     }
 
+    fn oblique_second_order_table() -> DenseTable {
+        DenseTable::with_options(
+            vec![
+                vec![-2.0, 1.0],
+                vec![1.0, -2.0],
+                vec![-1.0, 2.0],
+                vec![2.0, -1.0],
+                vec![-3.0, 1.0],
+                vec![1.0, -3.0],
+                vec![-1.0, 3.0],
+                vec![3.0, -1.0],
+            ],
+            vec![0.0; 8],
+            0,
+            NumericBins::Fixed(64),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn cart_second_order_tree_learns_newton_leaf_values() {
         let table = simple_table();
@@ -1569,6 +1812,42 @@ mod tests {
         .unwrap();
 
         assert_eq!(model.predict_table(&table), vec![-1.5, -1.5, 1.5, 1.5]);
+    }
+
+    #[test]
+    fn cart_second_order_tree_supports_oblique_split_strategy() {
+        let table = oblique_second_order_table();
+        let gradients = [2.0, 2.0, -2.0, -2.0, 3.0, 3.0, -3.0, -3.0];
+        let hessians = [1.0; 8];
+        let model = train_cart_regressor_from_gradients_and_hessians(
+            &table,
+            &gradients,
+            &hessians,
+            Parallelism::sequential(),
+            SecondOrderRegressionTreeOptions {
+                tree_options: RegressionTreeOptions {
+                    max_depth: 1,
+                    max_features: Some(2),
+                    split_strategy: SplitStrategy::Oblique,
+                    ..Default::default()
+                },
+                l2_regularization: 0.0,
+                min_sum_hessian_in_leaf: 0.1,
+                min_gain_to_split: 0.0,
+            },
+        )
+        .unwrap();
+
+        match model.structure() {
+            RegressionTreeStructure::Standard { nodes, root } => {
+                assert!(matches!(nodes[*root], RegressionNode::ObliqueSplit { .. }));
+            }
+            RegressionTreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+        }
+        assert_eq!(
+            model.predict_table(&table),
+            vec![-2.5, -2.5, 2.5, 2.5, -2.5, -2.5, 2.5, 2.5]
+        );
     }
 
     #[test]

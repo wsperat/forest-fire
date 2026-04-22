@@ -658,6 +658,13 @@ fn validate_split_strategy(
         return Ok(());
     }
 
+    if matches!(algorithm, TrainAlgorithm::Gbm)
+        && matches!(tree_type, TreeType::Cart | TreeType::Randomized)
+        && matches!(task, Task::Regression | Task::Classification)
+    {
+        return Ok(());
+    }
+
     Err(TrainError::UnsupportedSplitStrategy {
         algorithm,
         task,
