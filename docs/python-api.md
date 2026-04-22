@@ -17,6 +17,7 @@ train(
     algorithm="dt",
     task="auto",
     tree_type="cart",
+    split_strategy="axis_aligned",
     criterion="auto",
     canaries=2,
     bins="auto",
@@ -34,6 +35,9 @@ train(
     top_gradient_fraction=None,
     other_gradient_fraction=None,
     missing_value_strategy=None,
+    categorical_strategy=None,
+    categorical_features=None,
+    target_smoothing=20.0,
     filter=None,
 )
 ```
@@ -43,6 +47,7 @@ train(
 - `algorithm="dt" | "rf" | "gbm"`
 - `task="auto" | "regression" | "classification"`
 - `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
+- `split_strategy="axis_aligned" | "oblique"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 
 ### Parameter semantics
@@ -67,6 +72,24 @@ train(
 - `cart`: standard binary tree
 - `randomized`: stochastic split-search variant
 - `oblivious`: symmetric tree with one split per depth
+
+#### `split_strategy`
+
+- `axis_aligned`: ordinary one-feature threshold splits
+- `oblique`: two-feature linear splits of the form `w1 * x_i + w2 * x_j <= t`
+
+Current support matrix:
+
+- `axis_aligned`: supported everywhere
+- `oblique`: supported for `dt`, `rf`, and `gbm` when `tree_type` is `cart` or
+  `randomized`
+
+Current oblique behavior:
+
+- all candidate feature pairs available at the node are considered
+- the learned split is still sparse and pairwise: exactly two features per node
+- missing values are routed independently per participating feature rather than
+  forcing a single node-level missing fallback
 
 #### `criterion`
 
@@ -252,7 +275,8 @@ Tradeoff:
 Current implementation note:
 
 - the strategy setting is implemented for the standard first-order tree training paths
-- the second-order boosting path still follows the existing missing-value implementation
+- the second-order boosting path uses the same learned missing-routing semantics,
+  but it does not expose a separate heuristic-vs-optimal toggle
 
 ## Supported input types
 

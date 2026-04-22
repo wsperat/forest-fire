@@ -422,15 +422,28 @@ This can improve model quality substantially when:
 
 ### Sparse oblique splits
 
-- add an experimental split type of the form:
-  - `w_1 x_1 + ... + w_k x_k <= t`
-- keep the first implementation sparse and low-dimensional:
-  - very small `k`
-  - strong regularization
-  - clear support for missing-value handling
-- shortlist candidate feature groups from the existing histogram/gain pipeline
-  before fitting the local hyperplane
-- compare against deeper axis-aligned trees at matched latency budgets
+The first sparse oblique implementation now exists.
+
+Current state:
+
+- the library supports an experimental pairwise oblique split type of the form:
+  - `w_1 x_i + w_2 x_j <= t`
+- oblique is available for:
+  - `dt`
+  - `rf`
+  - `gbm`
+  with `cart` and `randomized` tree types
+- semantic IR and optimized-runtime support are in place
+- missing-value handling is implemented per participating feature
+
+The next oblique steps are now about extending and tuning that baseline:
+
+- move beyond strictly pairwise splits when the added search cost is justified
+- add stronger regularization and budgeting around when oblique nodes are
+  allowed to appear
+- benchmark whether the current “all pairs at the node” search should become
+  adaptive again for larger feature spaces
+- compare oblique-vs-axis tradeoffs at matched latency budgets
 
 ### Hybrid builders
 
@@ -445,12 +458,17 @@ This can improve model quality substantially when:
 
 ### Runtime and export implications
 
-- define how oblique nodes should be represented in the IR
-- decide whether optimized runtime support should start with:
-  - scalar-only execution
-  - batched dot-product evaluation
+The semantic and optimized-runtime groundwork now exists, but runtime work is
+still open.
+
+The next runtime/export implications are:
+
+- decide whether oblique optimized inference should stay row-wise or gain a
+  batched projected-dot-product path
 - benchmark whether a few strong oblique nodes outperform many ordinary nodes
   at equal prediction cost
+- decide how far compiled-runtime specialization for oblique nodes should go
+  before the added complexity stops paying for itself
 
 ## Richer leaf models
 

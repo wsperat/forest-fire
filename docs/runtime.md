@@ -277,6 +277,38 @@ layout when no node in the lowered tree needs explicit missing routing. If any
 optimized binary node carries missing-aware behavior, ForestFire falls back to a
 row-wise path for that runtime so it preserves the learned semantics exactly.
 
+There is one more boundary now:
+
+- axis-aligned optimized binary trees can use the compact batch path when their
+  missing semantics allow it
+- oblique optimized trees are supported, but they stay on the row-wise path
+  because those nodes need raw feature values and per-node linear projections
+  rather than only pre-binned threshold comparisons
+
+## Oblique nodes in the optimized runtime
+
+Oblique splits are now part of the semantic model, IR, and optimized runtime.
+
+The current oblique node shape is still sparse and pairwise:
+
+```text
+w1 * x_i + w2 * x_j <= t
+```
+
+Important current behavior:
+
+- all candidate feature pairs may be considered during training
+- the learned runtime node still stores exactly two feature indices and two
+  weights
+- optimized inference supports those nodes
+- but execution remains row-wise rather than using the compact batch threshold
+  path
+
+Missing values are also part of the oblique runtime contract. Each of the two
+participating features stores its own missing direction, and inference resolves
+missing rows using those stored directions before attempting the linear
+projection.
+
 ## Dense lookup for multiway nodes
 
 Classifier trees with multiway branching can be expensive if every node does:
