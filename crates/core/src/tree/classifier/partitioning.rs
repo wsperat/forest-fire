@@ -1,4 +1,5 @@
 use super::*;
+use crate::tree::shared::numeric_missing_bin;
 
 pub(super) fn partition_rows_for_multiway_split(
     table: &dyn TableAccess,
@@ -9,22 +10,16 @@ pub(super) fn partition_rows_for_multiway_split(
 ) -> Vec<(u16, usize, usize)> {
     let mut scratch = vec![0usize; rows.len()];
     let mut counts = vec![0usize; branch_bins.len()];
+    let missing_bin = numeric_missing_bin(table);
 
     for row_idx in rows.iter().copied() {
-        let bin = if table.is_missing(feature_index, row_idx) {
-            missing_branch_bin.expect("training-time missing values must map to a branch")
-        } else if table.is_binary_binned_feature(feature_index) {
-            if table
-                .binned_boolean_value(feature_index, row_idx)
-                .expect("binary feature must expose boolean values")
-            {
-                1
-            } else {
-                0
-            }
-        } else {
-            table.binned_value(feature_index, row_idx)
-        };
+        let bin = multiway_row_bin(
+            table,
+            feature_index,
+            row_idx,
+            missing_bin,
+            missing_branch_bin,
+        );
         let branch_index = branch_bins
             .binary_search(&bin)
             .expect("branch bins must cover all observed bins");
@@ -39,20 +34,13 @@ pub(super) fn partition_rows_for_multiway_split(
     }
     let mut write_positions = offsets.clone();
     for row_idx in rows.iter().copied() {
-        let bin = if table.is_missing(feature_index, row_idx) {
-            missing_branch_bin.expect("training-time missing values must map to a branch")
-        } else if table.is_binary_binned_feature(feature_index) {
-            if table
-                .binned_boolean_value(feature_index, row_idx)
-                .expect("binary feature must expose boolean values")
-            {
-                1
-            } else {
-                0
-            }
-        } else {
-            table.binned_value(feature_index, row_idx)
-        };
+        let bin = multiway_row_bin(
+            table,
+            feature_index,
+            row_idx,
+            missing_bin,
+            missing_branch_bin,
+        );
         let branch_index = branch_bins
             .binary_search(&bin)
             .expect("branch bins must cover all observed bins");
@@ -69,4 +57,28 @@ pub(super) fn partition_rows_for_multiway_split(
         .zip(counts)
         .map(|((bin, start), count)| (bin, start, start + count))
         .collect()
+}
+
+fn multiway_row_bin(
+    table: &dyn TableAccess,
+    feature_index: usize,
+    row_idx: usize,
+    missing_bin: u16,
+    missing_branch_bin: Option<u16>,
+) -> u16 {
+    if table.is_binary_binned_feature(feature_index) {
+        table
+            .binned_boolean_value(feature_index, row_idx)
+            .map_or_else(
+                || missing_branch_bin.expect("training-time missing values must map to a branch"),
+                u16::from,
+            )
+    } else {
+        let bin = table.binned_value(feature_index, row_idx);
+        if bin == missing_bin {
+            missing_branch_bin.expect("training-time missing values must map to a branch")
+        } else {
+            bin
+        }
+    }
 }

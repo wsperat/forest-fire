@@ -6,8 +6,8 @@
 //! to "shared configuration policy" versus "algorithm-specific learning logic".
 
 use crate::{
-    Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest, SplitStrategy, Task,
-    TrainAlgorithm, TrainConfig, TrainError, TreeType, tree,
+    BuilderStrategy, Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest,
+    SplitStrategy, Task, TrainAlgorithm, TrainConfig, TrainError, TreeType, tree,
 };
 use forestfire_data::{
     BinnedColumnKind, NumericBins, TableAccess, numeric_bin_boundaries, numeric_missing_bin,
@@ -291,6 +291,15 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     if min_samples_leaf == 0 {
         return Err(TrainError::InvalidMinSamplesLeaf(min_samples_leaf));
     }
+    if config.lookahead_depth == 0 {
+        return Err(TrainError::InvalidLookaheadDepth(config.lookahead_depth));
+    }
+    if config.lookahead_top_k == 0 {
+        return Err(TrainError::InvalidLookaheadTopK(config.lookahead_top_k));
+    }
+    if !config.lookahead_weight.is_finite() || config.lookahead_weight < 0.0 {
+        return Err(TrainError::InvalidLookaheadWeight(config.lookahead_weight));
+    }
     config.canary_filter.validate()?;
 
     // Parallelism is installed around the whole training call so nested trainers
@@ -302,6 +311,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 task: config.task,
                 tree_type: config.tree_type,
                 split_strategy: config.split_strategy,
+                builder: config.builder,
                 criterion,
                 parallelism,
                 max_depth,
@@ -309,6 +319,9 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 min_samples_leaf,
                 missing_value_strategies: missing_value_strategies.clone(),
                 canary_filter: config.canary_filter,
+                lookahead_depth: config.lookahead_depth,
+                lookahead_top_k: config.lookahead_top_k,
+                lookahead_weight: config.lookahead_weight,
             },
         ),
         TrainAlgorithm::Rf => train_random_forest(
@@ -317,6 +330,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 task: config.task,
                 tree_type: config.tree_type,
                 split_strategy: config.split_strategy,
+                builder: config.builder,
                 criterion,
                 parallelism,
                 n_trees: config.n_trees.unwrap_or(1000),
@@ -327,6 +341,9 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 max_features: config.max_features,
                 seed: config.seed,
                 compute_oob: config.compute_oob,
+                lookahead_depth: config.lookahead_depth,
+                lookahead_top_k: config.lookahead_top_k,
+                lookahead_weight: config.lookahead_weight,
             },
         ),
         TrainAlgorithm::Gbm => train_gradient_boosting(
@@ -345,6 +362,7 @@ pub(crate) struct SingleModelConfig {
     pub(crate) task: Task,
     pub(crate) tree_type: TreeType,
     pub(crate) split_strategy: SplitStrategy,
+    pub(crate) builder: BuilderStrategy,
     pub(crate) criterion: Criterion,
     pub(crate) parallelism: Parallelism,
     pub(crate) max_depth: usize,
@@ -352,6 +370,9 @@ pub(crate) struct SingleModelConfig {
     pub(crate) min_samples_leaf: usize,
     pub(crate) missing_value_strategies: Vec<crate::MissingValueStrategy>,
     pub(crate) canary_filter: crate::CanaryFilter,
+    pub(crate) lookahead_depth: usize,
+    pub(crate) lookahead_top_k: usize,
+    pub(crate) lookahead_weight: f64,
 }
 
 /// Internal single-tree config with optional per-node feature subsampling.
@@ -370,6 +391,7 @@ pub(crate) struct RandomForestConfig {
     pub(crate) task: Task,
     pub(crate) tree_type: TreeType,
     pub(crate) split_strategy: SplitStrategy,
+    pub(crate) builder: BuilderStrategy,
     pub(crate) criterion: Criterion,
     pub(crate) parallelism: Parallelism,
     pub(crate) n_trees: usize,
@@ -380,6 +402,9 @@ pub(crate) struct RandomForestConfig {
     pub(crate) max_features: crate::MaxFeatures,
     pub(crate) seed: Option<u64>,
     pub(crate) compute_oob: bool,
+    pub(crate) lookahead_depth: usize,
+    pub(crate) lookahead_top_k: usize,
+    pub(crate) lookahead_weight: f64,
 }
 
 pub(crate) fn train_single_model(
@@ -406,6 +431,7 @@ pub(crate) fn train_single_model_with_feature_subset(
                 task,
                 tree_type,
                 split_strategy,
+                builder,
                 criterion,
                 parallelism,
                 max_depth,
@@ -413,6 +439,9 @@ pub(crate) fn train_single_model_with_feature_subset(
                 min_samples_leaf,
                 missing_value_strategies,
                 canary_filter,
+                lookahead_depth,
+                lookahead_top_k,
+                lookahead_weight,
             },
         max_features,
         random_seed,
@@ -426,6 +455,10 @@ pub(crate) fn train_single_model_with_feature_subset(
         missing_value_strategies: missing_value_strategies.clone(),
         canary_filter,
         split_strategy,
+        builder,
+        lookahead_depth,
+        lookahead_top_k,
+        lookahead_weight,
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -436,6 +469,10 @@ pub(crate) fn train_single_model_with_feature_subset(
         missing_value_strategies,
         canary_filter,
         split_strategy,
+        builder,
+        lookahead_depth,
+        lookahead_top_k,
+        lookahead_weight,
     };
 
     match (task, tree_type, criterion) {

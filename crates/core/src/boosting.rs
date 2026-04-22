@@ -185,6 +185,10 @@ impl GradientBoostedTrees {
             missing_value_strategies,
             canary_filter: config.canary_filter,
             split_strategy: config.split_strategy,
+            builder: config.builder,
+            lookahead_depth: config.lookahead_depth,
+            lookahead_top_k: config.lookahead_top_k,
+            lookahead_weight: config.lookahead_weight,
         };
         let tree_options = SecondOrderRegressionTreeOptions {
             tree_options,

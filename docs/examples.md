@@ -242,6 +242,121 @@ What this example shows:
 - if the allowed window contains only canaries, the usual canary stop still
   happens
 
+## Example 4: Oblique splits on a rotated boundary
+
+This example shows oblique splits on a dataset whose decision boundary is
+diagonal in feature space. It compares axis-aligned and oblique trees and then
+walks through the same serialize-and-reload lifecycle.
+
+```python
+import numpy as np
+
+from forestfire import Model, train
+
+rng = np.random.default_rng(7)
+n = 15_000
+
+# The true rule is a rotated boundary: x_0 + x_1 > 0.5
+# An axis-aligned tree must approximate this with many staircase splits.
+# An oblique tree can express it in a single node.
+X = rng.normal(size=(n, 8))
+y = (X[:, 0] + X[:, 1] > 0.5).astype(float)
+
+# Axis-aligned baseline
+model_aa = train(
+    X,
+    y,
+    algorithm="dt",
+    tree_type="cart",
+    task="classification",
+    canaries=2,
+)
+
+# Oblique: learns a pairwise linear split w1 * x_i + w2 * x_j <= t
+model_ob = train(
+    X,
+    y,
+    algorithm="dt",
+    tree_type="cart",
+    task="classification",
+    split_strategy="oblique",
+    canaries=2,
+)
+
+print("axis-aligned tree:")
+print(model_aa.tree_structure())
+
+print("oblique tree:")
+print(model_ob.tree_structure())
+
+# Oblique splits are available for random forests and gradient boosting too
+model_rf_ob = train(
+    X,
+    y,
+    algorithm="rf",
+    tree_type="cart",
+    task="classification",
+    split_strategy="oblique",
+    n_trees=300,
+    max_features="sqrt",
+    min_samples_leaf=5,
+)
+
+model_gbm_ob = train(
+    X,
+    y,
+    algorithm="gbm",
+    tree_type="cart",
+    task="classification",
+    split_strategy="oblique",
+    learning_rate=0.05,
+    n_trees=500,
+    canaries=2,
+    filter=0.95,
+)
+
+# All four models follow the same serialize-reload-score lifecycle
+batch = X[:5_000]
+
+for label, model in [
+    ("axis-aligned DT", model_aa),
+    ("oblique DT", model_ob),
+    ("oblique RF", model_rf_ob),
+    ("oblique GBM", model_gbm_ob),
+]:
+    optimized = model.optimize_inference()
+    pred = optimized.predict_proba(batch)
+
+    payload = model.serialize()
+    reloaded = Model.deserialize(payload)
+    reloaded_pred = reloaded.predict_proba(batch)
+
+    print(f"{label}: parity={np.allclose(pred, reloaded_pred)}, used_features={model.used_feature_count}")
+
+# Oblique node structure is visible in introspection
+print(model_ob.tree_node(node_id=0, tree_index=0))
+
+# The IR records the participating feature indices, weights, threshold,
+# and per-feature missing-direction metadata for each oblique node
+ir = model_ob.to_ir_json()
+print(ir[:300])
+```
+
+What this example shows:
+
+- `split_strategy="oblique"` is a drop-in swap that does not change the rest
+  of the API
+- axis-aligned and oblique candidates compete in the same pool at every node,
+  so the oblique model only introduces oblique nodes where they actually win
+- the same optimized inference, serialization, and reload workflow applies to
+  oblique models without any special handling
+- oblique splits are visible in `tree_node(...)` and the JSON IR as
+  `ObliqueLinearCombination` entries with two feature indices, two weights, and
+  a threshold in the projected 1D space
+- `used_feature_count` may differ between axis-aligned and oblique models
+  because oblique nodes can cover two features in one split, and the winning
+  competition may leave different features unused
+
 ## Why these examples matter
 
 ForestFire is not only a trainer and not only an inference runtime.

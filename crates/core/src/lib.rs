@@ -161,6 +161,14 @@ pub enum SplitStrategy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuilderStrategy {
+    /// Rank splits by immediate local gain only.
+    Greedy,
+    /// Rank splits by a finite lookahead horizon.
+    Lookahead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxFeatures {
     /// Task-aware default: `sqrt` for classification, `third` for regression.
     Auto,
@@ -291,6 +299,8 @@ pub struct TrainConfig {
     pub tree_type: TreeType,
     /// Split family used by binary tree learners.
     pub split_strategy: SplitStrategy,
+    /// Tree-construction strategy used to rank candidate splits.
+    pub builder: BuilderStrategy,
     /// Split criterion. [`Criterion::Auto`] is resolved by the trainer.
     pub criterion: Criterion,
     /// Maximum tree depth.
@@ -327,6 +337,16 @@ pub struct TrainConfig {
     /// rebuilds the numeric training view at the requested resolution before
     /// fitting, while leaving the caller's source table unchanged.
     pub histogram_bins: Option<NumericBins>,
+    /// Number of tree levels used when ranking split candidates.
+    ///
+    /// A value of `1` preserves the current greedy behavior. Larger values
+    /// evaluate candidate splits by also considering recursively chosen
+    /// descendants up to the requested horizon.
+    pub lookahead_depth: usize,
+    /// Number of highest immediate-gain candidates to rescore with lookahead.
+    pub lookahead_top_k: usize,
+    /// Weight applied to future split value when lookahead rescoring is enabled.
+    pub lookahead_weight: f64,
 }
 
 impl Default for TrainConfig {
@@ -336,6 +356,7 @@ impl Default for TrainConfig {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            builder: BuilderStrategy::Greedy,
             criterion: Criterion::Auto,
             max_depth: None,
             min_samples_split: None,
@@ -352,6 +373,9 @@ impl Default for TrainConfig {
             other_gradient_fraction: None,
             missing_value_strategy: MissingValueStrategyConfig::heuristic(),
             histogram_bins: None,
+            lookahead_depth: 1,
+            lookahead_top_k: 8,
+            lookahead_weight: 1.0,
         }
     }
 }
@@ -393,6 +417,9 @@ pub enum TrainError {
     InvalidMaxDepth(usize),
     InvalidMinSamplesSplit(usize),
     InvalidMinSamplesLeaf(usize),
+    InvalidLookaheadDepth(usize),
+    InvalidLookaheadTopK(usize),
+    InvalidLookaheadWeight(f64),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
     InvalidCanaryFilterTopN(usize),
@@ -453,6 +480,19 @@ impl Display for TrainError {
                 write!(
                     f,
                     "min_samples_leaf must be at least 1. Received {}.",
+                    value
+                )
+            }
+            TrainError::InvalidLookaheadDepth(value) => {
+                write!(f, "lookahead_depth must be at least 1. Received {}.", value)
+            }
+            TrainError::InvalidLookaheadTopK(value) => {
+                write!(f, "lookahead_top_k must be at least 1. Received {}.", value)
+            }
+            TrainError::InvalidLookaheadWeight(value) => {
+                write!(
+                    f,
+                    "lookahead_weight must be finite and non-negative. Received {}.",
                     value
                 )
             }
