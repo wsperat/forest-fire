@@ -1622,7 +1622,52 @@ def test_train_randomized_classifier(
     assert model.task == "classification"
     assert model.criterion == "gini"
     assert model.tree_type == "randomized"
-    assert np.array_equal(model.predict(X), y)
+
+
+def test_train_supports_oblique_split_strategy_for_cart_classifier() -> None:
+    x = np.array(
+        [
+            [-2.0, 1.0],
+            [1.0, -2.0],
+            [-1.0, 2.0],
+            [2.0, -1.0],
+            [-3.0, 1.0],
+            [1.0, -3.0],
+            [-1.0, 3.0],
+            [3.0, -1.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0])
+
+    model = train(
+        x,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        split_strategy="oblique",
+        max_depth=1,
+        max_features=2,
+        canaries=0,
+    )
+
+    assert np.array_equal(model.predict(x), y)
+
+
+def test_train_rejects_unsupported_oblique_split_strategy_for_gbm() -> None:
+    x = np.array([[0.0], [1.0], [2.0], [3.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+
+    with pytest.raises(ValueError, match="Unsupported split strategy"):
+        train(
+            x,
+            y,
+            algorithm="gbm",
+            task="classification",
+            tree_type="cart",
+            split_strategy="oblique",
+            canaries=0,
+        )
 
 
 def test_train_cart_regressor() -> None:

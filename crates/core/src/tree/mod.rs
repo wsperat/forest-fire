@@ -5,6 +5,7 @@
 //! driven learner used by gradient boosting.
 
 pub mod classifier;
+pub(crate) mod oblique;
 pub mod regressor;
 pub mod second_order;
 pub(crate) mod shared;

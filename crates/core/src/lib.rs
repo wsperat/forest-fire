@@ -153,6 +153,14 @@ pub enum TreeType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitStrategy {
+    /// Use ordinary one-feature threshold or boolean splits.
+    AxisAligned,
+    /// Use experimental sparse linear-combination splits where supported.
+    Oblique,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxFeatures {
     /// Task-aware default: `sqrt` for classification, `third` for regression.
     Auto,
@@ -281,6 +289,8 @@ pub struct TrainConfig {
     pub task: Task,
     /// Tree learner used by the selected algorithm family.
     pub tree_type: TreeType,
+    /// Split family used by binary tree learners.
+    pub split_strategy: SplitStrategy,
     /// Split criterion. [`Criterion::Auto`] is resolved by the trainer.
     pub criterion: Criterion,
     /// Maximum tree depth.
@@ -325,6 +335,7 @@ impl Default for TrainConfig {
             algorithm: TrainAlgorithm::Dt,
             task: Task::Regression,
             tree_type: TreeType::Cart,
+            split_strategy: SplitStrategy::AxisAligned,
             criterion: Criterion::Auto,
             max_depth: None,
             min_samples_split: None,
@@ -373,6 +384,12 @@ pub enum TrainError {
         tree_type: TreeType,
         criterion: Criterion,
     },
+    UnsupportedSplitStrategy {
+        algorithm: TrainAlgorithm,
+        task: Task,
+        tree_type: TreeType,
+        split_strategy: SplitStrategy,
+    },
     InvalidMaxDepth(usize),
     InvalidMinSamplesSplit(usize),
     InvalidMinSamplesLeaf(usize),
@@ -411,6 +428,16 @@ impl Display for TrainError {
                 f,
                 "Unsupported training configuration: task={:?}, tree_type={:?}, criterion={:?}.",
                 task, tree_type, criterion
+            ),
+            TrainError::UnsupportedSplitStrategy {
+                algorithm,
+                task,
+                tree_type,
+                split_strategy,
+            } => write!(
+                f,
+                "Unsupported split strategy: algorithm={:?}, task={:?}, tree_type={:?}, split_strategy={:?}.",
+                algorithm, task, tree_type, split_strategy
             ),
             TrainError::InvalidMaxDepth(value) => {
                 write!(f, "max_depth must be at least 1. Received {}.", value)
@@ -932,6 +959,9 @@ impl OptimizedRuntime {
                                     class_counts,
                                 ),
                             }
+                        }
+                        tree::classifier::TreeNode::ObliqueSplit { .. } => {
+                            unreachable!("oblique nodes are rejected before optimized lowering")
                         }
                     })
                     .collect();
@@ -1787,6 +1817,7 @@ fn classifier_node_sample_count(nodes: &[tree::classifier::TreeNode], node_index
     match &nodes[node_index] {
         tree::classifier::TreeNode::Leaf { sample_count, .. }
         | tree::classifier::TreeNode::BinarySplit { sample_count, .. }
+        | tree::classifier::TreeNode::ObliqueSplit { sample_count, .. }
         | tree::classifier::TreeNode::MultiwaySplit { sample_count, .. } => *sample_count,
     }
 }
@@ -1914,6 +1945,9 @@ fn append_binary_classifier_node(
         tree::classifier::TreeNode::MultiwaySplit { .. } => {
             unreachable!("multiway nodes are filtered out before binary layout construction");
         }
+        tree::classifier::TreeNode::ObliqueSplit { .. } => {
+            unreachable!("oblique nodes are rejected before optimized lowering");
+        }
     }
 
     current_index
@@ -1925,7 +1959,8 @@ fn regressor_node_sample_count(
 ) -> usize {
     match &nodes[node_index] {
         tree::regressor::RegressionNode::Leaf { sample_count, .. }
-        | tree::regressor::RegressionNode::BinarySplit { sample_count, .. } => *sample_count,
+        | tree::regressor::RegressionNode::BinarySplit { sample_count, .. }
+        | tree::regressor::RegressionNode::ObliqueSplit { sample_count, .. } => *sample_count,
     }
 }
 
@@ -2042,6 +2077,9 @@ fn append_binary_regressor_node(
                 missing_jump_index,
                 missing_value,
             };
+        }
+        tree::regressor::RegressionNode::ObliqueSplit { .. } => {
+            unreachable!("oblique nodes are rejected before optimized lowering");
         }
     }
 

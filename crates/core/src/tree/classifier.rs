@@ -19,13 +19,17 @@ use crate::ir::{
     TrainingMetadata, TreeDefinition, criterion_name, feature_name, threshold_upper_bound,
     tree_type_name,
 };
+use crate::tree::oblique::{
+    OBLIQUE_SHORTLIST_SIZE, normalize_weights, partition_rows_for_oblique_split,
+    projected_rows_for_pair, shortlist_real_features,
+};
 use crate::tree::shared::{
     MissingBranchDirection, candidate_feature_indices, choose_random_threshold, node_seed,
     partition_rows_for_binary_split, select_best_non_canary_candidate,
 };
 use crate::{
     CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy, Parallelism,
-    capture_feature_preprocessing,
+    SplitStrategy, capture_feature_preprocessing,
 };
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
@@ -44,7 +48,8 @@ use histogram::{
     subtract_classification_node_histograms,
 };
 use ir_support::{
-    binary_split_ir, normalized_class_probabilities, oblivious_split_ir, standard_node_depths,
+    binary_split_ir, normalized_class_probabilities, oblique_split_ir, oblivious_split_ir,
+    standard_node_depths,
 };
 use oblivious::train_oblivious_structure;
 use partitioning::partition_rows_for_multiway_split;
@@ -76,6 +81,7 @@ pub struct DecisionTreeOptions {
     pub random_seed: u64,
     pub missing_value_strategies: Vec<MissingValueStrategy>,
     pub canary_filter: CanaryFilter,
+    pub split_strategy: SplitStrategy,
 }
 
 impl Default for DecisionTreeOptions {
@@ -88,6 +94,7 @@ impl Default for DecisionTreeOptions {
             random_seed: 0,
             missing_value_strategies: Vec::new(),
             canary_filter: CanaryFilter::default(),
+            split_strategy: SplitStrategy::AxisAligned,
         }
     }
 }
@@ -179,6 +186,17 @@ pub(crate) enum TreeNode {
         gain: f64,
         class_counts: Vec<usize>,
     },
+    ObliqueSplit {
+        feature_indices: Vec<usize>,
+        weights: Vec<f64>,
+        threshold: f64,
+        left_child: usize,
+        right_child: usize,
+        sample_count: usize,
+        impurity: f64,
+        gain: f64,
+        class_counts: Vec<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -187,6 +205,29 @@ struct BinarySplitChoice {
     score: f64,
     threshold_bin: u16,
     missing_direction: MissingBranchDirection,
+}
+
+#[derive(Debug, Clone)]
+struct ObliqueSplitChoice {
+    feature_indices: Vec<usize>,
+    weights: Vec<f64>,
+    threshold: f64,
+    score: f64,
+}
+
+#[derive(Debug, Clone)]
+enum StandardSplitChoice {
+    Axis(BinarySplitChoice),
+    Oblique(ObliqueSplitChoice),
+}
+
+impl StandardSplitChoice {
+    fn score(&self) -> f64 {
+        match self {
+            Self::Axis(choice) => choice.score,
+            Self::Oblique(choice) => choice.score,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -548,6 +589,34 @@ impl DecisionTreeClassifier {
                                 *right_child
                             };
                         }
+                        TreeNode::ObliqueSplit {
+                            feature_indices,
+                            weights,
+                            threshold,
+                            left_child,
+                            right_child,
+                            class_counts,
+                            ..
+                        } => {
+                            if feature_indices
+                                .iter()
+                                .any(|feature_index| table.is_missing(*feature_index, row_idx))
+                            {
+                                return self.class_labels[majority_class_from_counts(class_counts)];
+                            }
+                            let projection = weights
+                                .iter()
+                                .zip(feature_indices.iter())
+                                .map(|(weight, feature_index)| {
+                                    *weight * table.feature_value(*feature_index, row_idx)
+                                })
+                                .sum::<f64>();
+                            node_index = if projection <= *threshold {
+                                *left_child
+                            } else {
+                                *right_child
+                            };
+                        }
                     }
                 }
             }
@@ -625,6 +694,34 @@ impl DecisionTreeClassifier {
                             }
                             let bin = table.binned_value(*feature_index, row_idx);
                             node_index = if bin <= *threshold_bin {
+                                *left_child
+                            } else {
+                                *right_child
+                            };
+                        }
+                        TreeNode::ObliqueSplit {
+                            feature_indices,
+                            weights,
+                            threshold,
+                            left_child,
+                            right_child,
+                            class_counts,
+                            ..
+                        } => {
+                            if feature_indices
+                                .iter()
+                                .any(|feature_index| table.is_missing(*feature_index, row_idx))
+                            {
+                                return normalized_class_probabilities(class_counts);
+                            }
+                            let projection = weights
+                                .iter()
+                                .zip(feature_indices.iter())
+                                .map(|(weight, feature_index)| {
+                                    *weight * table.feature_value(*feature_index, row_idx)
+                                })
+                                .sum::<f64>();
+                            node_index = if projection <= *threshold {
                                 *left_child
                             } else {
                                 *right_child
@@ -742,6 +839,32 @@ impl DecisionTreeClassifier {
                                     *missing_direction,
                                     &self.feature_preprocessing,
                                 ),
+                                children: BinaryChildren {
+                                    left: *left_child,
+                                    right: *right_child,
+                                },
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: Some(*impurity),
+                                    gain: Some(*gain),
+                                    class_counts: Some(class_counts.clone()),
+                                    variance: None,
+                                },
+                            },
+                            TreeNode::ObliqueSplit {
+                                feature_indices,
+                                weights,
+                                threshold,
+                                left_child,
+                                right_child,
+                                sample_count,
+                                impurity,
+                                gain,
+                                class_counts,
+                            } => NodeTreeNode::BinaryBranch {
+                                node_id,
+                                depth: depths[node_id],
+                                split: oblique_split_ir(feature_indices, weights, *threshold),
                                 children: BinaryChildren {
                                     left: *left_child,
                                     right: *right_child,
@@ -958,26 +1081,45 @@ fn build_binary_node_in_place_with_hist(
             })
             .collect::<Vec<_>>()
     };
-    let best_split = select_best_non_canary_candidate(
+    let best_axis_split = select_best_non_canary_candidate(
         context.table,
-        split_candidates,
+        split_candidates.clone(),
         context.options.canary_filter,
         |candidate| candidate.score,
         |candidate| candidate.feature_index,
     )
     .selected;
+    let best_oblique_split =
+        score_oblique_split_choice(context, rows, &current_class_counts, &split_candidates);
+    let best_split = match (best_axis_split, best_oblique_split) {
+        (Some(axis), Some(oblique)) if oblique.score > axis.score => {
+            Some(StandardSplitChoice::Oblique(oblique))
+        }
+        (Some(axis), _) => Some(StandardSplitChoice::Axis(axis)),
+        (None, Some(oblique)) => Some(StandardSplitChoice::Oblique(oblique)),
+        (None, None) => None,
+    };
 
     match best_split {
-        Some(best_split) if best_split.score > 0.0 => {
+        Some(best_split) if best_split.score() > 0.0 => {
             let impurity =
                 classification_impurity(&current_class_counts, rows.len(), context.criterion);
-            let left_count = partition_rows_for_binary_split(
-                context.table,
-                best_split.feature_index,
-                best_split.threshold_bin,
-                best_split.missing_direction,
-                rows,
-            );
+            let left_count = match &best_split {
+                StandardSplitChoice::Axis(choice) => partition_rows_for_binary_split(
+                    context.table,
+                    choice.feature_index,
+                    choice.threshold_bin,
+                    choice.missing_direction,
+                    rows,
+                ),
+                StandardSplitChoice::Oblique(choice) => partition_rows_for_oblique_split(
+                    context.table,
+                    [choice.feature_indices[0], choice.feature_indices[1]],
+                    [choice.weights[0], choice.weights[1]],
+                    choice.threshold,
+                    rows,
+                ),
+            };
             let (left_rows, right_rows) = rows.split_at_mut(left_count);
             let (left_histograms, right_histograms) = if left_rows.len() <= right_rows.len() {
                 let left_histograms = build_classification_node_histograms(
@@ -1017,16 +1159,29 @@ fn build_binary_node_in_place_with_hist(
 
             push_node(
                 nodes,
-                TreeNode::BinarySplit {
-                    feature_index: best_split.feature_index,
-                    threshold_bin: best_split.threshold_bin,
-                    missing_direction: best_split.missing_direction,
-                    left_child,
-                    right_child,
-                    sample_count: rows.len(),
-                    impurity,
-                    gain: best_split.score,
-                    class_counts: current_class_counts,
+                match best_split {
+                    StandardSplitChoice::Axis(best_split) => TreeNode::BinarySplit {
+                        feature_index: best_split.feature_index,
+                        threshold_bin: best_split.threshold_bin,
+                        missing_direction: best_split.missing_direction,
+                        left_child,
+                        right_child,
+                        sample_count: rows.len(),
+                        impurity,
+                        gain: best_split.score,
+                        class_counts: current_class_counts,
+                    },
+                    StandardSplitChoice::Oblique(best_split) => TreeNode::ObliqueSplit {
+                        feature_indices: best_split.feature_indices,
+                        weights: best_split.weights,
+                        threshold: best_split.threshold,
+                        left_child,
+                        right_child,
+                        sample_count: rows.len(),
+                        impurity,
+                        gain: best_split.score,
+                        class_counts: current_class_counts,
+                    },
                 },
             )
         }
@@ -1037,6 +1192,151 @@ fn build_binary_node_in_place_with_hist(
             current_class_counts,
         ),
     }
+}
+
+fn score_oblique_split_choice(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    parent_counts: &[usize],
+    axis_candidates: &[BinarySplitChoice],
+) -> Option<ObliqueSplitChoice> {
+    if !matches!(context.options.split_strategy, SplitStrategy::Oblique)
+        || !matches!(
+            context.algorithm,
+            DecisionTreeAlgorithm::Cart | DecisionTreeAlgorithm::Randomized
+        )
+        || rows.len() < context.options.min_samples_leaf * 2
+    {
+        return None;
+    }
+
+    let shortlisted = shortlist_real_features(
+        &axis_candidates
+            .iter()
+            .map(|candidate| (candidate.feature_index, candidate.score))
+            .collect::<Vec<_>>(),
+        context.table.n_features(),
+        OBLIQUE_SHORTLIST_SIZE,
+    );
+    if shortlisted.len() < 2 {
+        return None;
+    }
+
+    let parent_impurity = classification_impurity(parent_counts, rows.len(), context.criterion);
+    let mut best = None;
+    for left_index in 0..shortlisted.len() {
+        for right_index in left_index + 1..shortlisted.len() {
+            let feature_pair = [shortlisted[left_index], shortlisted[right_index]];
+            let Some(weights) = oblique_classification_weights(
+                context.table,
+                rows,
+                context.class_indices,
+                context.class_labels.len(),
+                feature_pair,
+            ) else {
+                continue;
+            };
+            let Some(projected) =
+                projected_rows_for_pair(context.table, rows, feature_pair, weights)
+            else {
+                continue;
+            };
+            let mut left_counts = vec![0usize; context.class_labels.len()];
+            let mut left_size = 0usize;
+            for split_index in 0..projected.len().saturating_sub(1) {
+                let class_index = context.class_indices[projected[split_index].row_index];
+                left_counts[class_index] += 1;
+                left_size += 1;
+                let right_size = projected.len() - left_size;
+                if left_size < context.options.min_samples_leaf
+                    || right_size < context.options.min_samples_leaf
+                    || projected[split_index].value == projected[split_index + 1].value
+                {
+                    continue;
+                }
+                let right_counts = parent_counts
+                    .iter()
+                    .zip(left_counts.iter())
+                    .map(|(parent, left)| parent - left)
+                    .collect::<Vec<_>>();
+                let weighted_impurity = (left_size as f64 / rows.len() as f64)
+                    * classification_impurity(&left_counts, left_size, context.criterion)
+                    + (right_size as f64 / rows.len() as f64)
+                        * classification_impurity(&right_counts, right_size, context.criterion);
+                let score = parent_impurity - weighted_impurity;
+                let threshold =
+                    (projected[split_index].value + projected[split_index + 1].value) / 2.0;
+                if !score.is_finite() {
+                    continue;
+                }
+                let candidate = ObliqueSplitChoice {
+                    feature_indices: vec![feature_pair[0], feature_pair[1]],
+                    weights: vec![weights[0], weights[1]],
+                    threshold,
+                    score,
+                };
+                if best
+                    .as_ref()
+                    .is_none_or(|current: &ObliqueSplitChoice| candidate.score > current.score)
+                {
+                    best = Some(candidate);
+                }
+            }
+        }
+    }
+
+    best
+}
+
+fn oblique_classification_weights(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    class_indices: &[usize],
+    num_classes: usize,
+    feature_pair: [usize; 2],
+) -> Option<[f64; 2]> {
+    let mut sums = vec![[0.0; 2]; num_classes];
+    let mut counts = vec![0usize; num_classes];
+    for &row_index in rows {
+        let class_index = class_indices[row_index];
+        sums[class_index][0] += table.feature_value(feature_pair[0], row_index);
+        sums[class_index][1] += table.feature_value(feature_pair[1], row_index);
+        counts[class_index] += 1;
+    }
+
+    let means = sums
+        .iter()
+        .zip(counts.iter())
+        .map(|(sum, count)| {
+            if *count == 0 {
+                None
+            } else {
+                Some([sum[0] / *count as f64, sum[1] / *count as f64])
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut best_pair = None;
+    let mut best_distance = 0.0;
+    for left_class in 0..num_classes {
+        let Some(left_mean) = means[left_class] else {
+            continue;
+        };
+        for right_mean in means.iter().skip(left_class + 1) {
+            let Some(right_mean) = *right_mean else {
+                continue;
+            };
+            let dx = left_mean[0] - right_mean[0];
+            let dy = left_mean[1] - right_mean[1];
+            let distance = dx * dx + dy * dy;
+            if distance > best_distance {
+                best_distance = distance;
+                best_pair = Some([dx, dy]);
+            }
+        }
+    }
+
+    best_pair.and_then(normalize_weights)
 }
 
 fn build_multiway_node_in_place(

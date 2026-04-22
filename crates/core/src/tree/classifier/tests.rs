@@ -1,5 +1,5 @@
 use super::*;
-use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary};
+use crate::{CanaryFilter, FeaturePreprocessing, Model, NumericBinBoundary, SplitStrategy};
 use forestfire_data::{DenseTable, NumericBins};
 
 fn and_table() -> DenseTable {
@@ -108,6 +108,25 @@ fn randomized_permutation_table() -> DenseTable {
     .unwrap()
 }
 
+fn oblique_classification_table() -> DenseTable {
+    DenseTable::with_options(
+        vec![
+            vec![-2.0, 1.0],
+            vec![1.0, -2.0],
+            vec![-1.0, 2.0],
+            vec![2.0, -1.0],
+            vec![-3.0, 1.0],
+            vec![1.0, -3.0],
+            vec![-1.0, 3.0],
+            vec![3.0, -1.0],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+        0,
+        NumericBins::Fixed(64),
+    )
+    .unwrap()
+}
+
 #[test]
 fn id3_fits_basic_boolean_pattern() {
     let table = and_table();
@@ -197,6 +216,57 @@ fn randomized_classifier_is_repeatable_for_fixed_seed_and_varies_across_seeds() 
             .unwrap()
     );
     assert!(unique_serializations.len() >= 4);
+}
+
+#[test]
+fn cart_classifier_supports_oblique_split_strategy() {
+    let table = oblique_classification_table();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 1,
+            max_features: Some(2),
+            split_strategy: SplitStrategy::Oblique,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(model.predict_table(&table), table_targets(&table));
+    match model.structure() {
+        TreeStructure::Standard { nodes, root } => {
+            assert!(matches!(nodes[*root], TreeNode::ObliqueSplit { .. }));
+        }
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    }
+}
+
+#[test]
+fn randomized_classifier_supports_oblique_split_strategy() {
+    let table = oblique_classification_table();
+    let model = train_randomized_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 1,
+            max_features: Some(2),
+            random_seed: 11,
+            split_strategy: SplitStrategy::Oblique,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(model.predict_table(&table), table_targets(&table));
+    match model.structure() {
+        TreeStructure::Standard { nodes, root } => {
+            assert!(matches!(nodes[*root], TreeNode::ObliqueSplit { .. }));
+        }
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    }
 }
 
 #[test]

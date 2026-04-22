@@ -6,8 +6,8 @@
 //! to "shared configuration policy" versus "algorithm-specific learning logic".
 
 use crate::{
-    Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest, Task, TrainAlgorithm,
-    TrainConfig, TrainError, TreeType, tree,
+    Criterion, GradientBoostedTrees, Model, Parallelism, RandomForest, SplitStrategy, Task,
+    TrainAlgorithm, TrainConfig, TrainError, TreeType, tree,
 };
 use forestfire_data::{
     BinnedColumnKind, NumericBins, TableAccess, numeric_bin_boundaries, numeric_missing_bin,
@@ -269,6 +269,12 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
         config.tree_type,
         config.criterion,
     )?;
+    validate_split_strategy(
+        config.algorithm,
+        config.task,
+        config.tree_type,
+        config.split_strategy,
+    )?;
     let missing_value_strategies = config
         .missing_value_strategy
         .resolve_for_feature_count(train_table.binned_feature_count())?;
@@ -295,6 +301,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             SingleModelConfig {
                 task: config.task,
                 tree_type: config.tree_type,
+                split_strategy: config.split_strategy,
                 criterion,
                 parallelism,
                 max_depth,
@@ -309,6 +316,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
             RandomForestConfig {
                 task: config.task,
                 tree_type: config.tree_type,
+                split_strategy: config.split_strategy,
                 criterion,
                 parallelism,
                 n_trees: config.n_trees.unwrap_or(1000),
@@ -336,6 +344,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
 pub(crate) struct SingleModelConfig {
     pub(crate) task: Task,
     pub(crate) tree_type: TreeType,
+    pub(crate) split_strategy: SplitStrategy,
     pub(crate) criterion: Criterion,
     pub(crate) parallelism: Parallelism,
     pub(crate) max_depth: usize,
@@ -360,6 +369,7 @@ pub(crate) struct SingleModelFeatureSubsetConfig {
 pub(crate) struct RandomForestConfig {
     pub(crate) task: Task,
     pub(crate) tree_type: TreeType,
+    pub(crate) split_strategy: SplitStrategy,
     pub(crate) criterion: Criterion,
     pub(crate) parallelism: Parallelism,
     pub(crate) n_trees: usize,
@@ -395,6 +405,7 @@ pub(crate) fn train_single_model_with_feature_subset(
             SingleModelConfig {
                 task,
                 tree_type,
+                split_strategy,
                 criterion,
                 parallelism,
                 max_depth,
@@ -414,6 +425,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         random_seed,
         missing_value_strategies: missing_value_strategies.clone(),
         canary_filter,
+        split_strategy,
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -423,6 +435,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         random_seed,
         missing_value_strategies,
         canary_filter,
+        split_strategy,
     };
 
     match (task, tree_type, criterion) {
@@ -625,6 +638,31 @@ fn resolve_parallelism(physical_cores: Option<usize>) -> Result<Parallelism, Tra
 
     Ok(Parallelism {
         thread_count: requested.min(available),
+    })
+}
+
+fn validate_split_strategy(
+    algorithm: TrainAlgorithm,
+    task: Task,
+    tree_type: TreeType,
+    split_strategy: SplitStrategy,
+) -> Result<(), TrainError> {
+    if matches!(split_strategy, SplitStrategy::AxisAligned) {
+        return Ok(());
+    }
+
+    if matches!(algorithm, TrainAlgorithm::Dt | TrainAlgorithm::Rf)
+        && matches!(tree_type, TreeType::Cart | TreeType::Randomized)
+        && matches!(task, Task::Regression | Task::Classification)
+    {
+        return Ok(());
+    }
+
+    Err(TrainError::UnsupportedSplitStrategy {
+        algorithm,
+        task,
+        tree_type,
+        split_strategy,
     })
 }
 

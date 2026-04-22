@@ -24,6 +24,26 @@ def test_tree_wrapper_uses_expected_backend_defaults() -> None:
     assert model.n_features_in_ == 1
 
 
+def test_tree_wrapper_supports_oblique_split_strategy() -> None:
+    x = np.array(
+        [
+            [-2.0, 1.0],
+            [1.0, -2.0],
+            [-1.0, 2.0],
+            [2.0, -1.0],
+            [-3.0, 1.0],
+            [1.0, -3.0],
+            [-1.0, 3.0],
+            [3.0, -1.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0])
+
+    model = CARTClassifier(split_strategy="oblique", max_depth=1).fit(x, y)
+
+    assert np.array_equal(model.predict(x), y)
+
+
 def test_tree_regressor_wrapper_exposes_requested_import_path() -> None:
     x = np.array([[0.0], [1.0], [2.0], [3.0]])
     y = np.array([0.0, 1.0, 4.0, 9.0])

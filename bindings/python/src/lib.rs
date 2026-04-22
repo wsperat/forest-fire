@@ -12,7 +12,7 @@ use forestfire_core::{
     CanaryFilter, CategoricalConfig, CategoricalModel, CategoricalOptimizedModel,
     CategoricalStrategy, CategoricalValue, Criterion, IntrospectionError, MaxFeatures,
     MissingValueStrategy, MissingValueStrategyConfig, Model, OptimizedModel as CoreOptimizedModel,
-    Task, TrainAlgorithm, TrainConfig, TreeType, categorical, train as train_model,
+    SplitStrategy, Task, TrainAlgorithm, TrainConfig, TreeType, categorical, train as train_model,
 };
 use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -1754,6 +1754,17 @@ fn resolve_tree_type(requested_tree_type: &str, task_was_auto: bool) -> PyResult
     parse_tree_type(requested_tree_type)
 }
 
+fn parse_split_strategy(split_strategy: &str) -> PyResult<SplitStrategy> {
+    match split_strategy {
+        "axis_aligned" => Ok(SplitStrategy::AxisAligned),
+        "oblique" => Ok(SplitStrategy::Oblique),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported split_strategy '{}'. Expected one of: axis_aligned, oblique",
+            split_strategy
+        ))),
+    }
+}
+
 fn parse_task(task: &str) -> PyResult<Task> {
     match task {
         "regression" => Ok(Task::Regression),
@@ -2124,7 +2135,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", split_strategy="axis_aligned", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -2133,6 +2144,7 @@ fn train(
     algorithm: &str,
     task: &str,
     tree_type: &str,
+    split_strategy: &str,
     criterion: &str,
     canaries: usize,
     bins: Option<&Bound<PyAny>>,
@@ -2163,6 +2175,7 @@ fn train(
         algorithm: parse_algorithm(algorithm)?,
         task: resolved_task,
         tree_type: resolve_tree_type(tree_type, task_was_auto)?,
+        split_strategy: parse_split_strategy(split_strategy)?,
         criterion: parse_criterion(criterion)?,
         max_depth: parse_optional_positive_usize(max_depth, "max_depth")?,
         min_samples_split: parse_optional_positive_usize(min_samples_split, "min_samples_split")?,

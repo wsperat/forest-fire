@@ -137,6 +137,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        split_strategy: str = "axis_aligned",
         categorical_strategy: str | None = None,
         categorical_features: str | list[str | int] | None = None,
         target_smoothing: float = 20.0,
@@ -151,6 +152,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.split_strategy = split_strategy
         self.categorical_strategy = categorical_strategy
         self.categorical_features = categorical_features
         self.target_smoothing = target_smoothing
@@ -173,6 +175,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
             min_samples_leaf=self.min_samples_leaf,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
+            split_strategy=self.split_strategy,
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
@@ -196,6 +199,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        split_strategy: str = "axis_aligned",
         categorical_strategy: str | None = None,
         categorical_features: str | list[str | int] | None = None,
         target_smoothing: float = 20.0,
@@ -210,6 +214,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.split_strategy = split_strategy
         self.categorical_strategy = categorical_strategy
         self.categorical_features = categorical_features
         self.target_smoothing = target_smoothing
@@ -232,6 +237,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
             min_samples_leaf=self.min_samples_leaf,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
+            split_strategy=self.split_strategy,
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
@@ -258,6 +264,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
         random_state: int | None = None,
         compute_oob: bool = False,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        split_strategy: str = "axis_aligned",
         categorical_strategy: str | None = None,
         categorical_features: str | list[str | int] | None = None,
         target_smoothing: float = 20.0,
@@ -275,6 +282,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
         self.random_state = random_state
         self.compute_oob = compute_oob
         self.missing_value_strategy = missing_value_strategy
+        self.split_strategy = split_strategy
         self.categorical_strategy = categorical_strategy
         self.categorical_features = categorical_features
         self.target_smoothing = target_smoothing
@@ -300,6 +308,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
             seed=self.random_state,
             compute_oob=self.compute_oob,
             missing_value_strategy=self.missing_value_strategy,
+            split_strategy=self.split_strategy,
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
@@ -326,6 +335,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
         random_state: int | None = None,
         compute_oob: bool = False,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        split_strategy: str = "axis_aligned",
         categorical_strategy: str | None = None,
         categorical_features: str | list[str | int] | None = None,
         target_smoothing: float = 20.0,
@@ -343,6 +353,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
         self.random_state = random_state
         self.compute_oob = compute_oob
         self.missing_value_strategy = missing_value_strategy
+        self.split_strategy = split_strategy
         self.categorical_strategy = categorical_strategy
         self.categorical_features = categorical_features
         self.target_smoothing = target_smoothing
@@ -368,6 +379,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
             seed=self.random_state,
             compute_oob=self.compute_oob,
             missing_value_strategy=self.missing_value_strategy,
+            split_strategy=self.split_strategy,
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
@@ -395,6 +407,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        split_strategy: str = "axis_aligned",
         categorical_strategy: str | None = None,
         categorical_features: str | list[str | int] | None = None,
         target_smoothing: float = 20.0,
@@ -413,6 +426,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.split_strategy = split_strategy
         self.categorical_strategy = categorical_strategy
         self.categorical_features = categorical_features
         self.target_smoothing = target_smoothing
@@ -439,6 +453,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
             top_gradient_fraction=self.top_gradient_fraction,
             other_gradient_fraction=self.other_gradient_fraction,
             missing_value_strategy=self.missing_value_strategy,
+            split_strategy=self.split_strategy,
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
@@ -466,6 +481,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
+        split_strategy: str = "axis_aligned",
         categorical_strategy: str | None = None,
         categorical_features: str | list[str | int] | None = None,
         target_smoothing: float = 20.0,
@@ -484,6 +500,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
+        self.split_strategy = split_strategy
         self.categorical_strategy = categorical_strategy
         self.categorical_features = categorical_features
         self.target_smoothing = target_smoothing
@@ -510,6 +527,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
             top_gradient_fraction=self.top_gradient_fraction,
             other_gradient_fraction=self.other_gradient_fraction,
             missing_value_strategy=self.missing_value_strategy,
+            split_strategy=self.split_strategy,
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,

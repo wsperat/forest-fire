@@ -587,10 +587,16 @@ fn train_standard_structure(
                     let left_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { left_child, .. } => *left_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::ObliqueSplit { .. } => {
+                            unreachable!("second-order trees do not support oblique splits")
+                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { right_child, .. } => *right_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::ObliqueSplit { .. } => {
+                            unreachable!("second-order trees do not support oblique splits")
+                        }
                     };
                     [
                         ActiveNode {
@@ -646,10 +652,16 @@ fn train_standard_structure(
                     let left_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { left_child, .. } => *left_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::ObliqueSplit { .. } => {
+                            unreachable!("second-order trees do not support oblique splits")
+                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { right_child, .. } => *right_child,
                         RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::ObliqueSplit { .. } => {
+                            unreachable!("second-order trees do not support oblique splits")
+                        }
                     };
                     [
                         ActiveNode {

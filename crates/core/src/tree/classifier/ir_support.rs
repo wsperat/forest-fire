@@ -26,6 +26,11 @@ fn populate_depths(nodes: &[TreeNode], node_id: usize, depth: usize, depths: &mu
             left_child,
             right_child,
             ..
+        }
+        | TreeNode::ObliqueSplit {
+            left_child,
+            right_child,
+            ..
         } => {
             populate_depths(nodes, *left_child, depth + 1, depths);
             populate_depths(nodes, *right_child, depth + 1, depths);
@@ -63,6 +68,23 @@ pub(super) fn binary_split_ir(
             ),
             comparison_dtype: "uint16".to_string(),
         },
+    }
+}
+
+pub(super) fn oblique_split_ir(
+    feature_indices: &[usize],
+    weights: &[f64],
+    threshold: f64,
+) -> BinarySplit {
+    BinarySplit::ObliqueLinearCombination {
+        feature_indices: feature_indices.to_vec(),
+        feature_names: feature_indices
+            .iter()
+            .map(|feature_index| feature_name(*feature_index))
+            .collect(),
+        weights: weights.to_vec(),
+        operator: "<=".to_string(),
+        threshold,
     }
 }
 

@@ -145,6 +145,13 @@ pub enum BinarySplit {
         false_child_semantics: String,
         true_child_semantics: String,
     },
+    ObliqueLinearCombination {
+        feature_indices: Vec<usize>,
+        feature_names: Vec<String>,
+        weights: Vec<f64>,
+        operator: String,
+        threshold: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -783,6 +790,7 @@ fn boosted_tree_model_from_ir_parts(
                     random_seed: 0,
                     missing_value_strategies: Vec::new(),
                     canary_filter: crate::CanaryFilter::default(),
+                    split_strategy: crate::SplitStrategy::AxisAligned,
                 },
                 num_features,
                 feature_preprocessing,
@@ -810,6 +818,7 @@ fn boosted_tree_model_from_ir_parts(
                         random_seed: 0,
                         missing_value_strategies: Vec::new(),
                         canary_filter: crate::CanaryFilter::default(),
+                        split_strategy: crate::SplitStrategy::AxisAligned,
                     },
                     num_features,
                     feature_preprocessing,
@@ -926,6 +935,7 @@ fn single_model_from_ir_parts(
                     random_seed: 0,
                     missing_value_strategies: Vec::new(),
                     canary_filter: crate::CanaryFilter::default(),
+                    split_strategy: crate::SplitStrategy::AxisAligned,
                 },
                 num_features,
                 feature_preprocessing,
@@ -957,6 +967,7 @@ fn single_model_from_ir_parts(
                         random_seed: 0,
                         missing_value_strategies: Vec::new(),
                         canary_filter: crate::CanaryFilter::default(),
+                        split_strategy: crate::SplitStrategy::AxisAligned,
                     },
                     num_features,
                     feature_preprocessing,
@@ -1059,6 +1070,7 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         random_seed: 0,
         missing_value_strategies: Vec::new(),
         canary_filter: crate::CanaryFilter::default(),
+        split_strategy: crate::SplitStrategy::AxisAligned,
     }
 }
 
@@ -1185,26 +1197,53 @@ fn rebuild_classifier_nodes(
                 children,
                 stats,
                 ..
-            } => {
-                let (feature_index, threshold_bin) = classifier_binary_split(split)?;
-                assign_node(
-                    &mut rebuilt,
-                    node_id,
-                    ClassifierTreeNode::BinarySplit {
-                        feature_index,
-                        threshold_bin,
-                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
-                        left_child: children.left,
-                        right_child: children.right,
-                        sample_count: stats.sample_count,
-                        impurity: stats.impurity.unwrap_or(0.0),
-                        gain: stats.gain.unwrap_or(0.0),
-                        class_counts: stats
-                            .class_counts
-                            .unwrap_or_else(|| vec![0; class_labels.len()]),
-                    },
-                )?;
-            }
+            } => match classifier_binary_split(split)? {
+                RebuiltClassifierBinarySplit::Axis {
+                    feature_index,
+                    threshold_bin,
+                } => {
+                    assign_node(
+                        &mut rebuilt,
+                        node_id,
+                        ClassifierTreeNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            missing_direction: crate::tree::shared::MissingBranchDirection::Node,
+                            left_child: children.left,
+                            right_child: children.right,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity.unwrap_or(0.0),
+                            gain: stats.gain.unwrap_or(0.0),
+                            class_counts: stats
+                                .class_counts
+                                .unwrap_or_else(|| vec![0; class_labels.len()]),
+                        },
+                    )?;
+                }
+                RebuiltClassifierBinarySplit::Oblique {
+                    feature_indices,
+                    weights,
+                    threshold,
+                } => {
+                    assign_node(
+                        &mut rebuilt,
+                        node_id,
+                        ClassifierTreeNode::ObliqueSplit {
+                            feature_indices,
+                            weights,
+                            threshold,
+                            left_child: children.left,
+                            right_child: children.right,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity.unwrap_or(0.0),
+                            gain: stats.gain.unwrap_or(0.0),
+                            class_counts: stats
+                                .class_counts
+                                .unwrap_or_else(|| vec![0; class_labels.len()]),
+                        },
+                    )?;
+                }
+            },
             NodeTreeNode::MultiwayBranch {
                 node_id,
                 split,
@@ -1270,25 +1309,51 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
                 children,
                 stats,
                 ..
-            } => {
-                let (feature_index, threshold_bin) = regressor_binary_split(split)?;
-                assign_node(
-                    &mut rebuilt,
-                    node_id,
-                    RegressionNode::BinarySplit {
-                        feature_index,
-                        threshold_bin,
-                        missing_direction: crate::tree::shared::MissingBranchDirection::Node,
-                        missing_value: 0.0,
-                        left_child: children.left,
-                        right_child: children.right,
-                        sample_count: stats.sample_count,
-                        impurity: stats.impurity.unwrap_or(0.0),
-                        gain: stats.gain.unwrap_or(0.0),
-                        variance: stats.variance,
-                    },
-                )?;
-            }
+            } => match regressor_binary_split(split)? {
+                RebuiltRegressorBinarySplit::Axis {
+                    feature_index,
+                    threshold_bin,
+                } => {
+                    assign_node(
+                        &mut rebuilt,
+                        node_id,
+                        RegressionNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            missing_direction: crate::tree::shared::MissingBranchDirection::Node,
+                            missing_value: 0.0,
+                            left_child: children.left,
+                            right_child: children.right,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity.unwrap_or(0.0),
+                            gain: stats.gain.unwrap_or(0.0),
+                            variance: stats.variance,
+                        },
+                    )?;
+                }
+                RebuiltRegressorBinarySplit::Oblique {
+                    feature_indices,
+                    weights,
+                    threshold,
+                } => {
+                    assign_node(
+                        &mut rebuilt,
+                        node_id,
+                        RegressionNode::ObliqueSplit {
+                            feature_indices,
+                            weights,
+                            threshold,
+                            missing_value: 0.0,
+                            left_child: children.left,
+                            right_child: children.right,
+                            sample_count: stats.sample_count,
+                            impurity: stats.impurity.unwrap_or(0.0),
+                            gain: stats.gain.unwrap_or(0.0),
+                            variance: stats.variance,
+                        },
+                    )?;
+                }
+            },
             NodeTreeNode::MultiwayBranch { .. } => {
                 return Err(IrError::InvalidNode(
                     "regression trees do not support multiway branches".to_string(),
@@ -1430,19 +1495,76 @@ fn rebuild_classifier_leaf_class_counts(
     collect_nodes(rebuilt)
 }
 
-fn classifier_binary_split(split: BinarySplit) -> Result<(usize, u16), IrError> {
+enum RebuiltClassifierBinarySplit {
+    Axis {
+        feature_index: usize,
+        threshold_bin: u16,
+    },
+    Oblique {
+        feature_indices: Vec<usize>,
+        weights: Vec<f64>,
+        threshold: f64,
+    },
+}
+
+enum RebuiltRegressorBinarySplit {
+    Axis {
+        feature_index: usize,
+        threshold_bin: u16,
+    },
+    Oblique {
+        feature_indices: Vec<usize>,
+        weights: Vec<f64>,
+        threshold: f64,
+    },
+}
+
+fn classifier_binary_split(split: BinarySplit) -> Result<RebuiltClassifierBinarySplit, IrError> {
     match split {
         BinarySplit::NumericBinThreshold {
             feature_index,
             threshold_bin,
             ..
-        } => Ok((feature_index, threshold_bin)),
-        BinarySplit::BooleanTest { feature_index, .. } => Ok((feature_index, 0)),
+        } => Ok(RebuiltClassifierBinarySplit::Axis {
+            feature_index,
+            threshold_bin,
+        }),
+        BinarySplit::BooleanTest { feature_index, .. } => Ok(RebuiltClassifierBinarySplit::Axis {
+            feature_index,
+            threshold_bin: 0,
+        }),
+        BinarySplit::ObliqueLinearCombination {
+            feature_indices,
+            weights,
+            threshold,
+            ..
+        } => Ok(RebuiltClassifierBinarySplit::Oblique {
+            feature_indices,
+            weights,
+            threshold,
+        }),
     }
 }
 
-fn regressor_binary_split(split: BinarySplit) -> Result<(usize, u16), IrError> {
-    classifier_binary_split(split)
+fn regressor_binary_split(split: BinarySplit) -> Result<RebuiltRegressorBinarySplit, IrError> {
+    match classifier_binary_split(split)? {
+        RebuiltClassifierBinarySplit::Axis {
+            feature_index,
+            threshold_bin,
+        } => Ok(RebuiltRegressorBinarySplit::Axis {
+            feature_index,
+            threshold_bin,
+        }),
+        RebuiltClassifierBinarySplit::Oblique {
+            feature_indices,
+            weights,
+            threshold,
+        } => Ok(RebuiltRegressorBinarySplit::Oblique {
+            feature_indices,
+            weights,
+            threshold,
+        }),
+    }
 }
 
 fn assign_node<T>(slots: &mut [Option<T>], index: usize, value: T) -> Result<(), IrError> {
@@ -1597,6 +1719,9 @@ fn required_capabilities(model: &Model, representation: &str) -> Vec<String> {
             capabilities.push("numeric_bin_threshold_splits".to_string());
         }
     }
+    if model_has_oblique_split(model) {
+        capabilities.push("oblique_linear_splits".to_string());
+    }
     if model
         .feature_preprocessing()
         .iter()
@@ -1654,6 +1779,25 @@ pub(crate) fn tree_type_name(tree_type: TreeType) -> &'static str {
         TreeType::Cart => "cart",
         TreeType::Randomized => "randomized",
         TreeType::Oblivious => "oblivious",
+    }
+}
+
+fn model_has_oblique_split(model: &Model) -> bool {
+    match model {
+        Model::DecisionTreeClassifier(model) => match model.structure() {
+            ClassifierTreeStructure::Standard { nodes, .. } => nodes
+                .iter()
+                .any(|node| matches!(node, ClassifierTreeNode::ObliqueSplit { .. })),
+            ClassifierTreeStructure::Oblivious { .. } => false,
+        },
+        Model::DecisionTreeRegressor(model) => match model.structure() {
+            RegressionTreeStructure::Standard { nodes, .. } => nodes
+                .iter()
+                .any(|node| matches!(node, RegressionNode::ObliqueSplit { .. })),
+            RegressionTreeStructure::Oblivious { .. } => false,
+        },
+        Model::RandomForest(model) => model.trees().iter().any(model_has_oblique_split),
+        Model::GradientBoostedTrees(model) => model.trees().iter().any(model_has_oblique_split),
     }
 }
 
