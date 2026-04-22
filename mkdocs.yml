@@ -37,6 +37,7 @@ nav:
   - Examples: examples.md
   - Training: training.md
   - Categorical Strategies: categorical-strategies.md
+  - Oblique Splits: oblique-splits.md
   - Models And Introspection: models.md
   - Benchmarks: benchmarks.md
   - Next Steps: next-steps.md
