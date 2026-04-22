@@ -1,25 +1,6 @@
 use super::*;
 use std::collections::BTreeSet;
 
-fn model_has_oblique_split(model: &Model) -> bool {
-    match model {
-        Model::DecisionTreeClassifier(model) => match model.structure() {
-            tree::classifier::TreeStructure::Standard { nodes, .. } => nodes
-                .iter()
-                .any(|node| matches!(node, tree::classifier::TreeNode::ObliqueSplit { .. })),
-            tree::classifier::TreeStructure::Oblivious { .. } => false,
-        },
-        Model::DecisionTreeRegressor(model) => match model.structure() {
-            tree::regressor::RegressionTreeStructure::Standard { nodes, .. } => nodes
-                .iter()
-                .any(|node| matches!(node, tree::regressor::RegressionNode::ObliqueSplit { .. })),
-            tree::regressor::RegressionTreeStructure::Oblivious { .. } => false,
-        },
-        Model::RandomForest(model) => model.trees().iter().any(model_has_oblique_split),
-        Model::GradientBoostedTrees(model) => model.trees().iter().any(model_has_oblique_split),
-    }
-}
-
 /// Runtime-lowered model used for faster inference.
 ///
 /// The optimized model keeps a copy of the source [`Model`] so it can preserve
@@ -39,9 +20,6 @@ impl OptimizedModel {
         physical_cores: Option<usize>,
         missing_features: Option<&[usize]>,
     ) -> Result<Self, OptimizeError> {
-        if model_has_oblique_split(&source_model) {
-            return Err(OptimizeError::UnsupportedModelType("oblique splits"));
-        }
         let thread_count = resolve_inference_thread_count(physical_cores)?;
         let feature_projection = build_feature_projection(&source_model);
         let feature_index_map =

@@ -735,17 +735,23 @@ fn optimized_missing_bin(
 
 impl OptimizedRuntime {
     fn supports_batch_matrix(&self) -> bool {
-        matches!(
-            self,
-            OptimizedRuntime::BinaryClassifier { .. }
-                | OptimizedRuntime::BinaryRegressor { .. }
-                | OptimizedRuntime::ObliviousClassifier { .. }
-                | OptimizedRuntime::ObliviousRegressor { .. }
-                | OptimizedRuntime::ForestClassifier { .. }
-                | OptimizedRuntime::ForestRegressor { .. }
-                | OptimizedRuntime::BoostedBinaryClassifier { .. }
-                | OptimizedRuntime::BoostedRegressor { .. }
-        )
+        match self {
+            OptimizedRuntime::BinaryClassifier { nodes, .. } => {
+                !binary_classifier_nodes_require_rowwise_raw(nodes)
+            }
+            OptimizedRuntime::BinaryRegressor { nodes } => {
+                !binary_regressor_nodes_require_rowwise_raw(nodes)
+            }
+            OptimizedRuntime::ObliviousClassifier { .. }
+            | OptimizedRuntime::ObliviousRegressor { .. } => true,
+            OptimizedRuntime::StandardClassifier { .. } => false,
+            OptimizedRuntime::ForestClassifier { trees, .. }
+            | OptimizedRuntime::ForestRegressor { trees }
+            | OptimizedRuntime::BoostedBinaryClassifier { trees, .. }
+            | OptimizedRuntime::BoostedRegressor { trees, .. } => {
+                trees.iter().all(OptimizedRuntime::supports_batch_matrix)
+            }
+        }
     }
 
     fn should_use_batch_matrix(&self, n_rows: usize) -> bool {
@@ -1036,11 +1042,11 @@ impl OptimizedRuntime {
                     .expect("classifier runtime supports probability prediction");
                 class_label_from_probabilities(&probabilities, self.class_labels())
             }
-            OptimizedRuntime::BinaryRegressor { nodes } => {
-                predict_binary_regressor_row(nodes, |feature_index| {
-                    table.binned_value(feature_index, row_index)
-                })
-            }
+            OptimizedRuntime::BinaryRegressor { nodes } => predict_binary_regressor_row(
+                nodes,
+                |feature_index| table.binned_value(feature_index, row_index),
+                |feature_index| table.feature_value(feature_index, row_index),
+            ),
             OptimizedRuntime::ObliviousRegressor {
                 feature_indices,
                 threshold_bins,
@@ -1080,12 +1086,14 @@ impl OptimizedRuntime {
         row_index: usize,
     ) -> Result<Vec<f64>, PredictError> {
         match self {
-            OptimizedRuntime::BinaryClassifier { nodes, .. } => Ok(
-                predict_binary_classifier_probabilities_row(nodes, |feature_index| {
-                    table.binned_value(feature_index, row_index)
-                })
-                .to_vec(),
-            ),
+            OptimizedRuntime::BinaryClassifier { nodes, .. } => {
+                Ok(predict_binary_classifier_probabilities_row(
+                    nodes,
+                    |feature_index| table.binned_value(feature_index, row_index),
+                    |feature_index| table.feature_value(feature_index, row_index),
+                )
+                .to_vec())
+            }
             OptimizedRuntime::StandardClassifier { nodes, root, .. } => Ok(
                 predict_standard_classifier_probabilities_row(nodes, *root, |feature_index| {
                     table.binned_value(feature_index, row_index)
@@ -1328,9 +1336,7 @@ impl OptimizedRuntime {
     ) -> f64 {
         match self {
             OptimizedRuntime::BinaryRegressor { nodes } => {
-                predict_binary_regressor_row(nodes, |feature_index| {
-                    matrix.column(feature_index).value_at(row_index)
-                })
+                predict_binary_regressor_row(nodes, |_| 0, |_| f64::NAN)
             }
             OptimizedRuntime::ObliviousRegressor {
                 feature_indices,
@@ -1371,10 +1377,7 @@ impl OptimizedRuntime {
     ) -> Result<Vec<f64>, PredictError> {
         match self {
             OptimizedRuntime::BinaryClassifier { nodes, .. } => Ok(
-                predict_binary_classifier_probabilities_row(nodes, |feature_index| {
-                    matrix.column(feature_index).value_at(row_index)
-                })
-                .to_vec(),
+                predict_binary_classifier_probabilities_row(nodes, |_| 0, |_| f64::NAN).to_vec(),
             ),
             OptimizedRuntime::StandardClassifier { nodes, root, .. } => Ok(
                 predict_standard_classifier_probabilities_row(nodes, *root, |feature_index| {
@@ -1501,12 +1504,14 @@ where
 }
 
 #[inline(always)]
-fn predict_binary_classifier_probabilities_row<F>(
+fn predict_binary_classifier_probabilities_row<F, G>(
     nodes: &[OptimizedBinaryClassifierNode],
     bin_at: F,
+    value_at: G,
 ) -> &[f64]
 where
     F: Fn(usize) -> u16,
+    G: Fn(usize) -> f64,
 {
     let mut node_index = 0usize;
     loop {
@@ -1538,14 +1543,39 @@ where
                     node_index + 1
                 };
             }
+            OptimizedBinaryClassifierNode::ObliqueBranch {
+                feature_indices,
+                weights,
+                threshold,
+                jump_index,
+                jump_if_greater,
+                missing_probabilities,
+            } => {
+                let left_value = value_at(feature_indices[0]);
+                let right_value = value_at(feature_indices[1]);
+                if !left_value.is_finite() || !right_value.is_finite() {
+                    return missing_probabilities;
+                }
+                let go_right = weights[0] * left_value + weights[1] * right_value > *threshold;
+                node_index = if go_right == *jump_if_greater {
+                    *jump_index
+                } else {
+                    node_index + 1
+                };
+            }
         }
     }
 }
 
 #[inline(always)]
-fn predict_binary_regressor_row<F>(nodes: &[OptimizedBinaryRegressorNode], bin_at: F) -> f64
+fn predict_binary_regressor_row<F, G>(
+    nodes: &[OptimizedBinaryRegressorNode],
+    bin_at: F,
+    value_at: G,
+) -> f64
 where
     F: Fn(usize) -> u16,
+    G: Fn(usize) -> f64,
 {
     let mut node_index = 0usize;
     loop {
@@ -1577,6 +1607,26 @@ where
                     node_index + 1
                 };
             }
+            OptimizedBinaryRegressorNode::ObliqueBranch {
+                feature_indices,
+                weights,
+                threshold,
+                jump_index,
+                jump_if_greater,
+                missing_value,
+            } => {
+                let left_value = value_at(feature_indices[0]);
+                let right_value = value_at(feature_indices[1]);
+                if !left_value.is_finite() || !right_value.is_finite() {
+                    return *missing_value;
+                }
+                let go_right = weights[0] * left_value + weights[1] * right_value > *threshold;
+                node_index = if go_right == *jump_if_greater {
+                    *jump_index
+                } else {
+                    node_index + 1
+                };
+            }
         }
     }
 }
@@ -1586,21 +1636,27 @@ fn predict_binary_classifier_probabilities_column_major_matrix(
     matrix: &ColumnMajorBinnedMatrix,
     _executor: &InferenceExecutor,
 ) -> Vec<Vec<f64>> {
-    if binary_classifier_nodes_require_rowwise_missing(nodes) {
+    if binary_classifier_nodes_require_rowwise_missing(nodes)
+        || binary_classifier_nodes_require_rowwise_raw(nodes)
+    {
         return (0..matrix.n_rows)
             .map(|row_index| {
-                predict_binary_classifier_probabilities_row(nodes, |feature_index| {
-                    matrix.column(feature_index).value_at(row_index)
-                })
+                predict_binary_classifier_probabilities_row(
+                    nodes,
+                    |feature_index| matrix.column(feature_index).value_at(row_index),
+                    |_| f64::NAN,
+                )
                 .to_vec()
             })
             .collect();
     }
     (0..matrix.n_rows)
         .map(|row_index| {
-            predict_binary_classifier_probabilities_row(nodes, |feature_index| {
-                matrix.column(feature_index).value_at(row_index)
-            })
+            predict_binary_classifier_probabilities_row(
+                nodes,
+                |feature_index| matrix.column(feature_index).value_at(row_index),
+                |_| f64::NAN,
+            )
             .to_vec()
         })
         .collect()
@@ -1611,13 +1667,11 @@ fn predict_binary_regressor_column_major_matrix(
     matrix: &ColumnMajorBinnedMatrix,
     executor: &InferenceExecutor,
 ) -> Vec<f64> {
-    if binary_regressor_nodes_require_rowwise_missing(nodes) {
+    if binary_regressor_nodes_require_rowwise_missing(nodes)
+        || binary_regressor_nodes_require_rowwise_raw(nodes)
+    {
         return (0..matrix.n_rows)
-            .map(|row_index| {
-                predict_binary_regressor_row(nodes, |feature_index| {
-                    matrix.column(feature_index).value_at(row_index)
-                })
-            })
+            .map(|_| predict_binary_regressor_row(nodes, |_| 0, |_| f64::NAN))
             .collect();
     }
     let mut outputs = vec![0.0; matrix.n_rows];
@@ -1698,6 +1752,9 @@ fn predict_binary_regressor_chunk(
                     stack.push((fallthrough_index, start, jump_start));
                 }
             }
+            OptimizedBinaryRegressorNode::ObliqueBranch { .. } => {
+                unreachable!("oblique regressor nodes should use rowwise prediction");
+            }
         }
     }
 }
@@ -1715,6 +1772,7 @@ fn binary_classifier_nodes_require_rowwise_missing(
         } => {
             missing_bin.is_some() || missing_jump_index.is_some() || missing_probabilities.is_some()
         }
+        OptimizedBinaryClassifierNode::ObliqueBranch { .. } => false,
     })
 }
 
@@ -1727,7 +1785,20 @@ fn binary_regressor_nodes_require_rowwise_missing(nodes: &[OptimizedBinaryRegres
             missing_value,
             ..
         } => missing_bin.is_some() || missing_jump_index.is_some() || missing_value.is_some(),
+        OptimizedBinaryRegressorNode::ObliqueBranch { .. } => false,
     })
+}
+
+fn binary_classifier_nodes_require_rowwise_raw(nodes: &[OptimizedBinaryClassifierNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| matches!(node, OptimizedBinaryClassifierNode::ObliqueBranch { .. }))
+}
+
+fn binary_regressor_nodes_require_rowwise_raw(nodes: &[OptimizedBinaryRegressorNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| matches!(node, OptimizedBinaryRegressorNode::ObliqueBranch { .. }))
 }
 
 #[inline(always)]
@@ -1809,6 +1880,7 @@ fn classifier_nodes_are_binary_only(nodes: &[tree::classifier::TreeNode]) -> boo
             node,
             tree::classifier::TreeNode::Leaf { .. }
                 | tree::classifier::TreeNode::BinarySplit { .. }
+                | tree::classifier::TreeNode::ObliqueSplit { .. }
         )
     })
 }
@@ -1945,8 +2017,60 @@ fn append_binary_classifier_node(
         tree::classifier::TreeNode::MultiwaySplit { .. } => {
             unreachable!("multiway nodes are filtered out before binary layout construction");
         }
-        tree::classifier::TreeNode::ObliqueSplit { .. } => {
-            unreachable!("oblique nodes are rejected before optimized lowering");
+        tree::classifier::TreeNode::ObliqueSplit {
+            feature_indices,
+            weights,
+            threshold,
+            left_child,
+            right_child,
+            class_counts,
+            ..
+        } => {
+            let (fallthrough_child, jump_child, jump_if_greater) = if left_child == right_child {
+                (*left_child, *left_child, true)
+            } else {
+                let left_count = classifier_node_sample_count(nodes, *left_child);
+                let right_count = classifier_node_sample_count(nodes, *right_child);
+                if left_count >= right_count {
+                    (*left_child, *right_child, true)
+                } else {
+                    (*right_child, *left_child, false)
+                }
+            };
+
+            let fallthrough_index = append_binary_classifier_node(
+                nodes,
+                fallthrough_child,
+                layout,
+                feature_index_map,
+                preprocessing,
+                missing_features,
+            );
+            debug_assert_eq!(fallthrough_index, current_index + 1);
+            let jump_index = if jump_child == fallthrough_child {
+                fallthrough_index
+            } else {
+                append_binary_classifier_node(
+                    nodes,
+                    jump_child,
+                    layout,
+                    feature_index_map,
+                    preprocessing,
+                    missing_features,
+                )
+            };
+
+            layout[current_index] = OptimizedBinaryClassifierNode::ObliqueBranch {
+                feature_indices: [
+                    remap_feature_index(feature_indices[0], feature_index_map),
+                    remap_feature_index(feature_indices[1], feature_index_map),
+                ],
+                weights: [weights[0], weights[1]],
+                threshold: *threshold,
+                jump_index,
+                jump_if_greater,
+                missing_probabilities: normalized_probabilities_from_counts(class_counts),
+            };
         }
     }
 
@@ -2078,8 +2202,60 @@ fn append_binary_regressor_node(
                 missing_value,
             };
         }
-        tree::regressor::RegressionNode::ObliqueSplit { .. } => {
-            unreachable!("oblique nodes are rejected before optimized lowering");
+        tree::regressor::RegressionNode::ObliqueSplit {
+            feature_indices,
+            weights,
+            threshold,
+            missing_value,
+            left_child,
+            right_child,
+            ..
+        } => {
+            let (fallthrough_child, jump_child, jump_if_greater) = if left_child == right_child {
+                (*left_child, *left_child, true)
+            } else {
+                let left_count = regressor_node_sample_count(nodes, *left_child);
+                let right_count = regressor_node_sample_count(nodes, *right_child);
+                if left_count >= right_count {
+                    (*left_child, *right_child, true)
+                } else {
+                    (*right_child, *left_child, false)
+                }
+            };
+
+            let fallthrough_index = append_binary_regressor_node(
+                nodes,
+                fallthrough_child,
+                layout,
+                feature_index_map,
+                preprocessing,
+                missing_features,
+            );
+            debug_assert_eq!(fallthrough_index, current_index + 1);
+            let jump_index = if jump_child == fallthrough_child {
+                fallthrough_index
+            } else {
+                append_binary_regressor_node(
+                    nodes,
+                    jump_child,
+                    layout,
+                    feature_index_map,
+                    preprocessing,
+                    missing_features,
+                )
+            };
+
+            layout[current_index] = OptimizedBinaryRegressorNode::ObliqueBranch {
+                feature_indices: [
+                    remap_feature_index(feature_indices[0], feature_index_map),
+                    remap_feature_index(feature_indices[1], feature_index_map),
+                ],
+                weights: [weights[0], weights[1]],
+                threshold: *threshold,
+                jump_index,
+                jump_if_greater,
+                missing_value: *missing_value,
+            };
         }
     }
 

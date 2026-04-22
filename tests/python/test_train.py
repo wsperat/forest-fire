@@ -1653,6 +1653,9 @@ def test_train_supports_oblique_split_strategy_for_cart_classifier() -> None:
 
     assert np.array_equal(model.predict(x), y)
 
+    optimized = model.optimize_inference(physical_cores=1)
+    assert np.array_equal(optimized.predict(x), y)
+
 
 def test_train_rejects_unsupported_oblique_split_strategy_for_gbm() -> None:
     x = np.array([[0.0], [1.0], [2.0], [3.0]])

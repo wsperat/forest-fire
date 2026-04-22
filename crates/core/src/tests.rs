@@ -227,7 +227,7 @@ fn unified_train_rejects_unsupported_oblique_strategy_combinations() {
 }
 
 #[test]
-fn oblique_models_round_trip_through_ir_and_reject_optimized_inference() {
+fn oblique_models_round_trip_through_ir_and_optimized_runtime() {
     let table = oblique_classification_table();
     let model = train(
         &table,
@@ -249,12 +249,15 @@ fn oblique_models_round_trip_through_ir_and_reject_optimized_inference() {
     let restored = Model::deserialize(&serialized).unwrap();
 
     assert_eq!(model.predict_table(&table), restored.predict_table(&table));
+    let optimized = model.optimize_inference(Some(1)).unwrap();
+    assert_eq!(model.predict_table(&table), optimized.predict_table(&table));
 
-    let err = model.optimize_inference(Some(1)).unwrap_err();
-    assert!(matches!(
-        err,
-        OptimizeError::UnsupportedModelType("oblique splits")
-    ));
+    let compiled = optimized.serialize_compiled().unwrap();
+    let restored_optimized = OptimizedModel::deserialize_compiled(&compiled, Some(1)).unwrap();
+    assert_eq!(
+        optimized.predict_table(&table),
+        restored_optimized.predict_table(&table)
+    );
 }
 
 #[test]
