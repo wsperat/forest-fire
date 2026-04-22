@@ -291,6 +291,9 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     if min_samples_leaf == 0 {
         return Err(TrainError::InvalidMinSamplesLeaf(min_samples_leaf));
     }
+    if config.lookahead_depth == 0 {
+        return Err(TrainError::InvalidLookaheadDepth(config.lookahead_depth));
+    }
     config.canary_filter.validate()?;
 
     // Parallelism is installed around the whole training call so nested trainers
@@ -309,6 +312,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 min_samples_leaf,
                 missing_value_strategies: missing_value_strategies.clone(),
                 canary_filter: config.canary_filter,
+                lookahead_depth: config.lookahead_depth,
             },
         ),
         TrainAlgorithm::Rf => train_random_forest(
@@ -327,6 +331,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 max_features: config.max_features,
                 seed: config.seed,
                 compute_oob: config.compute_oob,
+                lookahead_depth: config.lookahead_depth,
             },
         ),
         TrainAlgorithm::Gbm => train_gradient_boosting(
@@ -352,6 +357,7 @@ pub(crate) struct SingleModelConfig {
     pub(crate) min_samples_leaf: usize,
     pub(crate) missing_value_strategies: Vec<crate::MissingValueStrategy>,
     pub(crate) canary_filter: crate::CanaryFilter,
+    pub(crate) lookahead_depth: usize,
 }
 
 /// Internal single-tree config with optional per-node feature subsampling.
@@ -380,6 +386,7 @@ pub(crate) struct RandomForestConfig {
     pub(crate) max_features: crate::MaxFeatures,
     pub(crate) seed: Option<u64>,
     pub(crate) compute_oob: bool,
+    pub(crate) lookahead_depth: usize,
 }
 
 pub(crate) fn train_single_model(
@@ -413,6 +420,7 @@ pub(crate) fn train_single_model_with_feature_subset(
                 min_samples_leaf,
                 missing_value_strategies,
                 canary_filter,
+                lookahead_depth,
             },
         max_features,
         random_seed,
@@ -426,6 +434,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         missing_value_strategies: missing_value_strategies.clone(),
         canary_filter,
         split_strategy,
+        lookahead_depth,
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -436,6 +445,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         missing_value_strategies,
         canary_filter,
         split_strategy,
+        lookahead_depth,
     };
 
     match (task, tree_type, criterion) {

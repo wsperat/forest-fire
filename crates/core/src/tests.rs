@@ -62,6 +62,7 @@ fn unified_train_dispatches_regression_cart() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -116,6 +117,7 @@ fn unified_train_dispatches_randomized_for_both_tasks() {
             task: Task::Regression,
             tree_type: TreeType::Randomized,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -133,6 +135,7 @@ fn unified_train_dispatches_randomized_for_both_tasks() {
             task: Task::Classification,
             tree_type: TreeType::Randomized,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -165,6 +168,7 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
             task: Task::Regression,
             tree_type: TreeType::Id3,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -208,6 +212,7 @@ fn unified_train_accepts_oblique_strategy_for_gbm_cart() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::Oblique,
+            lookahead_depth: 1,
             criterion: Criterion::Auto,
             n_trees: Some(4),
             max_depth: Some(1),
@@ -230,6 +235,7 @@ fn oblique_models_round_trip_through_ir_and_optimized_runtime() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::Oblique,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: Some(1),
             max_features: MaxFeatures::Count(2),
@@ -282,6 +288,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Regression,
                 tree_type: TreeType::Cart,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -310,6 +317,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Regression,
                 tree_type: TreeType::Randomized,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -338,6 +346,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Regression,
                 tree_type: TreeType::Oblivious,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -366,6 +375,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Id3,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -394,6 +404,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::C45,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -422,6 +433,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Cart,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -450,6 +462,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Randomized,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -478,6 +491,7 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 task: Task::Classification,
                 tree_type: TreeType::Oblivious,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::Auto,
                 max_depth: None,
 
@@ -542,6 +556,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -566,6 +581,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Regression,
             tree_type: TreeType::Randomized,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -590,6 +606,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -636,6 +653,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Id3,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Entropy,
             max_depth: None,
 
@@ -660,6 +678,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::C45,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Entropy,
             max_depth: None,
 
@@ -684,6 +703,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -708,6 +728,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Randomized,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -732,6 +753,7 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             task: Task::Classification,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -817,6 +839,7 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -845,6 +868,7 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -894,6 +918,7 @@ fn ir_exports_regression_tree_with_training_binning() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -962,6 +987,7 @@ fn ir_exports_classifier_with_multiway_postprocessing() {
             task: Task::Classification,
             tree_type: TreeType::Id3,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Entropy,
             max_depth: None,
 
@@ -1024,6 +1050,7 @@ fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -1088,6 +1115,7 @@ fn serialized_model_round_trips_through_deserialize() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -1140,6 +1168,7 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -1201,6 +1230,7 @@ fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -1258,6 +1288,7 @@ fn optimized_oblivious_model_matches_base_on_large_batch() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -1306,6 +1337,7 @@ fn optimized_cart_model_batch_and_single_row_predictions_match() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -1357,6 +1389,7 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -1411,6 +1444,7 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -1479,6 +1513,7 @@ fn optimized_model_projects_ensemble_inputs_to_used_features() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             n_trees: Some(8),
             max_features: MaxFeatures::Count(2),
@@ -1517,6 +1552,7 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -1576,6 +1612,7 @@ fn compiled_artifact_round_trips_for_boosted_binary_classifier_runtime() {
                 task: Task::Classification,
                 tree_type: TreeType::Cart,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion: Criterion::SecondOrder,
                 n_trees: Some(16),
                 learning_rate: Some(0.2),
@@ -1641,6 +1678,7 @@ fn optimized_model_rejects_zero_physical_cores() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -1691,6 +1729,7 @@ fn model_predicts_from_raw_rows_without_building_a_training_table() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -1745,6 +1784,7 @@ fn model_predicts_from_named_columns() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -1797,6 +1837,7 @@ fn model_rejects_missing_named_feature() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -1848,6 +1889,7 @@ fn optimized_classifier_preserves_missing_routing() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
             min_samples_split: None,
@@ -1898,6 +1940,7 @@ fn optimized_regressor_preserves_missing_routing() {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
             min_samples_split: None,
@@ -1941,6 +1984,7 @@ fn optimized_missing_feature_configuration_can_skip_missing_checks() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
             min_samples_split: None,
@@ -1996,6 +2040,7 @@ fn model_rejects_unexpected_named_feature() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2049,6 +2094,7 @@ fn model_rejects_invalid_binary_value_during_inference() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2103,6 +2149,7 @@ fn model_predicts_from_sparse_binary_columns() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2153,6 +2200,7 @@ fn model_predicts_from_polars_dataframe() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2206,6 +2254,7 @@ fn model_predicts_from_polars_lazyframe() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2259,6 +2308,7 @@ fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2334,6 +2384,7 @@ fn model_rejects_polars_nulls() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2388,6 +2439,7 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -2440,6 +2492,7 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             task: Task::Regression,
             tree_type: TreeType::Oblivious,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 
@@ -2478,4 +2531,132 @@ fn generated_json_schema_matches_checked_in_schema() {
     let generated = Model::json_schema_json_pretty().unwrap();
     let checked_in = include_str!("../schema/forestfire-ir.schema.json");
     assert_eq!(generated.trim_end(), checked_in.trim_end());
+}
+
+#[test]
+fn lookahead_depth_trains_across_tree_families() {
+    let classification_table = DenseTable::with_canaries(
+        vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![2.0, 0.0],
+            vec![2.0, 1.0],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 1.0, 0.0],
+        0,
+    )
+    .unwrap();
+    let regression_table = DenseTable::with_canaries(
+        vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![2.0, 0.0],
+            vec![2.0, 1.0],
+        ],
+        vec![0.0, 0.5, 1.0, 1.5, 2.0, 1.0],
+        0,
+    )
+    .unwrap();
+
+    for (task, algorithm, tree_type, table) in [
+        (
+            Task::Classification,
+            TrainAlgorithm::Dt,
+            TreeType::Id3,
+            &classification_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Classification,
+            TrainAlgorithm::Dt,
+            TreeType::C45,
+            &classification_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Classification,
+            TrainAlgorithm::Dt,
+            TreeType::Cart,
+            &classification_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Classification,
+            TrainAlgorithm::Dt,
+            TreeType::Randomized,
+            &classification_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Classification,
+            TrainAlgorithm::Dt,
+            TreeType::Oblivious,
+            &classification_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Regression,
+            TrainAlgorithm::Dt,
+            TreeType::Cart,
+            &regression_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Regression,
+            TrainAlgorithm::Dt,
+            TreeType::Randomized,
+            &regression_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Regression,
+            TrainAlgorithm::Dt,
+            TreeType::Oblivious,
+            &regression_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Regression,
+            TrainAlgorithm::Gbm,
+            TreeType::Cart,
+            &regression_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Regression,
+            TrainAlgorithm::Gbm,
+            TreeType::Randomized,
+            &regression_table as &dyn forestfire_data::TableAccess,
+        ),
+        (
+            Task::Regression,
+            TrainAlgorithm::Gbm,
+            TreeType::Oblivious,
+            &regression_table as &dyn forestfire_data::TableAccess,
+        ),
+    ] {
+        let model = train(
+            table,
+            TrainConfig {
+                algorithm,
+                task,
+                tree_type,
+                split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 2,
+                criterion: Criterion::Auto,
+                max_depth: Some(3),
+                min_samples_split: Some(2),
+                min_samples_leaf: Some(1),
+                physical_cores: Some(1),
+                n_trees: Some(3),
+                max_features: MaxFeatures::Auto,
+                seed: Some(7),
+                canary_filter: CanaryFilter::default(),
+                compute_oob: false,
+                learning_rate: Some(0.1),
+                bootstrap: false,
+                top_gradient_fraction: None,
+                other_gradient_fraction: None,
+                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                histogram_bins: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(model.tree_type(), tree_type);
+    }
 }

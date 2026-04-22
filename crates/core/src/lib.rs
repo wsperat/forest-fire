@@ -327,6 +327,12 @@ pub struct TrainConfig {
     /// rebuilds the numeric training view at the requested resolution before
     /// fitting, while leaving the caller's source table unchanged.
     pub histogram_bins: Option<NumericBins>,
+    /// Number of tree levels used when ranking split candidates.
+    ///
+    /// A value of `1` preserves the current greedy behavior. Larger values
+    /// evaluate candidate splits by also considering recursively chosen
+    /// descendants up to the requested horizon.
+    pub lookahead_depth: usize,
 }
 
 impl Default for TrainConfig {
@@ -352,6 +358,7 @@ impl Default for TrainConfig {
             other_gradient_fraction: None,
             missing_value_strategy: MissingValueStrategyConfig::heuristic(),
             histogram_bins: None,
+            lookahead_depth: 1,
         }
     }
 }
@@ -393,6 +400,7 @@ pub enum TrainError {
     InvalidMaxDepth(usize),
     InvalidMinSamplesSplit(usize),
     InvalidMinSamplesLeaf(usize),
+    InvalidLookaheadDepth(usize),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
     InvalidCanaryFilterTopN(usize),
@@ -455,6 +463,9 @@ impl Display for TrainError {
                     "min_samples_leaf must be at least 1. Received {}.",
                     value
                 )
+            }
+            TrainError::InvalidLookaheadDepth(value) => {
+                write!(f, "lookahead_depth must be at least 1. Received {}.", value)
             }
             TrainError::InvalidTreeCount(n_trees) => {
                 write!(

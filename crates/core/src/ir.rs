@@ -792,6 +792,7 @@ fn boosted_tree_model_from_ir_parts(
                     missing_value_strategies: Vec::new(),
                     canary_filter: crate::CanaryFilter::default(),
                     split_strategy: crate::SplitStrategy::AxisAligned,
+                    lookahead_depth: 1,
                 },
                 num_features,
                 feature_preprocessing,
@@ -820,6 +821,7 @@ fn boosted_tree_model_from_ir_parts(
                         missing_value_strategies: Vec::new(),
                         canary_filter: crate::CanaryFilter::default(),
                         split_strategy: crate::SplitStrategy::AxisAligned,
+                        lookahead_depth: 1,
                     },
                     num_features,
                     feature_preprocessing,
@@ -937,6 +939,7 @@ fn single_model_from_ir_parts(
                     missing_value_strategies: Vec::new(),
                     canary_filter: crate::CanaryFilter::default(),
                     split_strategy: crate::SplitStrategy::AxisAligned,
+                    lookahead_depth: 1,
                 },
                 num_features,
                 feature_preprocessing,
@@ -969,6 +972,7 @@ fn single_model_from_ir_parts(
                         missing_value_strategies: Vec::new(),
                         canary_filter: crate::CanaryFilter::default(),
                         split_strategy: crate::SplitStrategy::AxisAligned,
+                        lookahead_depth: 1,
                     },
                     num_features,
                     feature_preprocessing,
@@ -1072,6 +1076,7 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         missing_value_strategies: Vec::new(),
         canary_filter: crate::CanaryFilter::default(),
         split_strategy: crate::SplitStrategy::AxisAligned,
+        lookahead_depth: 1,
     }
 }
 

@@ -215,15 +215,20 @@ pub(crate) fn partition_rows_for_binary_split(
     rows: &mut [usize],
 ) -> usize {
     let mut left = 0usize;
+    let missing_bin = numeric_missing_bin(table);
     for index in 0..rows.len() {
-        let go_left = if table.is_missing(feature_index, rows[index]) {
-            matches!(missing_direction, MissingBranchDirection::Left)
-        } else if table.is_binary_binned_feature(feature_index) {
-            !table
-                .binned_boolean_value(feature_index, rows[index])
-                .expect("observed binary feature must expose boolean values")
+        let go_left = if table.is_binary_binned_feature(feature_index) {
+            match table.binned_boolean_value(feature_index, rows[index]) {
+                Some(value) => !value,
+                None => matches!(missing_direction, MissingBranchDirection::Left),
+            }
         } else {
-            table.binned_value(feature_index, rows[index]) <= threshold_bin
+            let bin = table.binned_value(feature_index, rows[index]);
+            if bin == missing_bin {
+                matches!(missing_direction, MissingBranchDirection::Left)
+            } else {
+                bin <= threshold_bin
+            }
         };
         if go_left {
             rows.swap(left, index);

@@ -134,6 +134,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
         max_depth: int = 8,
         min_samples_split: int = 2,
         min_samples_leaf: int = 1,
+        lookahead_depth: int = 1,
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
@@ -149,6 +150,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
+        self.lookahead_depth = lookahead_depth
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
@@ -173,6 +175,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
             min_samples_leaf=self.min_samples_leaf,
+            lookahead_depth=self.lookahead_depth,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
             split_strategy=self.split_strategy,
@@ -196,6 +199,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
         max_depth: int = 8,
         min_samples_split: int = 2,
         min_samples_leaf: int = 1,
+        lookahead_depth: int = 1,
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
@@ -211,6 +215,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
+        self.lookahead_depth = lookahead_depth
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
@@ -235,6 +240,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
             min_samples_leaf=self.min_samples_leaf,
+            lookahead_depth=self.lookahead_depth,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
             split_strategy=self.split_strategy,
@@ -259,6 +265,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
         max_depth: int = 8,
         min_samples_split: int = 2,
         min_samples_leaf: int = 1,
+        lookahead_depth: int = 1,
         max_features: str | int | None = None,
         n_jobs: int | None = None,
         random_state: int | None = None,
@@ -277,6 +284,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
+        self.lookahead_depth = lookahead_depth
         self.max_features = max_features
         self.n_jobs = n_jobs
         self.random_state = random_state
@@ -303,6 +311,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
             min_samples_leaf=self.min_samples_leaf,
+            lookahead_depth=self.lookahead_depth,
             n_trees=self.n_estimators,
             max_features=self.max_features,
             seed=self.random_state,
@@ -330,6 +339,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
         max_depth: int = 8,
         min_samples_split: int = 2,
         min_samples_leaf: int = 1,
+        lookahead_depth: int = 1,
         max_features: str | int | None = None,
         n_jobs: int | None = None,
         random_state: int | None = None,
@@ -348,6 +358,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
+        self.lookahead_depth = lookahead_depth
         self.max_features = max_features
         self.n_jobs = n_jobs
         self.random_state = random_state
@@ -374,6 +385,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
             min_samples_leaf=self.min_samples_leaf,
+            lookahead_depth=self.lookahead_depth,
             n_trees=self.n_estimators,
             max_features=self.max_features,
             seed=self.random_state,
@@ -400,6 +412,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
         max_depth: int = 8,
         min_samples_split: int = 2,
         min_samples_leaf: int = 1,
+        lookahead_depth: int = 1,
         learning_rate: float | None = None,
         bootstrap: bool = False,
         top_gradient_fraction: float | None = None,
@@ -419,6 +432,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
+        self.lookahead_depth = lookahead_depth
         self.learning_rate = learning_rate
         self.bootstrap = bootstrap
         self.top_gradient_fraction = top_gradient_fraction
@@ -446,6 +460,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
             min_samples_leaf=self.min_samples_leaf,
+            lookahead_depth=self.lookahead_depth,
             n_trees=self.n_estimators,
             seed=self.random_state,
             learning_rate=self.learning_rate,
@@ -474,6 +489,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
         max_depth: int = 8,
         min_samples_split: int = 2,
         min_samples_leaf: int = 1,
+        lookahead_depth: int = 1,
         learning_rate: float | None = None,
         bootstrap: bool = False,
         top_gradient_fraction: float | None = None,
@@ -493,6 +509,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
+        self.lookahead_depth = lookahead_depth
         self.learning_rate = learning_rate
         self.bootstrap = bootstrap
         self.top_gradient_fraction = top_gradient_fraction
@@ -520,6 +537,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
             min_samples_leaf=self.min_samples_leaf,
+            lookahead_depth=self.lookahead_depth,
             n_trees=self.n_estimators,
             seed=self.random_state,
             learning_rate=self.learning_rate,

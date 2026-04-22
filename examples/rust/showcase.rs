@@ -51,6 +51,7 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 task: Task::Regression,
                 tree_type,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion,
                 max_depth: None,
 
@@ -97,6 +98,7 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 task: Task::Classification,
                 tree_type,
                 split_strategy: SplitStrategy::AxisAligned,
+                lookahead_depth: 1,
                 criterion,
                 max_depth: None,
 
@@ -148,6 +150,7 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             task: Task::Classification,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Gini,
             max_depth: None,
 
@@ -212,6 +215,7 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             task: Task::Regression,
             tree_type: TreeType::Cart,
             split_strategy: SplitStrategy::AxisAligned,
+            lookahead_depth: 1,
             criterion: Criterion::Mean,
             max_depth: None,
 

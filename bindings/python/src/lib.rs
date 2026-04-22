@@ -1978,6 +1978,17 @@ fn parse_optional_positive_usize(value: Option<usize>, name: &str) -> PyResult<O
     }
 }
 
+fn parse_positive_usize(value: usize, name: &str) -> PyResult<usize> {
+    if value == 0 {
+        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "{} must be at least 1.",
+            name
+        )))
+    } else {
+        Ok(value)
+    }
+}
+
 fn parse_optional_positive_f64(value: Option<f64>, name: &str) -> PyResult<Option<f64>> {
     match value {
         Some(value) if !value.is_finite() || value <= 0.0 => {
@@ -2135,7 +2146,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", split_strategy="axis_aligned", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", split_strategy="axis_aligned", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, lookahead_depth=1, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -2153,6 +2164,7 @@ fn train(
     max_depth: Option<usize>,
     min_samples_split: Option<usize>,
     min_samples_leaf: Option<usize>,
+    lookahead_depth: usize,
     n_trees: Option<usize>,
     max_features: Option<&Bound<PyAny>>,
     seed: Option<u64>,
@@ -2180,6 +2192,7 @@ fn train(
         max_depth: parse_optional_positive_usize(max_depth, "max_depth")?,
         min_samples_split: parse_optional_positive_usize(min_samples_split, "min_samples_split")?,
         min_samples_leaf: parse_optional_positive_usize(min_samples_leaf, "min_samples_leaf")?,
+        lookahead_depth: parse_positive_usize(lookahead_depth, "lookahead_depth")?,
         physical_cores,
         n_trees,
         max_features: parse_max_features(max_features)?,

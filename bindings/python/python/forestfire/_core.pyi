@@ -32,6 +32,7 @@ def train(
     max_depth: int | None = None,
     min_samples_split: int | None = None,
     min_samples_leaf: int | None = None,
+    lookahead_depth: int = 1,
     n_trees: int | None = None,
     max_features: str | int | None = None,
     seed: int | None = None,
