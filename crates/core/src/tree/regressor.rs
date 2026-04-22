@@ -224,6 +224,13 @@ impl StandardSplitChoice {
             Self::Oblique(choice) => choice.score,
         }
     }
+
+    fn ranking_feature_index(&self) -> usize {
+        match self {
+            Self::Axis(choice) => choice.feature_index,
+            Self::Oblique(choice) => choice.feature_indices[0],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -969,22 +976,25 @@ fn build_binary_node_in_place_with_hist(
             })
             .collect::<Vec<_>>()
     };
-    let best_axis_split = select_best_non_canary_candidate(
-        context.table,
-        split_candidates.clone(),
-        context.options.canary_filter,
-        |candidate| candidate.score,
-        |candidate| candidate.feature_index,
-    )
-    .selected;
-    let best_oblique_split = score_oblique_split_choice(context, rows, &split_candidates);
-    let best_split = match (best_axis_split, best_oblique_split) {
-        (Some(axis), Some(oblique)) if oblique.score > axis.score => {
-            Some(StandardSplitChoice::Oblique(oblique))
-        }
-        (Some(axis), _) => Some(StandardSplitChoice::Axis(axis)),
-        (None, Some(oblique)) => Some(StandardSplitChoice::Oblique(oblique)),
-        (None, None) => None,
+    let best_split = if matches!(context.options.split_strategy, SplitStrategy::Oblique) {
+        select_best_non_canary_candidate(
+            context.table,
+            score_oblique_split_choices(context, rows, &split_candidates),
+            context.options.canary_filter,
+            |candidate| candidate.score(),
+            |candidate| candidate.ranking_feature_index(),
+        )
+        .selected
+    } else {
+        select_best_non_canary_candidate(
+            context.table,
+            split_candidates,
+            context.options.canary_filter,
+            |candidate| candidate.score,
+            |candidate| candidate.feature_index,
+        )
+        .selected
+        .map(StandardSplitChoice::Axis)
     };
 
     match best_split {
@@ -1095,15 +1105,19 @@ fn build_binary_node_in_place_with_hist(
     }
 }
 
-fn score_oblique_split_choice(
+fn score_oblique_split_choices(
     context: &BuildContext<'_>,
     rows: &[usize],
     axis_candidates: &[BinarySplitChoice],
-) -> Option<ObliqueSplitChoice> {
+) -> Vec<StandardSplitChoice> {
     if !matches!(context.options.split_strategy, SplitStrategy::Oblique)
         || rows.len() < context.options.min_samples_leaf * 2
     {
-        return None;
+        return axis_candidates
+            .iter()
+            .cloned()
+            .map(StandardSplitChoice::Axis)
+            .collect();
     }
 
     let shortlisted = shortlist_real_features(
@@ -1115,9 +1129,18 @@ fn score_oblique_split_choice(
         OBLIQUE_SHORTLIST_SIZE,
     );
     if shortlisted.len() < 2 {
-        return None;
+        return axis_candidates
+            .iter()
+            .cloned()
+            .map(StandardSplitChoice::Axis)
+            .collect();
     }
 
+    let mut ranked = axis_candidates
+        .iter()
+        .cloned()
+        .map(StandardSplitChoice::Axis)
+        .collect::<Vec<_>>();
     let real_pairs = shortlisted
         .iter()
         .enumerate()
@@ -1134,15 +1157,8 @@ fn score_oblique_split_choice(
         rows,
         &canary_pairs,
     ));
-
-    select_best_non_canary_candidate(
-        context.table,
-        candidates,
-        context.options.canary_filter,
-        |candidate| candidate.score,
-        |candidate| candidate.feature_indices[0],
-    )
-    .selected
+    ranked.extend(candidates.into_iter().map(StandardSplitChoice::Oblique));
+    ranked
 }
 
 fn collect_oblique_regression_candidates(
