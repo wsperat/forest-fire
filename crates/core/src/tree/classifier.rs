@@ -20,8 +20,8 @@ use crate::ir::{
     tree_type_name,
 };
 use crate::tree::oblique::{
-    OBLIQUE_SHORTLIST_SIZE, normalize_weights, partition_rows_for_oblique_split,
-    projected_rows_for_pair, shortlist_real_features,
+    OBLIQUE_SHORTLIST_SIZE, matched_canary_feature_pairs, normalize_weights, oblique_feature_value,
+    partition_rows_for_oblique_split, projected_rows_for_pair, shortlist_real_features,
 };
 use crate::tree::shared::{
     MissingBranchDirection, candidate_feature_indices, choose_random_threshold, node_seed,
@@ -1222,70 +1222,93 @@ fn score_oblique_split_choice(
         return None;
     }
 
+    let real_pairs = shortlisted
+        .iter()
+        .enumerate()
+        .flat_map(|(left_index, &left_feature)| {
+            shortlisted[left_index + 1..]
+                .iter()
+                .map(move |&right_feature| [left_feature, right_feature])
+        })
+        .collect::<Vec<_>>();
+    let mut candidates =
+        collect_oblique_classification_candidates(context, rows, parent_counts, &real_pairs);
+    let canary_pairs = matched_canary_feature_pairs(context.table, &shortlisted);
+    candidates.extend(collect_oblique_classification_candidates(
+        context,
+        rows,
+        parent_counts,
+        &canary_pairs,
+    ));
+
+    select_best_non_canary_candidate(
+        context.table,
+        candidates,
+        context.options.canary_filter,
+        |candidate| candidate.score,
+        |candidate| candidate.feature_indices[0],
+    )
+    .selected
+}
+
+fn collect_oblique_classification_candidates(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    parent_counts: &[usize],
+    feature_pairs: &[[usize; 2]],
+) -> Vec<ObliqueSplitChoice> {
     let parent_impurity = classification_impurity(parent_counts, rows.len(), context.criterion);
-    let mut best = None;
-    for left_index in 0..shortlisted.len() {
-        for right_index in left_index + 1..shortlisted.len() {
-            let feature_pair = [shortlisted[left_index], shortlisted[right_index]];
-            let Some(weights) = oblique_classification_weights(
-                context.table,
-                rows,
-                context.class_indices,
-                context.class_labels.len(),
-                feature_pair,
-            ) else {
+    let mut candidates = Vec::new();
+    for &feature_pair in feature_pairs {
+        let Some(weights) = oblique_classification_weights(
+            context.table,
+            rows,
+            context.class_indices,
+            context.class_labels.len(),
+            feature_pair,
+        ) else {
+            continue;
+        };
+        let Some(projected) = projected_rows_for_pair(context.table, rows, feature_pair, weights)
+        else {
+            continue;
+        };
+        let mut left_counts = vec![0usize; context.class_labels.len()];
+        let mut left_size = 0usize;
+        for split_index in 0..projected.len().saturating_sub(1) {
+            let class_index = context.class_indices[projected[split_index].row_index];
+            left_counts[class_index] += 1;
+            left_size += 1;
+            let right_size = projected.len() - left_size;
+            if left_size < context.options.min_samples_leaf
+                || right_size < context.options.min_samples_leaf
+                || projected[split_index].value == projected[split_index + 1].value
+            {
                 continue;
-            };
-            let Some(projected) =
-                projected_rows_for_pair(context.table, rows, feature_pair, weights)
-            else {
-                continue;
-            };
-            let mut left_counts = vec![0usize; context.class_labels.len()];
-            let mut left_size = 0usize;
-            for split_index in 0..projected.len().saturating_sub(1) {
-                let class_index = context.class_indices[projected[split_index].row_index];
-                left_counts[class_index] += 1;
-                left_size += 1;
-                let right_size = projected.len() - left_size;
-                if left_size < context.options.min_samples_leaf
-                    || right_size < context.options.min_samples_leaf
-                    || projected[split_index].value == projected[split_index + 1].value
-                {
-                    continue;
-                }
-                let right_counts = parent_counts
-                    .iter()
-                    .zip(left_counts.iter())
-                    .map(|(parent, left)| parent - left)
-                    .collect::<Vec<_>>();
-                let weighted_impurity = (left_size as f64 / rows.len() as f64)
-                    * classification_impurity(&left_counts, left_size, context.criterion)
-                    + (right_size as f64 / rows.len() as f64)
-                        * classification_impurity(&right_counts, right_size, context.criterion);
-                let score = parent_impurity - weighted_impurity;
-                let threshold =
-                    (projected[split_index].value + projected[split_index + 1].value) / 2.0;
-                if !score.is_finite() {
-                    continue;
-                }
-                let candidate = ObliqueSplitChoice {
-                    feature_indices: vec![feature_pair[0], feature_pair[1]],
-                    weights: vec![weights[0], weights[1]],
-                    threshold,
-                    score,
-                };
-                if best
-                    .as_ref()
-                    .is_none_or(|current: &ObliqueSplitChoice| candidate.score > current.score)
-                {
-                    best = Some(candidate);
-                }
             }
+            let right_counts = parent_counts
+                .iter()
+                .zip(left_counts.iter())
+                .map(|(parent, left)| parent - left)
+                .collect::<Vec<_>>();
+            let weighted_impurity = (left_size as f64 / rows.len() as f64)
+                * classification_impurity(&left_counts, left_size, context.criterion)
+                + (right_size as f64 / rows.len() as f64)
+                    * classification_impurity(&right_counts, right_size, context.criterion);
+            let score = parent_impurity - weighted_impurity;
+            let threshold = (projected[split_index].value + projected[split_index + 1].value) / 2.0;
+            if !score.is_finite() {
+                continue;
+            }
+            candidates.push(ObliqueSplitChoice {
+                feature_indices: vec![feature_pair[0], feature_pair[1]],
+                weights: vec![weights[0], weights[1]],
+                threshold,
+                score,
+            });
         }
     }
-
-    best
+    candidates
 }
 
 fn oblique_classification_weights(
@@ -1298,9 +1321,11 @@ fn oblique_classification_weights(
     let mut sums = vec![[0.0; 2]; num_classes];
     let mut counts = vec![0usize; num_classes];
     for &row_index in rows {
+        let left_value = oblique_feature_value(table, feature_pair[0], row_index)?;
+        let right_value = oblique_feature_value(table, feature_pair[1], row_index)?;
         let class_index = class_indices[row_index];
-        sums[class_index][0] += table.feature_value(feature_pair[0], row_index);
-        sums[class_index][1] += table.feature_value(feature_pair[1], row_index);
+        sums[class_index][0] += left_value;
+        sums[class_index][1] += right_value;
         counts[class_index] += 1;
     }
 

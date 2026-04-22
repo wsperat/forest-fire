@@ -11,8 +11,8 @@ use crate::ir::{
     criterion_name, feature_name, threshold_upper_bound,
 };
 use crate::tree::oblique::{
-    OBLIQUE_SHORTLIST_SIZE, normalize_weights, partition_rows_for_oblique_split,
-    projected_rows_for_pair, shortlist_real_features,
+    OBLIQUE_SHORTLIST_SIZE, matched_canary_feature_pairs, normalize_weights, oblique_feature_value,
+    partition_rows_for_oblique_split, projected_rows_for_pair, shortlist_real_features,
 };
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
@@ -1118,94 +1118,112 @@ fn score_oblique_split_choice(
         return None;
     }
 
-    let parent_loss = regression_loss(rows, context.targets, context.criterion);
-    let mut best = None;
-    for left_index in 0..shortlisted.len() {
-        for right_index in left_index + 1..shortlisted.len() {
-            let feature_pair = [shortlisted[left_index], shortlisted[right_index]];
-            let Some(weights) =
-                oblique_regression_weights(context.table, rows, context.targets, feature_pair)
-            else {
-                continue;
-            };
-            let Some(projected) =
-                projected_rows_for_pair(context.table, rows, feature_pair, weights)
-            else {
-                continue;
-            };
+    let real_pairs = shortlisted
+        .iter()
+        .enumerate()
+        .flat_map(|(left_index, &left_feature)| {
+            shortlisted[left_index + 1..]
+                .iter()
+                .map(move |&right_feature| [left_feature, right_feature])
+        })
+        .collect::<Vec<_>>();
+    let mut candidates = collect_oblique_regression_candidates(context, rows, &real_pairs);
+    let canary_pairs = matched_canary_feature_pairs(context.table, &shortlisted);
+    candidates.extend(collect_oblique_regression_candidates(
+        context,
+        rows,
+        &canary_pairs,
+    ));
 
-            let mut prefix_sum = 0.0;
-            let mut prefix_sum_sq = 0.0;
-            let total_sum = projected
-                .iter()
-                .map(|projected_row| context.targets[projected_row.row_index])
-                .sum::<f64>();
-            let total_sum_sq = projected
-                .iter()
-                .map(|projected_row| {
-                    let target = context.targets[projected_row.row_index];
-                    target * target
-                })
-                .sum::<f64>();
-            for split_index in 0..projected.len().saturating_sub(1) {
-                let target = context.targets[projected[split_index].row_index];
-                prefix_sum += target;
-                prefix_sum_sq += target * target;
-                let left_count = split_index + 1;
-                let right_count = projected.len() - left_count;
-                if left_count < context.options.min_samples_leaf
-                    || right_count < context.options.min_samples_leaf
-                    || projected[split_index].value == projected[split_index + 1].value
-                {
-                    continue;
-                }
-                let score = match context.criterion {
-                    Criterion::Mean => {
-                        let left_loss =
-                            squared_error_from_stats(left_count, prefix_sum, prefix_sum_sq);
-                        let right_sum = total_sum - prefix_sum;
-                        let right_sum_sq = total_sum_sq - prefix_sum_sq;
-                        let right_loss =
-                            squared_error_from_stats(right_count, right_sum, right_sum_sq);
-                        parent_loss - (left_loss + right_loss)
-                    }
-                    Criterion::Median => {
-                        let left_rows = projected[..left_count]
-                            .iter()
-                            .map(|projected_row| projected_row.row_index)
-                            .collect::<Vec<_>>();
-                        let right_rows = projected[left_count..]
-                            .iter()
-                            .map(|projected_row| projected_row.row_index)
-                            .collect::<Vec<_>>();
-                        parent_loss
-                            - (regression_loss(&left_rows, context.targets, context.criterion)
-                                + regression_loss(&right_rows, context.targets, context.criterion))
-                    }
-                    _ => unreachable!("regression criterion only supports mean or median"),
-                };
-                let threshold =
-                    (projected[split_index].value + projected[split_index + 1].value) / 2.0;
-                if !score.is_finite() {
-                    continue;
-                }
-                let candidate = ObliqueSplitChoice {
-                    feature_indices: vec![feature_pair[0], feature_pair[1]],
-                    weights: vec![weights[0], weights[1]],
-                    threshold,
-                    score,
-                };
-                if best
-                    .as_ref()
-                    .is_none_or(|current: &ObliqueSplitChoice| candidate.score > current.score)
-                {
-                    best = Some(candidate);
-                }
+    select_best_non_canary_candidate(
+        context.table,
+        candidates,
+        context.options.canary_filter,
+        |candidate| candidate.score,
+        |candidate| candidate.feature_indices[0],
+    )
+    .selected
+}
+
+fn collect_oblique_regression_candidates(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    feature_pairs: &[[usize; 2]],
+) -> Vec<ObliqueSplitChoice> {
+    let parent_loss = regression_loss(rows, context.targets, context.criterion);
+    let mut candidates = Vec::new();
+    for &feature_pair in feature_pairs {
+        let Some(weights) =
+            oblique_regression_weights(context.table, rows, context.targets, feature_pair)
+        else {
+            continue;
+        };
+        let Some(projected) = projected_rows_for_pair(context.table, rows, feature_pair, weights)
+        else {
+            continue;
+        };
+
+        let mut prefix_sum = 0.0;
+        let mut prefix_sum_sq = 0.0;
+        let total_sum = projected
+            .iter()
+            .map(|projected_row| context.targets[projected_row.row_index])
+            .sum::<f64>();
+        let total_sum_sq = projected
+            .iter()
+            .map(|projected_row| {
+                let target = context.targets[projected_row.row_index];
+                target * target
+            })
+            .sum::<f64>();
+        for split_index in 0..projected.len().saturating_sub(1) {
+            let target = context.targets[projected[split_index].row_index];
+            prefix_sum += target;
+            prefix_sum_sq += target * target;
+            let left_count = split_index + 1;
+            let right_count = projected.len() - left_count;
+            if left_count < context.options.min_samples_leaf
+                || right_count < context.options.min_samples_leaf
+                || projected[split_index].value == projected[split_index + 1].value
+            {
+                continue;
             }
+            let score = match context.criterion {
+                Criterion::Mean => {
+                    let left_loss = squared_error_from_stats(left_count, prefix_sum, prefix_sum_sq);
+                    let right_sum = total_sum - prefix_sum;
+                    let right_sum_sq = total_sum_sq - prefix_sum_sq;
+                    let right_loss = squared_error_from_stats(right_count, right_sum, right_sum_sq);
+                    parent_loss - (left_loss + right_loss)
+                }
+                Criterion::Median => {
+                    let left_rows = projected[..left_count]
+                        .iter()
+                        .map(|projected_row| projected_row.row_index)
+                        .collect::<Vec<_>>();
+                    let right_rows = projected[left_count..]
+                        .iter()
+                        .map(|projected_row| projected_row.row_index)
+                        .collect::<Vec<_>>();
+                    parent_loss
+                        - (regression_loss(&left_rows, context.targets, context.criterion)
+                            + regression_loss(&right_rows, context.targets, context.criterion))
+                }
+                _ => unreachable!("regression criterion only supports mean or median"),
+            };
+            let threshold = (projected[split_index].value + projected[split_index + 1].value) / 2.0;
+            if !score.is_finite() {
+                continue;
+            }
+            candidates.push(ObliqueSplitChoice {
+                feature_indices: vec![feature_pair[0], feature_pair[1]],
+                weights: vec![weights[0], weights[1]],
+                threshold,
+                score,
+            });
         }
     }
-
-    best
+    candidates
 }
 
 fn oblique_regression_weights(
@@ -1214,26 +1232,27 @@ fn oblique_regression_weights(
     targets: &[f64],
     feature_pair: [usize; 2],
 ) -> Option<[f64; 2]> {
+    let feature_values = rows
+        .iter()
+        .map(|&row_index| {
+            Some([
+                oblique_feature_value(table, feature_pair[0], row_index)?,
+                oblique_feature_value(table, feature_pair[1], row_index)?,
+            ])
+        })
+        .collect::<Option<Vec<_>>>()?;
     let mean_target = rows
         .iter()
         .map(|row_index| targets[*row_index])
         .sum::<f64>()
         / rows.len() as f64;
-    let mean_x0 = rows
-        .iter()
-        .map(|row_index| table.feature_value(feature_pair[0], *row_index))
-        .sum::<f64>()
-        / rows.len() as f64;
-    let mean_x1 = rows
-        .iter()
-        .map(|row_index| table.feature_value(feature_pair[1], *row_index))
-        .sum::<f64>()
-        / rows.len() as f64;
+    let mean_x0 = feature_values.iter().map(|values| values[0]).sum::<f64>() / rows.len() as f64;
+    let mean_x1 = feature_values.iter().map(|values| values[1]).sum::<f64>() / rows.len() as f64;
     let mut weights = [0.0; 2];
-    for &row_index in rows {
+    for (&row_index, values) in rows.iter().zip(feature_values.iter()) {
         let centered_target = targets[row_index] - mean_target;
-        weights[0] += (table.feature_value(feature_pair[0], row_index) - mean_x0) * centered_target;
-        weights[1] += (table.feature_value(feature_pair[1], row_index) - mean_x1) * centered_target;
+        weights[0] += (values[0] - mean_x0) * centered_target;
+        weights[1] += (values[1] - mean_x1) * centered_target;
     }
     normalize_weights(weights)
 }
@@ -2672,6 +2691,34 @@ mod tests {
         DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
     }
 
+    fn oblique_canary_target_table() -> DenseTable {
+        let x = vec![
+            vec![0.0, 9.0],
+            vec![1.0, 4.0],
+            vec![2.0, 7.0],
+            vec![3.0, 2.0],
+            vec![4.0, 8.0],
+            vec![5.0, 1.0],
+            vec![6.0, 6.0],
+            vec![7.0, 3.0],
+            vec![8.0, 5.0],
+            vec![9.0, 0.0],
+        ];
+        let probe =
+            DenseTable::with_options(x.clone(), vec![0.0; x.len()], 1, NumericBins::Fixed(32))
+                .unwrap();
+        let left_canary = probe.n_features();
+        let right_canary = left_canary + 1;
+        let y = (0..probe.n_rows())
+            .map(|row_idx| {
+                probe.binned_value(left_canary, row_idx) as f64
+                    - probe.binned_value(right_canary, row_idx) as f64
+            })
+            .collect::<Vec<_>>();
+
+        DenseTable::with_options(x, y, 1, NumericBins::Fixed(32)).unwrap()
+    }
+
     fn randomized_permutation_table() -> DenseTable {
         DenseTable::with_options(
             vec![
@@ -2952,6 +2999,27 @@ mod tests {
         let preds = model.predict_table(&table);
 
         assert!(preds.iter().any(|pred| *pred != preds[0]));
+    }
+
+    #[test]
+    fn oblique_canary_filter_blocks_oblique_regression_growth_when_canary_pair_wins() {
+        let table = oblique_canary_target_table();
+        let model = train_cart_regressor_with_criterion_parallelism_and_options(
+            &table,
+            Criterion::Mean,
+            Parallelism::sequential(),
+            RegressionTreeOptions {
+                canary_filter: CanaryFilter::TopN(1),
+                split_strategy: SplitStrategy::Oblique,
+                max_depth: 1,
+                ..RegressionTreeOptions::default()
+            },
+        )
+        .unwrap();
+        let preds = model.predict_table(&table);
+
+        assert!(preds.iter().all(|pred| *pred == preds[0]));
+        assert_ne!(preds, table_targets(&table));
     }
 
     #[test]

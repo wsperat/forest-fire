@@ -85,6 +85,37 @@ fn canary_target_table_with_noise_feature() -> DenseTable {
     DenseTable::with_options(x, y, 1, NumericBins::Auto).unwrap()
 }
 
+fn oblique_canary_target_table() -> DenseTable {
+    let x = vec![
+        vec![0.0, 9.0],
+        vec![1.0, 4.0],
+        vec![2.0, 7.0],
+        vec![3.0, 2.0],
+        vec![4.0, 8.0],
+        vec![5.0, 1.0],
+        vec![6.0, 6.0],
+        vec![7.0, 3.0],
+        vec![8.0, 5.0],
+        vec![9.0, 0.0],
+    ];
+    let probe =
+        DenseTable::with_options(x.clone(), vec![0.0; x.len()], 1, NumericBins::Fixed(32)).unwrap();
+    let left_canary = probe.n_features();
+    let right_canary = left_canary + 1;
+    let y = (0..probe.n_rows())
+        .map(|row_idx| {
+            if probe.binned_value(left_canary, row_idx) <= probe.binned_value(right_canary, row_idx)
+            {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
+
+    DenseTable::with_options(x, y, 1, NumericBins::Fixed(32)).unwrap()
+}
+
 fn randomized_permutation_table() -> DenseTable {
     DenseTable::with_options(
         vec![
@@ -384,6 +415,27 @@ fn top_fraction_canary_filter_can_choose_real_classifier_split() {
     let preds = model.predict_table(&table);
 
     assert!(preds.iter().any(|pred| *pred != preds[0]));
+}
+
+#[test]
+fn oblique_canary_filter_blocks_oblique_growth_when_canary_pair_wins() {
+    let table = oblique_canary_target_table();
+    let model = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            canary_filter: CanaryFilter::TopN(1),
+            split_strategy: SplitStrategy::Oblique,
+            max_depth: 1,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let preds = model.predict_table(&table);
+
+    assert!(preds.iter().all(|pred| *pred == preds[0]));
+    assert_ne!(preds, table_targets(&table));
 }
 
 #[test]
