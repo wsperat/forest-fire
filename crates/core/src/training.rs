@@ -300,6 +300,9 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
     if !config.lookahead_weight.is_finite() || config.lookahead_weight < 0.0 {
         return Err(TrainError::InvalidLookaheadWeight(config.lookahead_weight));
     }
+    if config.beam_width == 0 {
+        return Err(TrainError::InvalidBeamWidth(config.beam_width));
+    }
     config.canary_filter.validate()?;
 
     // Parallelism is installed around the whole training call so nested trainers
@@ -322,6 +325,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 lookahead_depth: config.lookahead_depth,
                 lookahead_top_k: config.lookahead_top_k,
                 lookahead_weight: config.lookahead_weight,
+                beam_width: config.beam_width,
             },
         ),
         TrainAlgorithm::Rf => train_random_forest(
@@ -344,6 +348,7 @@ pub fn train(train_set: &dyn TableAccess, config: TrainConfig) -> Result<Model, 
                 lookahead_depth: config.lookahead_depth,
                 lookahead_top_k: config.lookahead_top_k,
                 lookahead_weight: config.lookahead_weight,
+                beam_width: config.beam_width,
             },
         ),
         TrainAlgorithm::Gbm => train_gradient_boosting(
@@ -373,6 +378,7 @@ pub(crate) struct SingleModelConfig {
     pub(crate) lookahead_depth: usize,
     pub(crate) lookahead_top_k: usize,
     pub(crate) lookahead_weight: f64,
+    pub(crate) beam_width: usize,
 }
 
 /// Internal single-tree config with optional per-node feature subsampling.
@@ -405,6 +411,7 @@ pub(crate) struct RandomForestConfig {
     pub(crate) lookahead_depth: usize,
     pub(crate) lookahead_top_k: usize,
     pub(crate) lookahead_weight: f64,
+    pub(crate) beam_width: usize,
 }
 
 pub(crate) fn train_single_model(
@@ -442,6 +449,7 @@ pub(crate) fn train_single_model_with_feature_subset(
                 lookahead_depth,
                 lookahead_top_k,
                 lookahead_weight,
+                beam_width,
             },
         max_features,
         random_seed,
@@ -459,6 +467,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         lookahead_depth,
         lookahead_top_k,
         lookahead_weight,
+        beam_width,
     };
     let regressor_options = tree::regressor::RegressionTreeOptions {
         max_depth,
@@ -473,6 +482,7 @@ pub(crate) fn train_single_model_with_feature_subset(
         lookahead_depth,
         lookahead_top_k,
         lookahead_weight,
+        beam_width,
     };
 
     match (task, tree_type, criterion) {

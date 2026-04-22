@@ -36,6 +36,7 @@ def train(
     lookahead_depth: int = 1,
     lookahead_top_k: int = 8,
     lookahead_weight: float = 1.0,
+    beam_width: int = 4,
     n_trees: int | None = None,
     max_features: str | int | None = None,
     seed: int | None = None,

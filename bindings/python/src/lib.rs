@@ -1769,8 +1769,9 @@ fn parse_builder(builder: &str) -> PyResult<BuilderStrategy> {
     match builder {
         "greedy" => Ok(BuilderStrategy::Greedy),
         "lookahead" => Ok(BuilderStrategy::Lookahead),
+        "beam" => Ok(BuilderStrategy::Beam),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported builder '{}'. Expected one of: greedy, lookahead",
+            "Unsupported builder '{}'. Expected one of: greedy, lookahead, beam",
             builder
         ))),
     }
@@ -2168,7 +2169,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", split_strategy="axis_aligned", builder="greedy", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, lookahead_depth=1, lookahead_top_k=8, lookahead_weight=1.0, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", split_strategy="axis_aligned", builder="greedy", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, lookahead_depth=1, lookahead_top_k=8, lookahead_weight=1.0, beam_width=4, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -2190,6 +2191,7 @@ fn train(
     lookahead_depth: usize,
     lookahead_top_k: usize,
     lookahead_weight: f64,
+    beam_width: usize,
     n_trees: Option<usize>,
     max_features: Option<&Bound<PyAny>>,
     seed: Option<u64>,
@@ -2221,6 +2223,7 @@ fn train(
         lookahead_depth: parse_positive_usize(lookahead_depth, "lookahead_depth")?,
         lookahead_top_k: parse_positive_usize(lookahead_top_k, "lookahead_top_k")?,
         lookahead_weight: parse_nonnegative_f64(lookahead_weight, "lookahead_weight")?,
+        beam_width: parse_positive_usize(beam_width, "beam_width")?,
         physical_cores,
         n_trees,
         max_features: parse_max_features(max_features)?,

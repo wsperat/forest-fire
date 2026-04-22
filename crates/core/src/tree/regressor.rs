@@ -52,6 +52,7 @@ pub struct RegressionTreeOptions {
     pub lookahead_depth: usize,
     pub lookahead_top_k: usize,
     pub lookahead_weight: f64,
+    pub beam_width: usize,
 }
 
 impl Default for RegressionTreeOptions {
@@ -69,6 +70,7 @@ impl Default for RegressionTreeOptions {
             lookahead_depth: 1,
             lookahead_top_k: 8,
             lookahead_weight: 1.0,
+            beam_width: 4,
         }
     }
 }
@@ -77,7 +79,14 @@ impl RegressionTreeOptions {
     pub(crate) fn effective_lookahead_depth(&self) -> usize {
         match self.builder {
             BuilderStrategy::Greedy => 1,
-            BuilderStrategy::Lookahead => self.lookahead_depth,
+            BuilderStrategy::Lookahead | BuilderStrategy::Beam => self.lookahead_depth,
+        }
+    }
+
+    pub(crate) fn effective_beam_width(&self) -> usize {
+        match self.builder {
+            BuilderStrategy::Greedy | BuilderStrategy::Lookahead => 1,
+            BuilderStrategy::Beam => self.beam_width,
         }
     }
 
@@ -1256,14 +1265,19 @@ fn standard_split_ranking_score(
         ),
     };
     let (left_rows, right_rows) = partitioned_rows.split_at_mut(left_count);
-    let future =
-        best_standard_split_lookahead_score(context, left_rows, depth + 1, lookahead_depth - 1)
-            + best_standard_split_lookahead_score(
-                context,
-                right_rows,
-                depth + 1,
-                lookahead_depth - 1,
-            );
+    let future = best_standard_split_lookahead_score(
+        context,
+        left_rows,
+        depth + 1,
+        lookahead_depth - 1,
+        context.options.effective_beam_width(),
+    ) + best_standard_split_lookahead_score(
+        context,
+        right_rows,
+        depth + 1,
+        lookahead_depth - 1,
+        context.options.effective_beam_width(),
+    );
     immediate + context.options.lookahead_weight * future
 }
 
@@ -1272,6 +1286,7 @@ fn best_standard_split_lookahead_score(
     rows: &mut [usize],
     depth: usize,
     lookahead_depth: usize,
+    beam_width: usize,
 ) -> f64 {
     if rows.is_empty()
         || lookahead_depth == 0
@@ -1311,22 +1326,20 @@ fn best_standard_split_lookahead_score(
             }
         })
         .collect::<Vec<_>>();
-    select_best_non_canary_candidate(
-        context.table,
-        rank_standard_split_choices(
-            context,
-            rows,
-            depth,
-            &split_candidates,
-            &feature_indices,
-            lookahead_depth,
-        ),
-        context.options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.choice.ranking_feature_index(),
-    )
-    .selected
-    .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+    let mut ranked = rank_standard_split_choices(
+        context,
+        rows,
+        depth,
+        &split_candidates,
+        &feature_indices,
+        lookahead_depth,
+    );
+    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
+    ranked
+        .into_iter()
+        .take(beam_width.max(1))
+        .map(|candidate| candidate.ranking_score.max(0.0))
+        .fold(0.0, f64::max)
 }
 
 fn rank_shortlisted_candidates(
@@ -1919,6 +1932,7 @@ fn oblivious_split_ranking_score(
         options,
         depth + 1,
         lookahead_depth - 1,
+        options.effective_beam_width(),
     );
     immediate + options.lookahead_weight * future
 }
@@ -1933,6 +1947,7 @@ fn best_oblivious_split_lookahead_score(
     options: &RegressionTreeOptions,
     depth: usize,
     lookahead_depth: usize,
+    beam_width: usize,
 ) -> f64 {
     if leaves
         .iter()
@@ -1962,31 +1977,29 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    select_best_non_canary_candidate(
-        table,
-        rank_shortlisted_oblivious_candidates(
-            split_candidates,
-            options.lookahead_top_k,
-            |candidate| {
-                oblivious_split_ranking_score(
-                    table,
-                    row_indices,
-                    targets,
-                    &leaves,
-                    criterion,
-                    options,
-                    depth,
-                    candidate,
-                    lookahead_depth,
-                )
-            },
-        ),
-        options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.candidate.feature_index,
-    )
-    .selected
-    .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+    let mut ranked = rank_shortlisted_oblivious_candidates(
+        split_candidates,
+        options.lookahead_top_k,
+        |candidate| {
+            oblivious_split_ranking_score(
+                table,
+                row_indices,
+                targets,
+                &leaves,
+                criterion,
+                options,
+                depth,
+                candidate,
+                lookahead_depth,
+            )
+        },
+    );
+    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
+    ranked
+        .into_iter()
+        .take(beam_width.max(1))
+        .map(|candidate| candidate.ranking_score.max(0.0))
+        .fold(0.0, f64::max)
 }
 
 fn rank_shortlisted_oblivious_candidates(

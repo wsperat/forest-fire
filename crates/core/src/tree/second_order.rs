@@ -1186,14 +1186,19 @@ fn standard_split_ranking_score(
         ),
     };
     let (left_rows, right_rows) = partitioned_rows.split_at_mut(left_count);
-    let future =
-        best_standard_split_lookahead_score(context, left_rows, depth + 1, lookahead_depth - 1)
-            + best_standard_split_lookahead_score(
-                context,
-                right_rows,
-                depth + 1,
-                lookahead_depth - 1,
-            );
+    let future = best_standard_split_lookahead_score(
+        context,
+        left_rows,
+        depth + 1,
+        lookahead_depth - 1,
+        context.options.tree_options.effective_beam_width(),
+    ) + best_standard_split_lookahead_score(
+        context,
+        right_rows,
+        depth + 1,
+        lookahead_depth - 1,
+        context.options.tree_options.effective_beam_width(),
+    );
     immediate + context.options.tree_options.lookahead_weight * future
 }
 
@@ -1202,6 +1207,7 @@ fn best_standard_split_lookahead_score(
     rows: &mut [usize],
     depth: usize,
     lookahead_depth: usize,
+    beam_width: usize,
 ) -> f64 {
     if rows.is_empty()
         || lookahead_depth == 0
@@ -1238,22 +1244,20 @@ fn best_standard_split_lookahead_score(
             score_feature_from_hist(context, &histograms[*feature_index], *feature_index, rows)
         })
         .collect::<Vec<_>>();
-    select_best_non_canary_candidate(
-        context.table,
-        rank_standard_split_choices(
-            context,
-            rows,
-            depth,
-            &split_candidates,
-            &feature_indices,
-            lookahead_depth,
-        ),
-        context.options.tree_options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.choice.ranking_feature_index(),
-    )
-    .selected
-    .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+    let mut ranked = rank_standard_split_choices(
+        context,
+        rows,
+        depth,
+        &split_candidates,
+        &feature_indices,
+        lookahead_depth,
+    );
+    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
+    ranked
+        .into_iter()
+        .take(beam_width.max(1))
+        .map(|candidate| candidate.ranking_score.max(0.0))
+        .fold(0.0, f64::max)
 }
 
 fn rank_shortlisted_candidates(
@@ -1954,6 +1958,7 @@ fn oblivious_split_ranking_score(
         options,
         depth + 1,
         lookahead_depth - 1,
+        options.tree_options.effective_beam_width(),
     );
     immediate + options.tree_options.lookahead_weight * future
 }
@@ -1968,6 +1973,7 @@ fn best_oblivious_split_lookahead_score(
     options: &SecondOrderRegressionTreeOptions,
     depth: usize,
     lookahead_depth: usize,
+    beam_width: usize,
 ) -> f64 {
     if leaves
         .iter()
@@ -1997,31 +2003,29 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    select_best_non_canary_candidate(
-        table,
-        rank_shortlisted_oblivious_candidates(
-            split_candidates,
-            options.tree_options.lookahead_top_k,
-            |candidate| {
-                oblivious_split_ranking_score(
-                    table,
-                    row_indices,
-                    gradients,
-                    hessians,
-                    &leaves,
-                    options,
-                    depth,
-                    candidate,
-                    lookahead_depth,
-                )
-            },
-        ),
-        options.tree_options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.choice.feature_index,
-    )
-    .selected
-    .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+    let mut ranked = rank_shortlisted_oblivious_candidates(
+        split_candidates,
+        options.tree_options.lookahead_top_k,
+        |candidate| {
+            oblivious_split_ranking_score(
+                table,
+                row_indices,
+                gradients,
+                hessians,
+                &leaves,
+                options,
+                depth,
+                candidate,
+                lookahead_depth,
+            )
+        },
+    );
+    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
+    ranked
+        .into_iter()
+        .take(beam_width.max(1))
+        .map(|candidate| candidate.ranking_score.max(0.0))
+        .fold(0.0, f64::max)
 }
 
 fn rank_shortlisted_oblivious_candidates(

@@ -796,6 +796,7 @@ fn boosted_tree_model_from_ir_parts(
                     lookahead_depth: 1,
                     lookahead_top_k: 8,
                     lookahead_weight: 1.0,
+                    beam_width: 4,
                 },
                 num_features,
                 feature_preprocessing,
@@ -828,6 +829,7 @@ fn boosted_tree_model_from_ir_parts(
                         lookahead_depth: 1,
                         lookahead_top_k: 8,
                         lookahead_weight: 1.0,
+                        beam_width: 4,
                     },
                     num_features,
                     feature_preprocessing,
@@ -949,6 +951,7 @@ fn single_model_from_ir_parts(
                     lookahead_depth: 1,
                     lookahead_top_k: 8,
                     lookahead_weight: 1.0,
+                    beam_width: 4,
                 },
                 num_features,
                 feature_preprocessing,
@@ -985,6 +988,7 @@ fn single_model_from_ir_parts(
                         lookahead_depth: 1,
                         lookahead_top_k: 8,
                         lookahead_weight: 1.0,
+                        beam_width: 4,
                     },
                     num_features,
                     feature_preprocessing,
@@ -1092,6 +1096,7 @@ fn tree_options(training: &TrainingMetadata) -> DecisionTreeOptions {
         lookahead_depth: 1,
         lookahead_top_k: 8,
         lookahead_weight: 1.0,
+        beam_width: 4,
     }
 }
 

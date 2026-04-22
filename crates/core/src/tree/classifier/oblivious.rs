@@ -473,6 +473,7 @@ fn oblivious_split_ranking_score(
         options,
         depth + 1,
         lookahead_depth - 1,
+        options.effective_beam_width(),
     );
     immediate + options.lookahead_weight * future
 }
@@ -488,6 +489,7 @@ fn best_oblivious_split_lookahead_score(
     options: &DecisionTreeOptions,
     depth: usize,
     lookahead_depth: usize,
+    beam_width: usize,
 ) -> f64 {
     if leaves
         .iter()
@@ -518,32 +520,30 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    select_best_non_canary_candidate(
-        table,
-        rank_shortlisted_oblivious_candidates(
-            split_candidates,
-            options.lookahead_top_k,
-            |candidate| {
-                oblivious_split_ranking_score(
-                    table,
-                    row_indices,
-                    class_indices,
-                    num_classes,
-                    &leaves,
-                    criterion,
-                    options,
-                    depth,
-                    candidate,
-                    lookahead_depth,
-                )
-            },
-        ),
-        options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.candidate.feature_index,
-    )
-    .selected
-    .map_or(0.0, |candidate| candidate.ranking_score.max(0.0))
+    let mut ranked = rank_shortlisted_oblivious_candidates(
+        split_candidates,
+        options.lookahead_top_k,
+        |candidate| {
+            oblivious_split_ranking_score(
+                table,
+                row_indices,
+                class_indices,
+                num_classes,
+                &leaves,
+                criterion,
+                options,
+                depth,
+                candidate,
+                lookahead_depth,
+            )
+        },
+    );
+    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
+    ranked
+        .into_iter()
+        .take(beam_width.max(1))
+        .map(|candidate| candidate.ranking_score.max(0.0))
+        .fold(0.0, f64::max)
 }
 
 fn rank_shortlisted_oblivious_candidates(
