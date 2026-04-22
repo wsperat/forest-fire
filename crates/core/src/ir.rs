@@ -149,6 +149,7 @@ pub enum BinarySplit {
         feature_indices: Vec<usize>,
         feature_names: Vec<String>,
         weights: Vec<f64>,
+        missing_directions: Vec<String>,
         operator: String,
         threshold: f64,
     },
@@ -1223,6 +1224,7 @@ fn rebuild_classifier_nodes(
                 RebuiltClassifierBinarySplit::Oblique {
                     feature_indices,
                     weights,
+                    missing_directions,
                     threshold,
                 } => {
                     assign_node(
@@ -1231,6 +1233,7 @@ fn rebuild_classifier_nodes(
                         ClassifierTreeNode::ObliqueSplit {
                             feature_indices,
                             weights,
+                            missing_directions,
                             threshold,
                             left_child: children.left,
                             right_child: children.right,
@@ -1334,6 +1337,7 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
                 RebuiltRegressorBinarySplit::Oblique {
                     feature_indices,
                     weights,
+                    missing_directions,
                     threshold,
                 } => {
                     assign_node(
@@ -1342,6 +1346,7 @@ fn rebuild_regressor_nodes(nodes: Vec<NodeTreeNode>) -> Result<Vec<RegressionNod
                         RegressionNode::ObliqueSplit {
                             feature_indices,
                             weights,
+                            missing_directions,
                             threshold,
                             missing_value: 0.0,
                             left_child: children.left,
@@ -1503,6 +1508,7 @@ enum RebuiltClassifierBinarySplit {
     Oblique {
         feature_indices: Vec<usize>,
         weights: Vec<f64>,
+        missing_directions: Vec<crate::tree::shared::MissingBranchDirection>,
         threshold: f64,
     },
 }
@@ -1515,6 +1521,7 @@ enum RebuiltRegressorBinarySplit {
     Oblique {
         feature_indices: Vec<usize>,
         weights: Vec<f64>,
+        missing_directions: Vec<crate::tree::shared::MissingBranchDirection>,
         threshold: f64,
     },
 }
@@ -1536,11 +1543,24 @@ fn classifier_binary_split(split: BinarySplit) -> Result<RebuiltClassifierBinary
         BinarySplit::ObliqueLinearCombination {
             feature_indices,
             weights,
+            missing_directions,
             threshold,
             ..
         } => Ok(RebuiltClassifierBinarySplit::Oblique {
             feature_indices,
             weights,
+            missing_directions: missing_directions
+                .into_iter()
+                .map(|direction| match direction.as_str() {
+                    "left" => Ok(crate::tree::shared::MissingBranchDirection::Left),
+                    "right" => Ok(crate::tree::shared::MissingBranchDirection::Right),
+                    "node" => Ok(crate::tree::shared::MissingBranchDirection::Node),
+                    _ => Err(IrError::InvalidNode(format!(
+                        "unknown oblique missing direction: {}",
+                        direction
+                    ))),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             threshold,
         }),
     }
@@ -1558,10 +1578,12 @@ fn regressor_binary_split(split: BinarySplit) -> Result<RebuiltRegressorBinarySp
         RebuiltClassifierBinarySplit::Oblique {
             feature_indices,
             weights,
+            missing_directions,
             threshold,
         } => Ok(RebuiltRegressorBinarySplit::Oblique {
             feature_indices,
             weights,
+            missing_directions,
             threshold,
         }),
     }

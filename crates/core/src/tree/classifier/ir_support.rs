@@ -74,6 +74,7 @@ pub(super) fn binary_split_ir(
 pub(super) fn oblique_split_ir(
     feature_indices: &[usize],
     weights: &[f64],
+    missing_directions: &[crate::tree::shared::MissingBranchDirection],
     threshold: f64,
 ) -> BinarySplit {
     BinarySplit::ObliqueLinearCombination {
@@ -83,6 +84,14 @@ pub(super) fn oblique_split_ir(
             .map(|feature_index| feature_name(*feature_index))
             .collect(),
         weights: weights.to_vec(),
+        missing_directions: missing_directions
+            .iter()
+            .map(|direction| match direction {
+                crate::tree::shared::MissingBranchDirection::Left => "left".to_string(),
+                crate::tree::shared::MissingBranchDirection::Right => "right".to_string(),
+                crate::tree::shared::MissingBranchDirection::Node => "node".to_string(),
+            })
+            .collect(),
         operator: "<=".to_string(),
         threshold,
     }

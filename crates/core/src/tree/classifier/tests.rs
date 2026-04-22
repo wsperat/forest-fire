@@ -439,6 +439,72 @@ fn oblique_canary_filter_blocks_oblique_growth_when_canary_pair_wins() {
 }
 
 #[test]
+fn oblique_classifier_routes_missing_features_independently() {
+    let table = DenseTable::with_options(
+        vec![
+            vec![f64::NAN, 1.0],
+            vec![1.0, f64::NAN],
+            vec![f64::NAN, f64::NAN],
+            vec![2.0, 2.0],
+        ],
+        vec![0.0; 4],
+        0,
+        NumericBins::Fixed(16),
+    )
+    .unwrap();
+    let model = DecisionTreeClassifier {
+        algorithm: DecisionTreeAlgorithm::Cart,
+        criterion: Criterion::Gini,
+        structure: TreeStructure::Standard {
+            nodes: vec![
+                TreeNode::Leaf {
+                    class_index: 0,
+                    sample_count: 2,
+                    class_counts: vec![2, 0],
+                },
+                TreeNode::Leaf {
+                    class_index: 1,
+                    sample_count: 2,
+                    class_counts: vec![0, 2],
+                },
+                TreeNode::ObliqueSplit {
+                    feature_indices: vec![0, 1],
+                    weights: vec![1.0, 0.5],
+                    missing_directions: vec![
+                        crate::tree::shared::MissingBranchDirection::Left,
+                        crate::tree::shared::MissingBranchDirection::Right,
+                    ],
+                    threshold: 1.5,
+                    left_child: 0,
+                    right_child: 1,
+                    sample_count: 4,
+                    impurity: 0.0,
+                    gain: 1.0,
+                    class_counts: vec![2, 2],
+                },
+            ],
+            root: 2,
+        },
+        options: DecisionTreeOptions::default(),
+        class_labels: vec![0.0, 1.0],
+        num_features: 2,
+        feature_preprocessing: vec![
+            FeaturePreprocessing::Numeric {
+                bin_boundaries: vec![],
+                missing_bin: 16,
+            },
+            FeaturePreprocessing::Numeric {
+                bin_boundaries: vec![],
+                missing_bin: 16,
+            },
+        ],
+        training_canaries: 0,
+    };
+
+    assert_eq!(model.predict_table(&table), vec![0.0, 1.0, 0.0, 1.0]);
+}
+
+#[test]
 fn manually_built_classifier_models_serialize_for_each_tree_type() {
     let preprocessing = vec![
         FeaturePreprocessing::Binary,

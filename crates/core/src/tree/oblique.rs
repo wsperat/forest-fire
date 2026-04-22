@@ -1,7 +1,7 @@
 use forestfire_data::{BinnedColumnKind, NumericBins, TableAccess, numeric_missing_bin};
 use std::collections::BTreeMap;
 
-pub(crate) const OBLIQUE_SHORTLIST_SIZE: usize = 8;
+use super::shared::MissingBranchDirection;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectedRow {
@@ -9,33 +9,16 @@ pub(crate) struct ProjectedRow {
     pub(crate) value: f64,
 }
 
-pub(crate) fn shortlist_real_features(
-    feature_scores: &[(usize, f64)],
-    real_feature_count: usize,
-    limit: usize,
-) -> Vec<usize> {
-    let mut ranked = feature_scores
+pub(crate) fn all_feature_pairs(features: &[usize]) -> Vec<[usize; 2]> {
+    features
         .iter()
-        .copied()
-        .filter(|(feature_index, _)| *feature_index < real_feature_count)
-        .collect::<Vec<_>>();
-    ranked.sort_by(|left, right| {
-        right
-            .1
-            .total_cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    let mut selected = Vec::new();
-    for (feature_index, _) in ranked {
-        if selected.contains(&feature_index) {
-            continue;
-        }
-        selected.push(feature_index);
-        if selected.len() >= limit {
-            break;
-        }
-    }
-    selected
+        .enumerate()
+        .flat_map(|(left_index, &left_feature)| {
+            features[left_index + 1..]
+                .iter()
+                .map(move |&right_feature| [left_feature, right_feature])
+        })
+        .collect()
 }
 
 pub(crate) fn normalize_weights(weights: [f64; 2]) -> Option<[f64; 2]> {
@@ -111,6 +94,59 @@ pub(crate) fn oblique_feature_value(
     }
 }
 
+pub(crate) fn missing_mask_for_pair(
+    table: &dyn TableAccess,
+    feature_indices: [usize; 2],
+    row_index: usize,
+) -> u8 {
+    let mut mask = 0u8;
+    if oblique_feature_value(table, feature_indices[0], row_index).is_none() {
+        mask |= 1;
+    }
+    if oblique_feature_value(table, feature_indices[1], row_index).is_none() {
+        mask |= 2;
+    }
+    mask
+}
+
+pub(crate) fn resolve_oblique_missing_direction(
+    mask: u8,
+    weights: [f64; 2],
+    missing_directions: [MissingBranchDirection; 2],
+) -> Option<bool> {
+    match mask {
+        0 => None,
+        1 => match missing_directions[0] {
+            MissingBranchDirection::Left => Some(true),
+            MissingBranchDirection::Right => Some(false),
+            MissingBranchDirection::Node => None,
+        },
+        2 => match missing_directions[1] {
+            MissingBranchDirection::Left => Some(true),
+            MissingBranchDirection::Right => Some(false),
+            MissingBranchDirection::Node => None,
+        },
+        3 => {
+            let left = missing_directions[0];
+            let right = missing_directions[1];
+            if matches!(left, MissingBranchDirection::Node)
+                || matches!(right, MissingBranchDirection::Node)
+            {
+                return None;
+            }
+            if left == right {
+                return Some(matches!(left, MissingBranchDirection::Left));
+            }
+            Some(if weights[0].abs() >= weights[1].abs() {
+                matches!(left, MissingBranchDirection::Left)
+            } else {
+                matches!(right, MissingBranchDirection::Left)
+            })
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn projected_rows_for_pair(
     table: &dyn TableAccess,
     rows: &[usize],
@@ -135,18 +171,26 @@ pub(crate) fn partition_rows_for_oblique_split(
     feature_indices: [usize; 2],
     weights: [f64; 2],
     threshold: f64,
+    missing_directions: [MissingBranchDirection; 2],
     rows: &mut [usize],
 ) -> usize {
     let mut left = 0usize;
     for index in 0..rows.len() {
         let row_index = rows[index];
-        let Some(projection) = oblique_feature_value(table, feature_indices[0], row_index)
+        let mask = missing_mask_for_pair(table, feature_indices, row_index);
+        let go_left = if let Some(direction) =
+            resolve_oblique_missing_direction(mask, weights, missing_directions)
+        {
+            direction
+        } else if let Some(projection) = oblique_feature_value(table, feature_indices[0], row_index)
             .zip(oblique_feature_value(table, feature_indices[1], row_index))
             .map(|(left_value, right_value)| weights[0] * left_value + weights[1] * right_value)
-        else {
-            continue;
+        {
+            projection <= threshold
+        } else {
+            false
         };
-        if projection <= threshold {
+        if go_left {
             rows.swap(left, index);
             left += 1;
         }

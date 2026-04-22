@@ -8,8 +8,9 @@
 //! and Hessians, and this learner turns them into Newton-style trees.
 
 use crate::tree::oblique::{
-    OBLIQUE_SHORTLIST_SIZE, matched_canary_feature_pairs, normalize_weights, oblique_feature_value,
-    partition_rows_for_oblique_split, projected_rows_for_pair, shortlist_real_features,
+    all_feature_pairs, matched_canary_feature_pairs, missing_mask_for_pair, normalize_weights,
+    oblique_feature_value, partition_rows_for_oblique_split, projected_rows_for_pair,
+    resolve_oblique_missing_direction,
 };
 use crate::tree::regressor::{
     DecisionTreeRegressor, ObliviousSplit, RegressionNode, RegressionTreeAlgorithm,
@@ -145,6 +146,7 @@ struct SplitChoice {
 struct ObliqueSplitChoice {
     feature_indices: Vec<usize>,
     weights: Vec<f64>,
+    missing_directions: Vec<MissingBranchDirection>,
     threshold: f64,
     gain: f64,
 }
@@ -545,6 +547,7 @@ fn train_standard_structure(
                             [split.feature_indices[0], split.feature_indices[1]],
                             [split.weights[0], split.weights[1]],
                             split.threshold,
+                            [split.missing_directions[0], split.missing_directions[1]],
                             &mut rows[start..end],
                         ),
                     };
@@ -568,6 +571,7 @@ fn train_standard_structure(
                         StandardSplitChoice::Oblique(split) => RegressionNode::ObliqueSplit {
                             feature_indices: split.feature_indices,
                             weights: split.weights,
+                            missing_directions: split.missing_directions,
                             threshold: split.threshold,
                             missing_value: evaluation.leaf_prediction,
                             left_child,
@@ -906,6 +910,7 @@ fn partition_pending_splits_recursive(
                 [split.feature_indices[0], split.feature_indices[1]],
                 [split.weights[0], split.weights[1]],
                 split.threshold,
+                [split.missing_directions[0], split.missing_directions[1]],
                 &mut rows[local_start..local_end],
             ),
         };
@@ -1014,16 +1019,16 @@ fn evaluate_standard_node(
     );
     let split_candidates = if context.parallelism.enabled() {
         feature_indices
-            .into_par_iter()
+            .par_iter()
             .filter_map(|feature_index| {
-                score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
+                score_feature_from_hist(context, &histograms[*feature_index], *feature_index, rows)
             })
             .collect::<Vec<_>>()
     } else {
         feature_indices
-            .into_iter()
+            .iter()
             .filter_map(|feature_index| {
-                score_feature_from_hist(context, &histograms[feature_index], feature_index, rows)
+                score_feature_from_hist(context, &histograms[*feature_index], *feature_index, rows)
             })
             .collect::<Vec<_>>()
     };
@@ -1036,7 +1041,7 @@ fn evaluate_standard_node(
     ) {
         select_best_non_canary_candidate(
             context.table,
-            score_standard_split_choices(context, rows, &split_candidates),
+            score_standard_split_choices(context, rows, &split_candidates, &feature_indices),
             context.options.tree_options.canary_filter,
             |candidate| candidate.gain(),
             |candidate| candidate.ranking_feature_index(),
@@ -1069,39 +1074,29 @@ fn score_standard_split_choices(
     context: &BuildContext<'_>,
     rows: &[usize],
     axis_candidates: &[SplitChoice],
+    candidate_features: &[usize],
 ) -> Vec<StandardSplitChoice> {
-    let shortlisted = shortlist_real_features(
-        &axis_candidates
-            .iter()
-            .map(|candidate| (candidate.feature_index, candidate.gain))
-            .collect::<Vec<_>>(),
-        context.table.n_features(),
-        OBLIQUE_SHORTLIST_SIZE,
-    );
+    let real_features = candidate_features
+        .iter()
+        .copied()
+        .filter(|feature_index| *feature_index < context.table.n_features())
+        .collect::<Vec<_>>();
     let mut ranked = axis_candidates
         .iter()
         .cloned()
         .map(StandardSplitChoice::Axis)
         .collect::<Vec<_>>();
-    if shortlisted.len() < 2 {
+    if real_features.len() < 2 {
         return ranked;
     }
 
-    let real_pairs = shortlisted
-        .iter()
-        .enumerate()
-        .flat_map(|(left_index, &left_feature)| {
-            shortlisted[left_index + 1..]
-                .iter()
-                .map(move |&right_feature| [left_feature, right_feature])
-        })
-        .collect::<Vec<_>>();
+    let real_pairs = all_feature_pairs(&real_features);
     ranked.extend(
         collect_oblique_split_choices(context, rows, &real_pairs)
             .into_iter()
             .map(StandardSplitChoice::Oblique),
     );
-    let canary_pairs = matched_canary_feature_pairs(context.table, &shortlisted);
+    let canary_pairs = matched_canary_feature_pairs(context.table, &real_features);
     ranked.extend(
         collect_oblique_split_choices(context, rows, &canary_pairs)
             .into_iter()
@@ -1115,18 +1110,48 @@ fn collect_oblique_split_choices(
     rows: &[usize],
     feature_pairs: &[[usize; 2]],
 ) -> Vec<ObliqueSplitChoice> {
-    let stats = node_stats(rows, context.gradients, context.hessians);
     let mut candidates = Vec::new();
     for &feature_pair in feature_pairs {
-        let Some(weights) =
-            oblique_second_order_weights(context.table, rows, context.gradients, feature_pair)
+        let observed_rows = rows
+            .iter()
+            .copied()
+            .filter(|row_index| missing_mask_for_pair(context.table, feature_pair, *row_index) == 0)
+            .collect::<Vec<_>>();
+        if observed_rows.len() < 2 {
+            continue;
+        }
+        let Some(weights) = oblique_second_order_weights(
+            context.table,
+            &observed_rows,
+            context.gradients,
+            feature_pair,
+        ) else {
+            continue;
+        };
+        let Some(projected) =
+            projected_rows_for_pair(context.table, &observed_rows, feature_pair, weights)
         else {
             continue;
         };
-        let Some(projected) = projected_rows_for_pair(context.table, rows, feature_pair, weights)
-        else {
-            continue;
-        };
+        let mut missing_rows_by_mask = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for &row_index in rows {
+            let mask = missing_mask_for_pair(context.table, feature_pair, row_index) as usize;
+            if mask != 0 {
+                missing_rows_by_mask[mask].push(row_index);
+            }
+        }
+        let direction_choices_0 =
+            if missing_rows_by_mask[1].is_empty() && missing_rows_by_mask[3].is_empty() {
+                vec![MissingBranchDirection::Node]
+            } else {
+                vec![MissingBranchDirection::Left, MissingBranchDirection::Right]
+            };
+        let direction_choices_1 =
+            if missing_rows_by_mask[2].is_empty() && missing_rows_by_mask[3].is_empty() {
+                vec![MissingBranchDirection::Node]
+            } else {
+                vec![MissingBranchDirection::Left, MissingBranchDirection::Right]
+            };
         let total_gradient_sum = projected
             .iter()
             .map(|projected_row| context.gradients[projected_row.row_index])
@@ -1141,39 +1166,72 @@ fn collect_oblique_split_choices(
             let row_index = projected[split_index].row_index;
             left_gradient_sum += context.gradients[row_index];
             left_hessian_sum += context.hessians[row_index];
-            let left_count = split_index + 1;
-            let right_count = projected.len() - left_count;
-            let right_gradient_sum = total_gradient_sum - left_gradient_sum;
-            let right_hessian_sum = total_hessian_sum - left_hessian_sum;
-            if !children_are_splittable(
-                &context.options,
-                left_count,
-                left_hessian_sum,
-                right_count,
-                right_hessian_sum,
-            ) || projected[split_index].value == projected[split_index + 1].value
-            {
-                continue;
-            }
-            let gain = split_gain(
-                left_gradient_sum,
-                left_hessian_sum,
-                right_gradient_sum,
-                right_hessian_sum,
-                stats.gradient_sum,
-                stats.hessian_sum,
-                context.options.l2_regularization,
-            );
-            if !gain.is_finite() {
+            if projected[split_index].value == projected[split_index + 1].value {
                 continue;
             }
             let threshold = (projected[split_index].value + projected[split_index + 1].value) / 2.0;
-            candidates.push(ObliqueSplitChoice {
-                feature_indices: vec![feature_pair[0], feature_pair[1]],
-                weights: vec![weights[0], weights[1]],
-                threshold,
-                gain,
-            });
+            for &direction_0 in &direction_choices_0 {
+                for &direction_1 in &direction_choices_1 {
+                    let missing_directions = [direction_0, direction_1];
+                    let mut candidate_left_count = split_index + 1;
+                    let mut candidate_left_gradient_sum = left_gradient_sum;
+                    let mut candidate_left_hessian_sum = left_hessian_sum;
+                    let mut candidate_right_count = projected.len() - candidate_left_count;
+                    let mut candidate_right_gradient_sum = total_gradient_sum - left_gradient_sum;
+                    let mut candidate_right_hessian_sum = total_hessian_sum - left_hessian_sum;
+                    for mask in [1u8, 2, 3] {
+                        let target_rows = &missing_rows_by_mask[mask as usize];
+                        if target_rows.is_empty() {
+                            continue;
+                        }
+                        let Some(go_left) =
+                            resolve_oblique_missing_direction(mask, weights, missing_directions)
+                        else {
+                            continue;
+                        };
+                        for &missing_row in target_rows {
+                            let gradient = context.gradients[missing_row];
+                            let hessian = context.hessians[missing_row];
+                            if go_left {
+                                candidate_left_count += 1;
+                                candidate_left_gradient_sum += gradient;
+                                candidate_left_hessian_sum += hessian;
+                                candidate_right_count -= 1;
+                                candidate_right_gradient_sum -= gradient;
+                                candidate_right_hessian_sum -= hessian;
+                            }
+                        }
+                    }
+                    if !children_are_splittable(
+                        &context.options,
+                        candidate_left_count,
+                        candidate_left_hessian_sum,
+                        candidate_right_count,
+                        candidate_right_hessian_sum,
+                    ) {
+                        continue;
+                    }
+                    let gain = split_gain(
+                        candidate_left_gradient_sum,
+                        candidate_left_hessian_sum,
+                        candidate_right_gradient_sum,
+                        candidate_right_hessian_sum,
+                        candidate_left_gradient_sum + candidate_right_gradient_sum,
+                        candidate_left_hessian_sum + candidate_right_hessian_sum,
+                        context.options.l2_regularization,
+                    );
+                    if !gain.is_finite() {
+                        continue;
+                    }
+                    candidates.push(ObliqueSplitChoice {
+                        feature_indices: vec![feature_pair[0], feature_pair[1]],
+                        weights: vec![weights[0], weights[1]],
+                        missing_directions: vec![direction_0, direction_1],
+                        threshold,
+                        gain,
+                    });
+                }
+            }
         }
     }
     candidates

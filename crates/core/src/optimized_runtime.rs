@@ -86,6 +86,7 @@ pub(crate) enum OptimizedBinaryClassifierNode {
     ObliqueBranch {
         feature_indices: [usize; 2],
         weights: [f64; 2],
+        missing_directions: [super::tree::shared::MissingBranchDirection; 2],
         threshold: f64,
         jump_index: usize,
         jump_if_greater: bool,
@@ -108,6 +109,7 @@ pub(crate) enum OptimizedBinaryRegressorNode {
     ObliqueBranch {
         feature_indices: [usize; 2],
         weights: [f64; 2],
+        missing_directions: [super::tree::shared::MissingBranchDirection; 2],
         threshold: f64,
         jump_index: usize,
         jump_if_greater: bool,

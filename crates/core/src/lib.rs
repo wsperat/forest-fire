@@ -1546,6 +1546,7 @@ where
             OptimizedBinaryClassifierNode::ObliqueBranch {
                 feature_indices,
                 weights,
+                missing_directions,
                 threshold,
                 jump_index,
                 jump_if_greater,
@@ -1553,7 +1554,21 @@ where
             } => {
                 let left_value = value_at(feature_indices[0]);
                 let right_value = value_at(feature_indices[1]);
-                if !left_value.is_finite() || !right_value.is_finite() {
+                let missing_mask =
+                    u8::from(!left_value.is_finite()) | (u8::from(!right_value.is_finite()) << 1);
+                if let Some(go_left) = crate::tree::oblique::resolve_oblique_missing_direction(
+                    missing_mask,
+                    *weights,
+                    *missing_directions,
+                ) {
+                    node_index = if go_left == *jump_if_greater {
+                        node_index + 1
+                    } else {
+                        *jump_index
+                    };
+                    continue;
+                }
+                if missing_mask != 0 {
                     return missing_probabilities;
                 }
                 let go_right = weights[0] * left_value + weights[1] * right_value > *threshold;
@@ -1610,6 +1625,7 @@ where
             OptimizedBinaryRegressorNode::ObliqueBranch {
                 feature_indices,
                 weights,
+                missing_directions,
                 threshold,
                 jump_index,
                 jump_if_greater,
@@ -1617,7 +1633,21 @@ where
             } => {
                 let left_value = value_at(feature_indices[0]);
                 let right_value = value_at(feature_indices[1]);
-                if !left_value.is_finite() || !right_value.is_finite() {
+                let missing_mask =
+                    u8::from(!left_value.is_finite()) | (u8::from(!right_value.is_finite()) << 1);
+                if let Some(go_left) = crate::tree::oblique::resolve_oblique_missing_direction(
+                    missing_mask,
+                    *weights,
+                    *missing_directions,
+                ) {
+                    node_index = if go_left == *jump_if_greater {
+                        node_index + 1
+                    } else {
+                        *jump_index
+                    };
+                    continue;
+                }
+                if missing_mask != 0 {
                     return *missing_value;
                 }
                 let go_right = weights[0] * left_value + weights[1] * right_value > *threshold;
@@ -2020,6 +2050,7 @@ fn append_binary_classifier_node(
         tree::classifier::TreeNode::ObliqueSplit {
             feature_indices,
             weights,
+            missing_directions,
             threshold,
             left_child,
             right_child,
@@ -2066,6 +2097,7 @@ fn append_binary_classifier_node(
                     remap_feature_index(feature_indices[1], feature_index_map),
                 ],
                 weights: [weights[0], weights[1]],
+                missing_directions: [missing_directions[0], missing_directions[1]],
                 threshold: *threshold,
                 jump_index,
                 jump_if_greater,
@@ -2205,6 +2237,7 @@ fn append_binary_regressor_node(
         tree::regressor::RegressionNode::ObliqueSplit {
             feature_indices,
             weights,
+            missing_directions,
             threshold,
             missing_value,
             left_child,
@@ -2251,6 +2284,7 @@ fn append_binary_regressor_node(
                     remap_feature_index(feature_indices[1], feature_index_map),
                 ],
                 weights: [weights[0], weights[1]],
+                missing_directions: [missing_directions[0], missing_directions[1]],
                 threshold: *threshold,
                 jump_index,
                 jump_if_greater,
