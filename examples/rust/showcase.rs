@@ -217,7 +217,7 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn show_oblique_and_builder_strategies() -> Result<(), Box<dyn Error>> {
+fn show_oblique_models() -> Result<(), Box<dyn Error>> {
     let x = vec![
         vec![-2.0, 1.0],
         vec![1.0, -2.0],
@@ -265,7 +265,7 @@ fn show_oblique_and_builder_strategies() -> Result<(), Box<dyn Error>> {
         },
     )?;
 
-    print_section("Oblique And Builder Strategies");
+    print_section("Oblique Splits");
     println!("axis used     -> {:?}", axis.used_feature_indices());
     println!("oblique used  -> {:?}", oblique_beam.used_feature_indices());
     println!("axis pred     -> {:?}", axis.predict_rows(x[..4].to_vec())?);
@@ -273,6 +273,116 @@ fn show_oblique_and_builder_strategies() -> Result<(), Box<dyn Error>> {
         "oblique pred  -> {:?}",
         oblique_beam.predict_rows(x[..4].to_vec())?
     );
+    Ok(())
+}
+
+fn show_builder_strategies() -> Result<(), Box<dyn Error>> {
+    let x = vec![
+        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+        vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+        vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        vec![2.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        vec![2.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+    ];
+    let y = vec![0.0, 0.0, 1.0, 1.0, 1.0, 0.0];
+    let table = Table::with_options(x, y, 0, NumericBins::Fixed(64))?;
+
+    print_section("Builder Strategies");
+    for (label, config) in [
+        (
+            "greedy",
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                split_strategy: SplitStrategy::AxisAligned,
+                builder: BuilderStrategy::Greedy,
+                criterion: Criterion::Gini,
+                ..TrainConfig::default()
+            },
+        ),
+        (
+            "lookahead",
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                split_strategy: SplitStrategy::AxisAligned,
+                builder: BuilderStrategy::Lookahead,
+                lookahead_depth: 2,
+                lookahead_top_k: 4,
+                lookahead_weight: 0.5,
+                criterion: Criterion::Gini,
+                ..TrainConfig::default()
+            },
+        ),
+        (
+            "beam",
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                split_strategy: SplitStrategy::AxisAligned,
+                builder: BuilderStrategy::Beam,
+                lookahead_depth: 2,
+                lookahead_top_k: 4,
+                lookahead_weight: 0.5,
+                beam_width: 2,
+                criterion: Criterion::Gini,
+                ..TrainConfig::default()
+            },
+        ),
+        (
+            "optimal",
+            TrainConfig {
+                algorithm: TrainAlgorithm::Dt,
+                task: Task::Classification,
+                tree_type: TreeType::Cart,
+                split_strategy: SplitStrategy::AxisAligned,
+                builder: BuilderStrategy::Optimal,
+                criterion: Criterion::Gini,
+                max_depth: Some(4),
+                canary_filter: CanaryFilter::TopFraction(0.95),
+                ..TrainConfig::default()
+            },
+        ),
+    ] {
+        let model = train(&table, config)?;
+        println!("{label:>9} -> {:?}", model.tree_structure(0)?);
+    }
+    Ok(())
+}
+
+fn show_optimal_builder() -> Result<(), Box<dyn Error>> {
+    let x = vec![
+        vec![0.0, 0.0, 0.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0, 0.0, 1.0],
+        vec![1.0, 0.0, 1.0, 0.0, 0.0],
+        vec![1.0, 1.0, 1.0, 1.0, 0.0],
+        vec![2.0, 0.0, 0.0, 1.0, 1.0],
+        vec![2.0, 1.0, 1.0, 1.0, 0.0],
+    ];
+    let y = vec![0.0, 0.0, 1.0, 1.0, 1.0, 0.0];
+    let table = Table::with_options(x, y, 2, NumericBins::Fixed(64))?;
+
+    let model = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            split_strategy: SplitStrategy::AxisAligned,
+            builder: BuilderStrategy::Optimal,
+            criterion: Criterion::Gini,
+            max_depth: Some(4),
+            canary_filter: CanaryFilter::TopFraction(0.95),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    print_section("Optimal Builder");
+    println!("{:?}", model.tree_structure(0)?);
     Ok(())
 }
 
@@ -372,7 +482,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     show_classification_models()?;
     show_tables()?;
     show_inference_and_optimized_runtime()?;
-    show_oblique_and_builder_strategies()?;
+    show_oblique_models()?;
+    show_builder_strategies()?;
+    show_optimal_builder()?;
     show_missing_value_routing()?;
     show_serialization()?;
     Ok(())

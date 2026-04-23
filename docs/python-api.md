@@ -53,7 +53,7 @@ train(
 - `task="auto" | "regression" | "classification"`
 - `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 - `split_strategy="axis_aligned" | "oblique"`
-- `builder="greedy" | "lookahead" | "beam"`
+- `builder="greedy" | "lookahead" | "beam" | "optimal"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 
 ### Parameter semantics
@@ -109,10 +109,12 @@ Current `auto` behavior:
 #### `builder`
 
 - `greedy`: ordinary immediate-gain split ranking
-- `lookahead`: re-rank the top immediate candidates by one-best-continuation
-  future score
-- `beam`: re-rank the top immediate candidates by width-limited continuation
-  search
+- `lookahead`: bounded recursive subtree rescoring over the top immediate
+  candidates
+- `beam`: the same bounded recursive rescoring, but with width-limited
+  continuation retention during future search
+- `optimal`: exhaustively score the full downstream subtree for every legal
+  split until a real stopping condition is reached
 
 Builder controls tree construction strategy independently of:
 
@@ -127,10 +129,14 @@ Related parameters:
 - `lookahead_weight`
 - `beam_width`
 
+For `optimal`, those four tuning knobs are ignored. Search size is controlled
+instead by the ordinary tree limits and by canary filtering.
+
 For the detailed behavior, see:
 
 - [Lookahead Builder](lookahead-builder.md)
 - [Beam Builder](beam-builder.md)
+- [Optimal Builder](optimal-builder.md)
 
 #### `canaries`
 

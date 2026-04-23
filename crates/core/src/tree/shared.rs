@@ -303,6 +303,30 @@ where
     }
 }
 
+pub(crate) fn aggregate_beam_non_canary_score<T, Score, FeatureIndex>(
+    table: &dyn TableAccess,
+    candidates: Vec<T>,
+    canary_filter: CanaryFilter,
+    beam_width: usize,
+    score: Score,
+    feature_index: FeatureIndex,
+) -> f64
+where
+    Score: Fn(&T) -> f64,
+    FeatureIndex: Fn(&T) -> usize,
+{
+    let mut ranked = candidates;
+    ranked.sort_by(|left, right| score(right).total_cmp(&score(left)));
+    let selection_size = canary_filter.selection_size(ranked.len());
+    ranked
+        .into_iter()
+        .take(selection_size)
+        .filter(|candidate| !table.is_canary_binned_feature(feature_index(candidate)))
+        .take(beam_width.max(1))
+        .map(|candidate| score(&candidate).max(0.0))
+        .fold(0.0, f64::max)
+}
+
 pub(crate) fn mix_seed(base_seed: u64, value: u64) -> u64 {
     base_seed ^ value.wrapping_mul(GOLDEN_GAMMA).rotate_left(17)
 }
@@ -358,6 +382,7 @@ fn fingerprint_thresholds(candidate_thresholds: &[u16]) -> u64 {
 mod tests {
     use super::*;
     use forestfire_data::{BinnedColumnKind, TableAccess};
+    use forestfire_data::{DenseTable, NumericBins};
     use std::collections::BTreeSet;
 
     struct SamplingTestTable {
@@ -560,5 +585,90 @@ mod tests {
     fn top_fraction_selection_size_rounds_up() {
         assert_eq!(CanaryFilter::TopFraction(0.5).selection_size(3), 2);
         assert_eq!(CanaryFilter::TopFraction(0.05).selection_size(20), 1);
+    }
+
+    #[test]
+    fn beam_aggregation_uses_multiple_surviving_candidates() {
+        #[derive(Clone, Copy)]
+        struct Candidate {
+            feature_index: usize,
+            score: f64,
+        }
+
+        let table = DenseTable::with_options(
+            vec![vec![0.0], vec![1.0]],
+            vec![0.0, 1.0],
+            0,
+            NumericBins::Auto,
+        )
+        .unwrap();
+        let candidates = vec![
+            Candidate {
+                feature_index: 0,
+                score: 0.9,
+            },
+            Candidate {
+                feature_index: 0,
+                score: 0.7,
+            },
+            Candidate {
+                feature_index: 0,
+                score: 0.4,
+            },
+        ];
+
+        let score = aggregate_beam_non_canary_score(
+            &table,
+            candidates,
+            CanaryFilter::TopN(3),
+            2,
+            |candidate| candidate.score,
+            |candidate| candidate.feature_index,
+        );
+
+        assert!((score - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn beam_aggregation_excludes_canary_scores() {
+        #[derive(Clone, Copy)]
+        struct Candidate {
+            feature_index: usize,
+            score: f64,
+        }
+
+        let table = DenseTable::with_options(
+            vec![vec![0.0], vec![1.0]],
+            vec![0.0, 1.0],
+            1,
+            NumericBins::Auto,
+        )
+        .unwrap();
+        let canary_feature = table.n_features();
+        let candidates = vec![
+            Candidate {
+                feature_index: canary_feature,
+                score: 1.0,
+            },
+            Candidate {
+                feature_index: 0,
+                score: 0.8,
+            },
+            Candidate {
+                feature_index: 0,
+                score: 0.5,
+            },
+        ];
+
+        let score = aggregate_beam_non_canary_score(
+            &table,
+            candidates,
+            CanaryFilter::TopN(2),
+            2,
+            |candidate| candidate.score,
+            |candidate| candidate.feature_index,
+        );
+
+        assert!((score - 0.8).abs() < 1e-12);
     }
 }

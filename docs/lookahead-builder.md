@@ -7,8 +7,15 @@ With the greedy builder, a node picks the split with the best immediate score at
 that node and commits to it immediately.
 
 With the lookahead builder, a node still starts from immediate scores, but it
-re-ranks a shortlisted set of candidates by estimating how much useful structure
-they expose in their children.
+re-ranks a shortlisted set of candidates by estimating how much useful
+downstream structure they expose in their children.
+
+Operationally, `lookahead` is the same recursive subtree scorer used by
+`optimal`, but with explicit limits applied:
+
+- recursion stops after `lookahead_depth`
+- only the top `lookahead_top_k` immediate candidates are rescored
+- future score is scaled by `lookahead_weight`
 
 ## Public API
 

@@ -470,7 +470,7 @@ What this example shows:
 
 ## Example 7: Greedy vs lookahead vs beam builders
 
-This example compares the three builder strategies on the same training task.
+This example compares three of the builder strategies on the same training task.
 
 ```python
 import numpy as np
@@ -526,10 +526,49 @@ What this example shows:
 - builder strategy is independent from tree family and split family
 - `lookahead` and `beam` reuse the same public depth and weighting knobs
 - `beam_width` only matters for `builder="beam"`
-- all three builders still produce ordinary semantic models that support the
+- all of these builders still produce ordinary semantic models that support the
   same introspection, optimization, and serialization flow
 
-## Example 8: Oblique splits with beam search
+## Example 8: Optimal builder
+
+This example shows the exhaustive `optimal` builder. Unlike `lookahead` and
+`beam`, it does not use a fixed rescoring horizon.
+
+```python
+import numpy as np
+
+from forestfire import train
+
+rng = np.random.default_rng(17)
+X = rng.normal(size=(4_000, 5))
+y = (
+    ((X[:, 0] > 0.2) & (X[:, 1] < -0.3))
+    | ((X[:, 2] + X[:, 3]) > 0.8)
+).astype(float)
+
+model = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    builder="optimal",
+    max_depth=4,
+    canaries=2,
+    filter=0.95,
+)
+
+print(model.tree_structure())
+```
+
+What this example shows:
+
+- `optimal` is bounded by ordinary stopping rules such as `max_depth`
+- canary competition still stops exploration on branches where only canary
+  splits win
+- `lookahead_depth`, `lookahead_top_k`, `lookahead_weight`, and `beam_width`
+  are not the relevant controls for `builder="optimal"`
+
+## Example 9: Oblique splits with beam search
 
 This example combines two newer features: oblique split search and the beam
 builder.

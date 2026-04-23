@@ -1,7 +1,8 @@
 # Beam Builder
 
 The beam builder extends the lookahead idea by keeping several strong future
-continuations alive instead of following only one.
+continuations alive during recursive rescoring instead of pruning immediately
+to the first best path.
 
 This makes it a middle ground between:
 
@@ -56,6 +57,8 @@ The current ranking model is still:
 ranking_score = immediate_gain + lookahead_weight * future_gain
 ```
 
+Operationally, `beam` uses the same bounded recursive subtree scorer as
+`lookahead`, but with width-limited continuation retention at each future step.
 What changes relative to plain lookahead is how `future_gain` is estimated.
 
 ## How it works
@@ -72,7 +75,10 @@ At the current node:
 7. choose the final winner after normal canary filtering
 
 So the current implementation is a width-limited continuation search layered on
-top of local split ranking. It is not yet a full global beam search over whole
+top of local split ranking. The beam keeps multiple recursive continuations
+available while searching, but the value returned for a descendant node is
+still the strongest viable continuation there, because the built tree can only
+realize one split at that node. It is not a full global beam search over whole
 partial-tree states.
 
 That distinction matters:

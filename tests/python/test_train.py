@@ -215,6 +215,28 @@ def test_train_cart_classifier(
     assert np.array_equal(model.predict(X), y)
 
 
+def test_train_accepts_optimal_builder(
+    and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> None:
+    X, y = and_data
+
+    model = train(
+        X,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        builder="optimal",
+        lookahead_depth=2,
+        lookahead_top_k=1,
+        lookahead_weight=0.0,
+        canaries=0,
+    )
+
+    assert model.tree_type == "cart"
+    assert np.array_equal(model.predict(X), y)
+
+
 def test_predict_proba_returns_class_probabilities(
     and_data: tuple[NDArray[np.float64], NDArray[np.float64]],
 ) -> None:

@@ -55,6 +55,7 @@ Current support:
 - `BuilderStrategy::Greedy`
 - `BuilderStrategy::Lookahead`
 - `BuilderStrategy::Beam`
+- `BuilderStrategy::Optimal`
 
 Related `TrainConfig` fields:
 
@@ -63,8 +64,8 @@ Related `TrainConfig` fields:
 - `lookahead_weight`
 - `beam_width`
 
-Those control how split candidates are ranked during tree growth, not which
-split family is available.
+Those control `lookahead` and `beam`. `optimal` ignores them and is instead
+bounded by the normal tree limits plus canary filtering.
 
 ## Core capabilities
 
