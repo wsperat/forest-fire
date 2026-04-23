@@ -230,34 +230,44 @@ def show_builder_strategies() -> None:
         | ((x[:, 4] - x[:, 5]) > 1.0)
     ).astype(float)
 
-    configs = [
-        ("greedy", {}),
-        (
-            "lookahead",
-            {"lookahead_depth": 2, "lookahead_top_k": 4, "lookahead_weight": 0.5},
-        ),
-        (
-            "beam",
-            {
-                "lookahead_depth": 2,
-                "lookahead_top_k": 4,
-                "lookahead_weight": 0.5,
-                "beam_width": 2,
-            },
-        ),
-    ]
-
     print_section("Builder Strategies")
-    for builder, extra in configs:
-        model = train(
-            x,
-            y,
-            task="classification",
-            tree_type="cart",
-            builder=builder,
-            canaries=0,
-            **extra,
-        )
+    greedy = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        builder="greedy",
+        canaries=0,
+    )
+    lookahead = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        builder="lookahead",
+        lookahead_depth=2,
+        lookahead_top_k=4,
+        lookahead_weight=0.5,
+        canaries=0,
+    )
+    beam = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        builder="beam",
+        lookahead_depth=2,
+        lookahead_top_k=4,
+        lookahead_weight=0.5,
+        beam_width=2,
+        canaries=0,
+    )
+
+    for builder, model in (
+        ("greedy", greedy),
+        ("lookahead", lookahead),
+        ("beam", beam),
+    ):
         print(f"{builder:>9} ->", model.tree_structure())
 
 
