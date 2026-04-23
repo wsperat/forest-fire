@@ -1340,88 +1340,68 @@ fn rank_standard_split_choices(
             .map(StandardSplitChoice::Axis)
             .collect()
     };
-    if matches!(context.options.builder, BuilderStrategy::Optimal) {
-        rank_optimal_standard_split_choices(context, rows, depth, candidates)
-    } else {
-        rank_shortlisted_candidates(
-            candidates,
-            context.options.lookahead_top_k,
-            StandardSplitChoice::score,
-            |choice| standard_split_ranking_score(context, rows, depth, choice, lookahead_depth),
-        )
-    }
+    let top_k = matches!(context.options.builder, BuilderStrategy::Optimal)
+        .then_some(candidates.len())
+        .unwrap_or(context.options.lookahead_top_k);
+    rank_standard_split_choices_with_limits(
+        context,
+        rows,
+        depth,
+        candidates,
+        if matches!(context.options.builder, BuilderStrategy::Optimal) {
+            None
+        } else {
+            Some(lookahead_depth)
+        },
+        context.options.effective_beam_width(),
+        top_k,
+        if matches!(context.options.builder, BuilderStrategy::Optimal) {
+            1.0
+        } else {
+            context.options.lookahead_weight
+        },
+    )
 }
 
-fn standard_split_ranking_score(
-    context: &BuildContext<'_>,
-    rows: &[usize],
-    depth: usize,
-    choice: &StandardSplitChoice,
-    lookahead_depth: usize,
-) -> f64 {
-    let immediate = choice.score();
-    if lookahead_depth <= 1 || immediate <= 0.0 || depth + 1 >= context.options.max_depth {
-        return immediate;
-    }
-
-    let mut partitioned_rows = rows.to_vec();
-    let left_count = match choice {
-        StandardSplitChoice::Axis(split) => partition_rows_for_binary_split(
-            context.table,
-            split.feature_index,
-            split.threshold_bin,
-            split.missing_direction,
-            &mut partitioned_rows,
-        ),
-        StandardSplitChoice::Oblique(split) => partition_rows_for_oblique_split(
-            context.table,
-            [split.feature_indices[0], split.feature_indices[1]],
-            [split.weights[0], split.weights[1]],
-            split.threshold,
-            [split.missing_directions[0], split.missing_directions[1]],
-            &mut partitioned_rows,
-        ),
-    };
-    let (left_rows, right_rows) = partitioned_rows.split_at_mut(left_count);
-    let future = best_standard_split_lookahead_score(
-        context,
-        left_rows,
-        depth + 1,
-        lookahead_depth - 1,
-        context.options.effective_beam_width(),
-    ) + best_standard_split_lookahead_score(
-        context,
-        right_rows,
-        depth + 1,
-        lookahead_depth - 1,
-        context.options.effective_beam_width(),
-    );
-    immediate + context.options.lookahead_weight * future
-}
-
-fn rank_optimal_standard_split_choices(
+fn rank_standard_split_choices_with_limits(
     context: &BuildContext<'_>,
     rows: &[usize],
     depth: usize,
     candidates: Vec<StandardSplitChoice>,
+    search_depth: Option<usize>,
+    beam_width: usize,
+    top_k: usize,
+    future_weight: f64,
 ) -> Vec<RankedStandardSplitChoice> {
-    candidates
-        .into_iter()
-        .map(|choice| RankedStandardSplitChoice {
-            ranking_score: optimal_standard_split_ranking_score(context, rows, depth, &choice),
+    rank_shortlisted_candidates(candidates, top_k, StandardSplitChoice::score, |choice| {
+        standard_split_recursive_ranking_score(
+            context,
+            rows,
+            depth,
             choice,
-        })
-        .collect()
+            search_depth,
+            beam_width,
+            top_k,
+            future_weight,
+        )
+    })
 }
 
-fn optimal_standard_split_ranking_score(
+fn standard_split_recursive_ranking_score(
     context: &BuildContext<'_>,
     rows: &[usize],
     depth: usize,
     choice: &StandardSplitChoice,
+    search_depth: Option<usize>,
+    beam_width: usize,
+    top_k: usize,
+    future_weight: f64,
 ) -> f64 {
     let immediate = choice.score();
-    if immediate <= 0.0 || depth + 1 >= context.options.max_depth {
+    if search_depth.is_some_and(|depth| depth <= 1)
+        || immediate <= 0.0
+        || depth + 1 >= context.options.max_depth
+    {
         return immediate;
     }
 
@@ -1444,17 +1424,38 @@ fn optimal_standard_split_ranking_score(
         ),
     };
     let (left_rows, right_rows) = partitioned_rows.split_at_mut(left_count);
-    immediate
-        + best_standard_split_optimal_score(context, left_rows, depth + 1)
-        + best_standard_split_optimal_score(context, right_rows, depth + 1)
+    let next_search_depth = search_depth.map(|depth| depth - 1);
+    let future = best_standard_split_recursive_score(
+        context,
+        left_rows,
+        depth + 1,
+        next_search_depth,
+        beam_width,
+        top_k,
+        future_weight,
+    ) + best_standard_split_recursive_score(
+        context,
+        right_rows,
+        depth + 1,
+        next_search_depth,
+        beam_width,
+        top_k,
+        future_weight,
+    );
+    immediate + future_weight * future
 }
 
-fn best_standard_split_optimal_score(
+fn best_standard_split_recursive_score(
     context: &BuildContext<'_>,
     rows: &mut [usize],
     depth: usize,
+    search_depth: Option<usize>,
+    beam_width: usize,
+    top_k: usize,
+    future_weight: f64,
 ) -> f64 {
     if rows.is_empty()
+        || search_depth == Some(0)
         || depth >= context.options.max_depth
         || rows.len() < context.options.min_samples_split
         || is_pure(rows, context.class_indices)
@@ -1496,105 +1497,36 @@ fn best_standard_split_optimal_score(
             )
         })
         .collect::<Vec<_>>();
-    select_best_non_canary_candidate(
+    let candidates = if matches!(context.options.split_strategy, SplitStrategy::Oblique) {
+        score_oblique_split_choices(
+            context,
+            rows,
+            &current_class_counts,
+            &split_candidates,
+            &feature_indices,
+        )
+    } else {
+        split_candidates
+            .into_iter()
+            .map(StandardSplitChoice::Axis)
+            .collect()
+    };
+    aggregate_beam_non_canary_score(
         context.table,
-        rank_optimal_standard_split_choices(
+        rank_standard_split_choices_with_limits(
             context,
             rows,
             depth,
-            if matches!(context.options.split_strategy, SplitStrategy::Oblique) {
-                score_oblique_split_choices(
-                    context,
-                    rows,
-                    &current_class_counts,
-                    &split_candidates,
-                    &feature_indices,
-                )
-            } else {
-                split_candidates
-                    .into_iter()
-                    .map(StandardSplitChoice::Axis)
-                    .collect()
-            },
+            candidates,
+            search_depth,
+            beam_width,
+            top_k,
+            future_weight,
         ),
-        context.options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.choice.ranking_feature_index(),
-    )
-    .selected
-    .map(|candidate| candidate.ranking_score.max(0.0))
-    .unwrap_or(0.0)
-}
-
-fn best_standard_split_lookahead_score(
-    context: &BuildContext<'_>,
-    rows: &mut [usize],
-    depth: usize,
-    lookahead_depth: usize,
-    beam_width: usize,
-) -> f64 {
-    if rows.is_empty()
-        || lookahead_depth == 0
-        || depth >= context.options.max_depth
-        || rows.len() < context.options.min_samples_split
-        || is_pure(rows, context.class_indices)
-    {
-        return 0.0;
-    }
-
-    let current_class_counts =
-        class_counts(rows, context.class_indices, context.class_labels.len());
-    let scoring = SplitScoringContext {
-        table: context.table,
-        class_indices: context.class_indices,
-        num_classes: context.class_labels.len(),
-        criterion: context.criterion,
-        min_samples_leaf: context.options.min_samples_leaf,
-        missing_value_strategies: &context.options.missing_value_strategies,
-    };
-    let histograms = build_classification_node_histograms(
-        context.table,
-        context.class_indices,
-        rows,
-        context.class_labels.len(),
-    );
-    let feature_indices = candidate_feature_indices(
-        context.table,
-        context.options.max_features,
-        node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
-    );
-    let split_candidates = feature_indices
-        .iter()
-        .filter_map(|feature_index| {
-            score_binary_split_choice_from_hist(
-                &scoring,
-                &histograms[*feature_index],
-                *feature_index,
-                rows,
-                &current_class_counts,
-                context.algorithm,
-            )
-        })
-        .collect::<Vec<_>>();
-    let ranked = rank_standard_split_choices(
-        context,
-        rows,
-        depth,
-        &current_class_counts,
-        &split_candidates,
-        &feature_indices,
-        lookahead_depth,
-    );
-    aggregate_beam_non_canary_score(
-        context.table,
-        ranked,
         context.options.canary_filter,
         beam_width,
         |candidate| candidate.ranking_score,
-        |candidate| match &candidate.choice {
-            StandardSplitChoice::Axis(split) => split.feature_index,
-            StandardSplitChoice::Oblique(split) => split.feature_indices[0],
-        },
+        |candidate| candidate.choice.ranking_feature_index(),
     )
 }
 
@@ -1896,90 +1828,72 @@ fn rank_multiway_split_choices(
     metric: MultiwayMetric,
     candidates: Vec<MultiwaySplitChoice>,
 ) -> Vec<RankedMultiwaySplitChoice> {
-    if matches!(context.options.builder, BuilderStrategy::Optimal) {
-        rank_optimal_multiway_split_choices(context, rows, depth, metric, candidates)
-    } else {
-        rank_shortlisted_multiway_candidates(
-            candidates,
-            context.options.lookahead_top_k,
-            |choice| {
-                multiway_split_ranking_score(
-                    context,
-                    rows,
-                    depth,
-                    metric,
-                    choice,
-                    context.options.effective_lookahead_depth(),
-                )
-            },
-        )
-    }
+    let top_k = matches!(context.options.builder, BuilderStrategy::Optimal)
+        .then_some(candidates.len())
+        .unwrap_or(context.options.lookahead_top_k);
+    rank_multiway_split_choices_with_limits(
+        context,
+        rows,
+        depth,
+        metric,
+        candidates,
+        if matches!(context.options.builder, BuilderStrategy::Optimal) {
+            None
+        } else {
+            Some(context.options.effective_lookahead_depth())
+        },
+        context.options.effective_beam_width(),
+        top_k,
+        if matches!(context.options.builder, BuilderStrategy::Optimal) {
+            1.0
+        } else {
+            context.options.lookahead_weight
+        },
+    )
 }
 
-fn multiway_split_ranking_score(
-    context: &BuildContext<'_>,
-    rows: &[usize],
-    depth: usize,
-    metric: MultiwayMetric,
-    choice: &MultiwaySplitChoice,
-    lookahead_depth: usize,
-) -> f64 {
-    let immediate = choice.score;
-    if lookahead_depth <= 1 || immediate <= 0.0 || depth + 1 >= context.options.max_depth {
-        return immediate;
-    }
-
-    let mut partitioned_rows = rows.to_vec();
-    let branch_ranges = partition_rows_for_multiway_split(
-        context.table,
-        choice.feature_index,
-        &choice.branch_bins,
-        choice.missing_branch_bin,
-        &mut partitioned_rows,
-    );
-    let future = branch_ranges
-        .into_iter()
-        .map(|(_, start, end)| {
-            best_multiway_split_lookahead_score(
-                context,
-                &mut partitioned_rows[start..end],
-                depth + 1,
-                metric,
-                lookahead_depth - 1,
-                context.options.effective_beam_width(),
-            )
-        })
-        .sum::<f64>();
-    immediate + context.options.lookahead_weight * future
-}
-
-fn rank_optimal_multiway_split_choices(
+fn rank_multiway_split_choices_with_limits(
     context: &BuildContext<'_>,
     rows: &[usize],
     depth: usize,
     metric: MultiwayMetric,
     candidates: Vec<MultiwaySplitChoice>,
+    search_depth: Option<usize>,
+    beam_width: usize,
+    top_k: usize,
+    future_weight: f64,
 ) -> Vec<RankedMultiwaySplitChoice> {
-    candidates
-        .into_iter()
-        .map(|choice| RankedMultiwaySplitChoice {
-            ranking_score: optimal_multiway_split_ranking_score(
-                context, rows, depth, metric, &choice,
-            ),
+    rank_shortlisted_multiway_candidates(candidates, top_k, |choice| {
+        multiway_split_recursive_ranking_score(
+            context,
+            rows,
+            depth,
+            metric,
             choice,
-        })
-        .collect()
+            search_depth,
+            beam_width,
+            top_k,
+            future_weight,
+        )
+    })
 }
 
-fn optimal_multiway_split_ranking_score(
+fn multiway_split_recursive_ranking_score(
     context: &BuildContext<'_>,
     rows: &[usize],
     depth: usize,
     metric: MultiwayMetric,
     choice: &MultiwaySplitChoice,
+    search_depth: Option<usize>,
+    beam_width: usize,
+    top_k: usize,
+    future_weight: f64,
 ) -> f64 {
     let immediate = choice.score;
-    if immediate <= 0.0 || depth + 1 >= context.options.max_depth {
+    if search_depth.is_some_and(|depth| depth <= 1)
+        || immediate <= 0.0
+        || depth + 1 >= context.options.max_depth
+    {
         return immediate;
     }
 
@@ -1992,72 +1906,34 @@ fn optimal_multiway_split_ranking_score(
         &mut partitioned_rows,
     );
     let mut future = 0.0;
+    let next_search_depth = search_depth.map(|depth| depth - 1);
     for (_, start, end) in branch_ranges {
-        future += best_multiway_split_optimal_score(
+        future += best_multiway_split_recursive_score(
             context,
             &mut partitioned_rows[start..end],
             depth + 1,
             metric,
+            next_search_depth,
+            beam_width,
+            top_k,
+            future_weight,
         );
     }
-    immediate + future
+    immediate + future_weight * future
 }
 
-fn best_multiway_split_optimal_score(
+fn best_multiway_split_recursive_score(
     context: &BuildContext<'_>,
     rows: &mut [usize],
     depth: usize,
     metric: MultiwayMetric,
-) -> f64 {
-    if rows.is_empty()
-        || depth >= context.options.max_depth
-        || rows.len() < context.options.min_samples_split
-        || is_pure(rows, context.class_indices)
-    {
-        return 0.0;
-    }
-
-    let scoring = SplitScoringContext {
-        table: context.table,
-        class_indices: context.class_indices,
-        num_classes: context.class_labels.len(),
-        criterion: context.criterion,
-        min_samples_leaf: context.options.min_samples_leaf,
-        missing_value_strategies: &context.options.missing_value_strategies,
-    };
-    let feature_indices = candidate_feature_indices(
-        context.table,
-        context.options.max_features,
-        node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
-    );
-    let split_candidates = feature_indices
-        .into_iter()
-        .filter_map(|feature_index| {
-            score_multiway_split_choice(&scoring, feature_index, rows, metric)
-        })
-        .collect::<Vec<_>>();
-    select_best_non_canary_candidate(
-        context.table,
-        rank_optimal_multiway_split_choices(context, rows, depth, metric, split_candidates),
-        context.options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.choice.feature_index,
-    )
-    .selected
-    .map(|candidate| candidate.ranking_score.max(0.0))
-    .unwrap_or(0.0)
-}
-
-fn best_multiway_split_lookahead_score(
-    context: &BuildContext<'_>,
-    rows: &mut [usize],
-    depth: usize,
-    metric: MultiwayMetric,
-    lookahead_depth: usize,
+    search_depth: Option<usize>,
     beam_width: usize,
+    top_k: usize,
+    future_weight: f64,
 ) -> f64 {
     if rows.is_empty()
-        || lookahead_depth == 0
+        || search_depth == Some(0)
         || depth >= context.options.max_depth
         || rows.len() < context.options.min_samples_split
         || is_pure(rows, context.class_indices)
@@ -2084,10 +1960,19 @@ fn best_multiway_split_lookahead_score(
             score_multiway_split_choice(&scoring, feature_index, rows, metric)
         })
         .collect::<Vec<_>>();
-    let ranked = rank_multiway_split_choices(context, rows, depth, metric, split_candidates);
     aggregate_beam_non_canary_score(
         context.table,
-        ranked,
+        rank_multiway_split_choices_with_limits(
+            context,
+            rows,
+            depth,
+            metric,
+            split_candidates,
+            search_depth,
+            beam_width,
+            top_k,
+            future_weight,
+        ),
         context.options.canary_filter,
         beam_width,
         |candidate| candidate.ranking_score,
