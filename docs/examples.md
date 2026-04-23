@@ -12,6 +12,11 @@ around:
 
 The details vary by algorithm, but the overall shape is intentionally stable.
 
+The checked-in runnable showcase programs that mirror these examples live in:
+
+- [examples/python/showcase.py](/Users/waltersperat/Desktop/Personal/forest-fire/examples/python/showcase.py)
+- [examples/rust/showcase.rs](/Users/waltersperat/Desktop/Personal/forest-fire/examples/rust/showcase.rs)
+
 ## Example 1: Random forest from training to deployment
 
 This example uses a random forest classifier and walks through the most common

@@ -284,36 +284,51 @@ The baseline should remain explicit:
 
 ### 15. Refactor the tree-construction interface
 
-- add a pluggable tree-builder interface so the current greedy search is not
-  hard-coded as the only option
-- keep the current implementation as `GreedyBuilder`
-- reserve explicit experimental builders such as:
+- the tree-construction interface is now pluggable instead of hard-coded to
+  greedy search
+- the current public builders are:
+  - `GreedyBuilder`
   - `LookaheadBuilder`
   - `BeamSearchBuilder`
+- next builder families still worth exploring:
   - `RefinementBuilder`
   - `OptimalTreeBuilder`
 
 ### 15.1 Lookahead
 
-- implement depth-1 lookahead for split scoring
-- for each node, shortlist the top `K` splits by immediate gain
-- re-score the shortlisted splits by performing one-step child expansion
-- add configuration:
-  - `lookahead_depth`
-  - `lookahead_top_k`
-  - `lookahead_weight`
+- implemented:
+  - shortlist the top `K` splits by immediate gain
+  - re-score the shortlisted splits with bounded future expansion
+  - expose configuration:
+    - `lookahead_depth`
+    - `lookahead_top_k`
+    - `lookahead_weight`
+- next work:
+  - profile deeper horizons vs real quality gain
+  - tune better defaults by algorithm and tree family
+  - add stronger tracing and diagnostics for why a lookahead candidate wins
 
 ### 15.2 Beam search
 
-- implement a beam over partial trees with width `beam_width`
-- define a partial-tree score from:
-  - current leaf objective
-  - a heuristic estimate of future value
-- deduplicate equivalent partial trees
-- add budget controls:
-  - maximum expansions
-  - maximum memory
-  - early stopping
+- implemented:
+  - a public `beam` builder with width `beam_width`
+  - width-limited continuation search layered onto local split rescoring
+  - the same public configuration family used by lookahead:
+    - `lookahead_depth`
+    - `lookahead_top_k`
+    - `lookahead_weight`
+    - `beam_width`
+- next work:
+  - move from local continuation search toward a fuller beam over partial-tree
+    states
+  - define a stronger partial-tree score from:
+    - current leaf objective
+    - a heuristic estimate of future value
+  - deduplicate equivalent partial trees
+  - add budget controls:
+    - maximum expansions
+    - maximum memory
+    - early stopping
 
 ### 15.3 Post-build non-greedy refinement
 
@@ -341,8 +356,9 @@ The baseline should remain explicit:
   - wall-clock time
   - tree size and realized depth
   - number of accepted refinements
-- measure whether stronger trees reduce the number of boosting rounds required
-  to hit the same validation quality
+- measure whether stronger implemented builders such as lookahead and beam
+  reduce the number of boosting rounds required to hit the same validation
+  quality
 
 ## Constraint-aware modeling
 
