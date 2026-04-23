@@ -453,6 +453,60 @@ fn optimal_cart_depth_two_can_differ_from_greedy() {
 }
 
 #[test]
+fn lookahead_matches_optimal_when_limits_cover_the_full_depth_two_search() {
+    let table = greedy_vs_optimal_depth_two_table();
+    let lookahead = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 2,
+            builder: BuilderStrategy::Lookahead,
+            lookahead_depth: 2,
+            lookahead_top_k: 3,
+            lookahead_weight: 1.0,
+            beam_width: 1,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let optimal = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 2,
+            builder: BuilderStrategy::Optimal,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        lookahead.predict_table(&table),
+        optimal.predict_table(&table)
+    );
+
+    let lookahead_root_feature = match lookahead.structure() {
+        TreeStructure::Standard { nodes, root } => match &nodes[*root] {
+            TreeNode::BinarySplit { feature_index, .. } => *feature_index,
+            node => panic!("expected lookahead binary root split, found {node:?}"),
+        },
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    };
+    let optimal_root_feature = match optimal.structure() {
+        TreeStructure::Standard { nodes, root } => match &nodes[*root] {
+            TreeNode::BinarySplit { feature_index, .. } => *feature_index,
+            node => panic!("expected optimal binary root split, found {node:?}"),
+        },
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    };
+
+    assert_eq!(lookahead_root_feature, optimal_root_feature);
+    assert_eq!(lookahead_root_feature, 2);
+}
+
+#[test]
 fn rejects_non_finite_class_labels() {
     let table = DenseTable::new(vec![vec![0.0], vec![1.0]], vec![0.0, f64::NAN]).unwrap();
 
