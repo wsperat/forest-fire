@@ -22,7 +22,9 @@ use crate::tree::shared::{
     choose_random_threshold, node_seed, partition_rows_for_binary_split,
     select_best_non_canary_candidate, subtract_feature_histograms,
 };
-use crate::{Criterion, Parallelism, SplitStrategy, capture_feature_preprocessing};
+use crate::{
+    BuilderStrategy, Criterion, Parallelism, SplitStrategy, capture_feature_preprocessing,
+};
 use forestfire_data::TableAccess;
 use rayon::prelude::*;
 use std::error::Error;
@@ -821,23 +823,36 @@ fn train_oblivious_structure(
         };
         let selection = select_best_non_canary_candidate(
             table,
-            rank_shortlisted_oblivious_candidates(
-                split_candidates,
-                options.tree_options.lookahead_top_k,
-                |candidate| {
-                    oblivious_split_ranking_score(
-                        table,
-                        &row_indices,
-                        gradients,
-                        hessians,
-                        &leaves,
-                        &options,
-                        depth,
-                        candidate,
-                        options.tree_options.effective_lookahead_depth(),
-                    )
-                },
-            ),
+            if matches!(options.tree_options.builder, BuilderStrategy::Optimal) {
+                rank_optimal_oblivious_split_choices(
+                    table,
+                    &row_indices,
+                    gradients,
+                    hessians,
+                    &leaves,
+                    &options,
+                    depth,
+                    split_candidates,
+                )
+            } else {
+                rank_shortlisted_oblivious_candidates(
+                    split_candidates,
+                    options.tree_options.lookahead_top_k,
+                    |candidate| {
+                        oblivious_split_ranking_score(
+                            table,
+                            &row_indices,
+                            gradients,
+                            hessians,
+                            &leaves,
+                            &options,
+                            depth,
+                            candidate,
+                            options.tree_options.effective_lookahead_depth(),
+                        )
+                    },
+                )
+            },
             options.tree_options.canary_filter,
             |candidate| candidate.ranking_score,
             |candidate| candidate.choice.feature_index,
@@ -1144,12 +1159,19 @@ fn rank_standard_split_choices(
             .map(StandardSplitChoice::Axis)
             .collect()
     };
-    rank_shortlisted_candidates(
-        candidates,
-        context.options.tree_options.lookahead_top_k,
-        StandardSplitChoice::gain,
-        |choice| standard_split_ranking_score(context, rows, depth, choice, lookahead_depth),
-    )
+    if matches!(
+        context.options.tree_options.builder,
+        BuilderStrategy::Optimal
+    ) {
+        rank_optimal_standard_split_choices(context, rows, depth, candidates)
+    } else {
+        rank_shortlisted_candidates(
+            candidates,
+            context.options.tree_options.lookahead_top_k,
+            StandardSplitChoice::gain,
+            |choice| standard_split_ranking_score(context, rows, depth, choice, lookahead_depth),
+        )
+    }
 }
 
 fn standard_split_ranking_score(
@@ -1200,6 +1222,123 @@ fn standard_split_ranking_score(
         context.options.tree_options.effective_beam_width(),
     );
     immediate + context.options.tree_options.lookahead_weight * future
+}
+
+fn rank_optimal_standard_split_choices(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    depth: usize,
+    candidates: Vec<StandardSplitChoice>,
+) -> Vec<RankedStandardSplitChoice> {
+    candidates
+        .into_iter()
+        .map(|choice| RankedStandardSplitChoice {
+            ranking_score: optimal_standard_split_ranking_score(context, rows, depth, &choice),
+            choice,
+        })
+        .collect()
+}
+
+fn optimal_standard_split_ranking_score(
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    depth: usize,
+    choice: &StandardSplitChoice,
+) -> f64 {
+    let immediate = choice.gain();
+    if immediate <= context.options.min_gain_to_split
+        || depth + 1 >= context.options.tree_options.max_depth
+    {
+        return immediate;
+    }
+
+    let mut partitioned_rows = rows.to_vec();
+    let left_count = match choice {
+        StandardSplitChoice::Axis(split) => partition_rows_for_binary_split(
+            context.table,
+            split.feature_index,
+            split.threshold_bin,
+            MissingBranchDirection::Right,
+            &mut partitioned_rows,
+        ),
+        StandardSplitChoice::Oblique(split) => partition_rows_for_oblique_split(
+            context.table,
+            [split.feature_indices[0], split.feature_indices[1]],
+            [split.weights[0], split.weights[1]],
+            split.threshold,
+            [split.missing_directions[0], split.missing_directions[1]],
+            &mut partitioned_rows,
+        ),
+    };
+    let (left_rows, right_rows) = partitioned_rows.split_at_mut(left_count);
+    immediate
+        + best_standard_split_optimal_score(context, left_rows, depth + 1)
+        + best_standard_split_optimal_score(context, right_rows, depth + 1)
+}
+
+fn best_standard_split_optimal_score(
+    context: &BuildContext<'_>,
+    rows: &mut [usize],
+    depth: usize,
+) -> f64 {
+    if rows.is_empty()
+        || depth >= context.options.tree_options.max_depth
+        || rows.len() < context.options.tree_options.min_samples_split
+    {
+        return 0.0;
+    }
+    let stats = sum_gradient_hessian_stats(rows, context.gradients, context.hessians);
+    if stats.1 <= 0.0 {
+        return 0.0;
+    }
+
+    let histograms = build_second_order_feature_histograms(
+        context.table,
+        context.gradients,
+        context.hessians,
+        rows,
+        Parallelism::sequential(),
+    );
+    let feature_indices = candidate_feature_indices(
+        context.table,
+        context.options.tree_options.max_features,
+        node_seed(
+            context.options.tree_options.random_seed,
+            depth,
+            rows,
+            0xA11C_E5E1u64,
+        ),
+    );
+    let split_candidates = feature_indices
+        .iter()
+        .filter_map(|feature_index| {
+            score_feature_from_hist(context, &histograms[*feature_index], *feature_index, rows)
+        })
+        .collect::<Vec<_>>();
+    let candidates = if matches!(
+        context.options.tree_options.split_strategy,
+        SplitStrategy::Oblique
+    ) && matches!(
+        context.algorithm,
+        RegressionTreeAlgorithm::Cart | RegressionTreeAlgorithm::Randomized
+    ) {
+        score_standard_split_choices(context, rows, &split_candidates, &feature_indices)
+    } else {
+        split_candidates
+            .into_iter()
+            .map(StandardSplitChoice::Axis)
+            .collect()
+    };
+    select_best_non_canary_candidate(
+        context.table,
+        rank_optimal_standard_split_choices(context, rows, depth, candidates),
+        context.options.tree_options.canary_filter,
+        |candidate| candidate.ranking_score,
+        |candidate| candidate.choice.ranking_feature_index(),
+    )
+    .selected
+    .map(|candidate| candidate.ranking_score.max(0.0))
+    .unwrap_or(0.0)
 }
 
 fn best_standard_split_lookahead_score(
@@ -1969,6 +2108,73 @@ fn oblivious_split_ranking_score(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn rank_optimal_oblivious_split_choices(
+    table: &dyn TableAccess,
+    row_indices: &[usize],
+    gradients: &[f64],
+    hessians: &[f64],
+    leaves: &[ObliviousLeafState],
+    options: &SecondOrderRegressionTreeOptions,
+    depth: usize,
+    candidates: Vec<SplitChoice>,
+) -> Vec<RankedSplitChoice> {
+    candidates
+        .into_iter()
+        .map(|choice| RankedSplitChoice {
+            ranking_score: optimal_oblivious_split_ranking_score(
+                table,
+                row_indices,
+                gradients,
+                hessians,
+                leaves,
+                options,
+                depth,
+                &choice,
+            ),
+            choice,
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn optimal_oblivious_split_ranking_score(
+    table: &dyn TableAccess,
+    row_indices: &[usize],
+    gradients: &[f64],
+    hessians: &[f64],
+    leaves: &[ObliviousLeafState],
+    options: &SecondOrderRegressionTreeOptions,
+    depth: usize,
+    candidate: &SplitChoice,
+) -> f64 {
+    let immediate = candidate.gain;
+    if immediate <= options.min_gain_to_split || depth + 1 >= options.tree_options.max_depth {
+        return immediate;
+    }
+
+    let mut next_row_indices = row_indices.to_vec();
+    let next_leaves = split_oblivious_leaves_in_place(
+        table,
+        &mut next_row_indices,
+        gradients,
+        hessians,
+        leaves.to_vec(),
+        candidate.feature_index,
+        candidate.threshold_bin,
+    );
+    immediate
+        + best_oblivious_split_optimal_score(
+            table,
+            &mut next_row_indices,
+            gradients,
+            hessians,
+            next_leaves,
+            options,
+            depth + 1,
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn best_oblivious_split_lookahead_score(
     table: &dyn TableAccess,
     row_indices: &mut [usize],
@@ -2008,23 +2214,36 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    let ranked = rank_shortlisted_oblivious_candidates(
-        split_candidates,
-        options.tree_options.lookahead_top_k,
-        |candidate| {
-            oblivious_split_ranking_score(
-                table,
-                row_indices,
-                gradients,
-                hessians,
-                &leaves,
-                options,
-                depth,
-                candidate,
-                lookahead_depth,
-            )
-        },
-    );
+    let ranked = if matches!(options.tree_options.builder, BuilderStrategy::Optimal) {
+        rank_optimal_oblivious_split_choices(
+            table,
+            row_indices,
+            gradients,
+            hessians,
+            &leaves,
+            options,
+            depth,
+            split_candidates,
+        )
+    } else {
+        rank_shortlisted_oblivious_candidates(
+            split_candidates,
+            options.tree_options.lookahead_top_k,
+            |candidate| {
+                oblivious_split_ranking_score(
+                    table,
+                    row_indices,
+                    gradients,
+                    hessians,
+                    &leaves,
+                    options,
+                    depth,
+                    candidate,
+                    lookahead_depth,
+                )
+            },
+        )
+    };
     aggregate_beam_non_canary_score(
         table,
         ranked,
@@ -2033,6 +2252,64 @@ fn best_oblivious_split_lookahead_score(
         |candidate| candidate.ranking_score,
         |candidate| candidate.choice.feature_index,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn best_oblivious_split_optimal_score(
+    table: &dyn TableAccess,
+    row_indices: &mut [usize],
+    gradients: &[f64],
+    hessians: &[f64],
+    leaves: Vec<ObliviousLeafState>,
+    options: &SecondOrderRegressionTreeOptions,
+    depth: usize,
+) -> f64 {
+    if leaves
+        .iter()
+        .all(|leaf| leaf.len() < options.tree_options.min_samples_split)
+        || depth >= options.tree_options.max_depth
+    {
+        return 0.0;
+    }
+
+    let feature_indices = candidate_feature_indices(
+        table,
+        options.tree_options.max_features,
+        node_seed(options.tree_options.random_seed, depth, &[], 0x0B11_A10Cu64),
+    );
+    let split_candidates = feature_indices
+        .into_iter()
+        .filter_map(|feature_index| {
+            score_oblivious_split(
+                table,
+                row_indices,
+                gradients,
+                hessians,
+                feature_index,
+                &leaves,
+                options,
+            )
+        })
+        .collect::<Vec<_>>();
+    select_best_non_canary_candidate(
+        table,
+        rank_optimal_oblivious_split_choices(
+            table,
+            row_indices,
+            gradients,
+            hessians,
+            &leaves,
+            options,
+            depth,
+            split_candidates,
+        ),
+        options.tree_options.canary_filter,
+        |candidate| candidate.ranking_score,
+        |candidate| candidate.choice.feature_index,
+    )
+    .selected
+    .map(|candidate| candidate.ranking_score.max(0.0))
+    .unwrap_or(0.0)
 }
 
 fn rank_shortlisted_oblivious_candidates(

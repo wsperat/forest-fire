@@ -55,6 +55,7 @@ Current support:
 - `BuilderStrategy::Greedy`
 - `BuilderStrategy::Lookahead`
 - `BuilderStrategy::Beam`
+- `BuilderStrategy::Optimal`
 
 Related `TrainConfig` fields:
 

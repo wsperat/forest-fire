@@ -1770,8 +1770,9 @@ fn parse_builder(builder: &str) -> PyResult<BuilderStrategy> {
         "greedy" => Ok(BuilderStrategy::Greedy),
         "lookahead" => Ok(BuilderStrategy::Lookahead),
         "beam" => Ok(BuilderStrategy::Beam),
+        "optimal" => Ok(BuilderStrategy::Optimal),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported builder '{}'. Expected one of: greedy, lookahead, beam",
+            "Unsupported builder '{}'. Expected one of: greedy, lookahead, beam, optimal",
             builder
         ))),
     }

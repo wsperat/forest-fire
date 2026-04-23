@@ -168,6 +168,8 @@ pub enum BuilderStrategy {
     Lookahead,
     /// Rank splits by a width-limited continuation search.
     Beam,
+    /// Rank splits by the exact best subtree objective within a shallow horizon.
+    Optimal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

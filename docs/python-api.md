@@ -53,7 +53,7 @@ train(
 - `task="auto" | "regression" | "classification"`
 - `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 - `split_strategy="axis_aligned" | "oblique"`
-- `builder="greedy" | "lookahead" | "beam"`
+- `builder="greedy" | "lookahead" | "beam" | "optimal"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 
 ### Parameter semantics

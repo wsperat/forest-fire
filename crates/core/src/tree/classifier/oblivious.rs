@@ -95,24 +95,38 @@ pub(super) fn train_oblivious_structure(
                 .collect::<Vec<_>>()
         };
 
-        let ranked_candidates = rank_shortlisted_oblivious_candidates(
-            split_candidates,
-            options.lookahead_top_k,
-            |candidate| {
-                oblivious_split_ranking_score(
-                    table,
-                    &row_indices,
-                    class_indices,
-                    class_labels.len(),
-                    &leaves,
-                    criterion,
-                    &options,
-                    depth,
-                    candidate,
-                    options.effective_lookahead_depth(),
-                )
-            },
-        );
+        let ranked_candidates = if matches!(options.builder, BuilderStrategy::Optimal) {
+            rank_optimal_oblivious_split_choices(
+                table,
+                &row_indices,
+                class_indices,
+                class_labels.len(),
+                &leaves,
+                criterion,
+                &options,
+                depth,
+                split_candidates,
+            )
+        } else {
+            rank_shortlisted_oblivious_candidates(
+                split_candidates,
+                options.lookahead_top_k,
+                |candidate| {
+                    oblivious_split_ranking_score(
+                        table,
+                        &row_indices,
+                        class_indices,
+                        class_labels.len(),
+                        &leaves,
+                        criterion,
+                        &options,
+                        depth,
+                        candidate,
+                        options.effective_lookahead_depth(),
+                    )
+                },
+            )
+        };
 
         let Some(best_split) = select_best_non_canary_candidate(
             table,
@@ -479,6 +493,77 @@ fn oblivious_split_ranking_score(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn rank_optimal_oblivious_split_choices(
+    table: &dyn TableAccess,
+    row_indices: &[usize],
+    class_indices: &[usize],
+    num_classes: usize,
+    leaves: &[ObliviousLeafState],
+    criterion: Criterion,
+    options: &DecisionTreeOptions,
+    depth: usize,
+    candidates: Vec<ObliviousSplitCandidate>,
+) -> Vec<RankedObliviousSplitCandidate> {
+    candidates
+        .into_iter()
+        .map(|candidate| RankedObliviousSplitCandidate {
+            ranking_score: optimal_oblivious_split_ranking_score(
+                table,
+                row_indices,
+                class_indices,
+                num_classes,
+                leaves,
+                criterion,
+                options,
+                depth,
+                &candidate,
+            ),
+            candidate,
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn optimal_oblivious_split_ranking_score(
+    table: &dyn TableAccess,
+    row_indices: &[usize],
+    class_indices: &[usize],
+    num_classes: usize,
+    leaves: &[ObliviousLeafState],
+    criterion: Criterion,
+    options: &DecisionTreeOptions,
+    depth: usize,
+    candidate: &ObliviousSplitCandidate,
+) -> f64 {
+    let immediate = candidate.score;
+    if immediate <= 0.0 || depth + 1 >= options.max_depth {
+        return immediate;
+    }
+
+    let mut next_row_indices = row_indices.to_vec();
+    let next_leaves = split_oblivious_leaves_in_place(
+        table,
+        &mut next_row_indices,
+        class_indices,
+        num_classes,
+        leaves.to_vec(),
+        candidate.feature_index,
+        candidate.threshold_bin,
+    );
+    immediate
+        + best_oblivious_split_optimal_score(
+            table,
+            &mut next_row_indices,
+            class_indices,
+            num_classes,
+            next_leaves,
+            criterion,
+            options,
+            depth + 1,
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn best_oblivious_split_lookahead_score(
     table: &dyn TableAccess,
     row_indices: &mut [usize],
@@ -520,24 +605,38 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    let ranked = rank_shortlisted_oblivious_candidates(
-        split_candidates,
-        options.lookahead_top_k,
-        |candidate| {
-            oblivious_split_ranking_score(
-                table,
-                row_indices,
-                class_indices,
-                num_classes,
-                &leaves,
-                criterion,
-                options,
-                depth,
-                candidate,
-                lookahead_depth,
-            )
-        },
-    );
+    let ranked = if matches!(options.builder, BuilderStrategy::Optimal) {
+        rank_optimal_oblivious_split_choices(
+            table,
+            row_indices,
+            class_indices,
+            num_classes,
+            &leaves,
+            criterion,
+            options,
+            depth,
+            split_candidates,
+        )
+    } else {
+        rank_shortlisted_oblivious_candidates(
+            split_candidates,
+            options.lookahead_top_k,
+            |candidate| {
+                oblivious_split_ranking_score(
+                    table,
+                    row_indices,
+                    class_indices,
+                    num_classes,
+                    &leaves,
+                    criterion,
+                    options,
+                    depth,
+                    candidate,
+                    lookahead_depth,
+                )
+            },
+        )
+    };
     aggregate_beam_non_canary_score(
         table,
         ranked,
@@ -546,6 +645,67 @@ fn best_oblivious_split_lookahead_score(
         |candidate| candidate.ranking_score,
         |candidate| candidate.candidate.feature_index,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn best_oblivious_split_optimal_score(
+    table: &dyn TableAccess,
+    row_indices: &mut [usize],
+    class_indices: &[usize],
+    num_classes: usize,
+    leaves: Vec<ObliviousLeafState>,
+    criterion: Criterion,
+    options: &DecisionTreeOptions,
+    depth: usize,
+) -> f64 {
+    if leaves
+        .iter()
+        .all(|leaf| leaf.len() < options.min_samples_split)
+        || depth >= options.max_depth
+    {
+        return 0.0;
+    }
+
+    let feature_indices = candidate_feature_indices(
+        table,
+        options.max_features,
+        node_seed(options.random_seed, depth, &[], 0x0B11_A10Cu64),
+    );
+    let split_candidates = feature_indices
+        .into_iter()
+        .filter_map(|feature_index| {
+            score_oblivious_split(
+                table,
+                row_indices,
+                class_indices,
+                feature_index,
+                &leaves,
+                num_classes,
+                criterion,
+                options.min_samples_leaf,
+            )
+        })
+        .collect::<Vec<_>>();
+    select_best_non_canary_candidate(
+        table,
+        rank_optimal_oblivious_split_choices(
+            table,
+            row_indices,
+            class_indices,
+            num_classes,
+            &leaves,
+            criterion,
+            options,
+            depth,
+            split_candidates,
+        ),
+        options.canary_filter,
+        |candidate| candidate.ranking_score,
+        |candidate| candidate.candidate.feature_index,
+    )
+    .selected
+    .map(|candidate| candidate.ranking_score.max(0.0))
+    .unwrap_or(0.0)
 }
 
 fn rank_shortlisted_oblivious_candidates(

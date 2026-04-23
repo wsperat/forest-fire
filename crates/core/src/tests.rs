@@ -2746,7 +2746,7 @@ fn generated_json_schema_matches_checked_in_schema() {
 }
 
 #[test]
-fn lookahead_depth_trains_across_tree_families() {
+fn non_greedy_builders_train_across_tree_families() {
     let classification_table = DenseTable::with_canaries(
         vec![
             vec![0.0, 0.0],
@@ -2774,105 +2774,169 @@ fn lookahead_depth_trains_across_tree_families() {
     )
     .unwrap();
 
-    for (task, algorithm, tree_type, table) in [
-        (
-            Task::Classification,
-            TrainAlgorithm::Dt,
-            TreeType::Id3,
-            &classification_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Classification,
-            TrainAlgorithm::Dt,
-            TreeType::C45,
-            &classification_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Classification,
-            TrainAlgorithm::Dt,
-            TreeType::Cart,
-            &classification_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Classification,
-            TrainAlgorithm::Dt,
-            TreeType::Randomized,
-            &classification_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Classification,
-            TrainAlgorithm::Dt,
-            TreeType::Oblivious,
-            &classification_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Regression,
-            TrainAlgorithm::Dt,
-            TreeType::Cart,
-            &regression_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Regression,
-            TrainAlgorithm::Dt,
-            TreeType::Randomized,
-            &regression_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Regression,
-            TrainAlgorithm::Dt,
-            TreeType::Oblivious,
-            &regression_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Regression,
-            TrainAlgorithm::Gbm,
-            TreeType::Cart,
-            &regression_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Regression,
-            TrainAlgorithm::Gbm,
-            TreeType::Randomized,
-            &regression_table as &dyn forestfire_data::TableAccess,
-        ),
-        (
-            Task::Regression,
-            TrainAlgorithm::Gbm,
-            TreeType::Oblivious,
-            &regression_table as &dyn forestfire_data::TableAccess,
-        ),
+    for builder in [
+        BuilderStrategy::Lookahead,
+        BuilderStrategy::Beam,
+        BuilderStrategy::Optimal,
     ] {
-        let model = train(
-            table,
-            TrainConfig {
-                algorithm,
-                task,
-                tree_type,
-                split_strategy: SplitStrategy::AxisAligned,
-                builder: BuilderStrategy::Greedy,
-                lookahead_depth: 2,
-                lookahead_top_k: 8,
-                lookahead_weight: 1.0,
-                beam_width: 4,
-                criterion: Criterion::Auto,
-                max_depth: Some(3),
-                min_samples_split: Some(2),
-                min_samples_leaf: Some(1),
-                physical_cores: Some(1),
-                n_trees: Some(3),
-                max_features: MaxFeatures::Auto,
-                seed: Some(7),
-                canary_filter: CanaryFilter::default(),
-                compute_oob: false,
-                learning_rate: Some(0.1),
-                bootstrap: false,
-                top_gradient_fraction: None,
-                other_gradient_fraction: None,
-                missing_value_strategy: MissingValueStrategyConfig::heuristic(),
-                histogram_bins: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(model.tree_type(), tree_type);
+        for (task, algorithm, tree_type, table) in [
+            (
+                Task::Classification,
+                TrainAlgorithm::Dt,
+                TreeType::Id3,
+                &classification_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Classification,
+                TrainAlgorithm::Dt,
+                TreeType::C45,
+                &classification_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Classification,
+                TrainAlgorithm::Dt,
+                TreeType::Cart,
+                &classification_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Classification,
+                TrainAlgorithm::Dt,
+                TreeType::Randomized,
+                &classification_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Classification,
+                TrainAlgorithm::Dt,
+                TreeType::Oblivious,
+                &classification_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Regression,
+                TrainAlgorithm::Dt,
+                TreeType::Cart,
+                &regression_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Regression,
+                TrainAlgorithm::Dt,
+                TreeType::Randomized,
+                &regression_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Regression,
+                TrainAlgorithm::Dt,
+                TreeType::Oblivious,
+                &regression_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Regression,
+                TrainAlgorithm::Gbm,
+                TreeType::Cart,
+                &regression_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Regression,
+                TrainAlgorithm::Gbm,
+                TreeType::Randomized,
+                &regression_table as &dyn forestfire_data::TableAccess,
+            ),
+            (
+                Task::Regression,
+                TrainAlgorithm::Gbm,
+                TreeType::Oblivious,
+                &regression_table as &dyn forestfire_data::TableAccess,
+            ),
+        ] {
+            let model = train(
+                table,
+                TrainConfig {
+                    algorithm,
+                    task,
+                    tree_type,
+                    split_strategy: SplitStrategy::AxisAligned,
+                    builder,
+                    lookahead_depth: 2,
+                    lookahead_top_k: 2,
+                    lookahead_weight: 0.0,
+                    beam_width: 2,
+                    criterion: Criterion::Auto,
+                    max_depth: Some(3),
+                    min_samples_split: Some(2),
+                    min_samples_leaf: Some(1),
+                    physical_cores: Some(1),
+                    n_trees: Some(3),
+                    max_features: MaxFeatures::Auto,
+                    seed: Some(7),
+                    canary_filter: CanaryFilter::default(),
+                    compute_oob: false,
+                    learning_rate: Some(0.1),
+                    bootstrap: false,
+                    top_gradient_fraction: None,
+                    other_gradient_fraction: None,
+                    missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+                    histogram_bins: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(model.tree_type(), tree_type);
+        }
     }
+}
+
+#[test]
+fn optimal_builder_ignores_lookahead_knobs() {
+    let table = DenseTable::with_canaries(
+        vec![
+            vec![0.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![2.0, 0.0],
+            vec![2.0, 1.0],
+        ],
+        vec![0.0, 0.0, 1.0, 1.0, 1.0, 0.0],
+        0,
+    )
+    .unwrap();
+
+    let base = TrainConfig {
+        algorithm: TrainAlgorithm::Dt,
+        task: Task::Classification,
+        tree_type: TreeType::Cart,
+        split_strategy: SplitStrategy::AxisAligned,
+        builder: BuilderStrategy::Optimal,
+        criterion: Criterion::Auto,
+        max_depth: Some(3),
+        min_samples_split: Some(2),
+        min_samples_leaf: Some(1),
+        physical_cores: Some(1),
+        n_trees: None,
+        max_features: MaxFeatures::All,
+        seed: Some(7),
+        canary_filter: CanaryFilter::default(),
+        compute_oob: false,
+        learning_rate: None,
+        bootstrap: false,
+        top_gradient_fraction: None,
+        other_gradient_fraction: None,
+        missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+        histogram_bins: None,
+        lookahead_depth: 1,
+        lookahead_top_k: 1,
+        lookahead_weight: 0.0,
+        beam_width: 1,
+    };
+
+    let variant = TrainConfig {
+        lookahead_depth: 7,
+        lookahead_top_k: 99,
+        lookahead_weight: 123.0,
+        beam_width: 8,
+        ..base.clone()
+    };
+
+    let model_a = train(&table, base).unwrap();
+    let model_b = train(&table, variant).unwrap();
+
+    assert_eq!(model_a.predict_table(&table), model_b.predict_table(&table));
 }
