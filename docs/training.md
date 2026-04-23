@@ -92,6 +92,7 @@ The public builders are:
 - `greedy`
 - `lookahead`
 - `beam`
+- `optimal`
 
 At a high level:
 
@@ -100,6 +101,8 @@ At a high level:
   following the single best continuation up to `lookahead_depth`
 - `beam` uses the same shortlist idea, but keeps up to `beam_width`
   continuations alive while estimating future score
+- `optimal` recursively evaluates all legal cuts until ordinary stopping rules
+  or canary blocking end that branch
 
 The builder controls how a node decides which split to take. It does not change:
 
@@ -114,10 +117,13 @@ Related parameters:
 - `lookahead_weight`
 - `beam_width`
 
+Those tuning knobs apply to `lookahead` and `beam`. `optimal` ignores them.
+
 For the detailed algorithmic behavior, see:
 
 - [Lookahead Builder](lookahead-builder.md)
 - [Beam Builder](beam-builder.md)
+- [Optimal Builder](optimal-builder.md)
 
 ## Task detection
 

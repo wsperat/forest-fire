@@ -113,6 +113,8 @@ Current `auto` behavior:
   future score
 - `beam`: re-rank the top immediate candidates by width-limited continuation
   search
+- `optimal`: exhaustively score the full downstream subtree for every legal
+  split until a real stopping condition is reached
 
 Builder controls tree construction strategy independently of:
 
@@ -127,10 +129,14 @@ Related parameters:
 - `lookahead_weight`
 - `beam_width`
 
+For `optimal`, those four tuning knobs are ignored. Search size is controlled
+instead by the ordinary tree limits and by canary filtering.
+
 For the detailed behavior, see:
 
 - [Lookahead Builder](lookahead-builder.md)
 - [Beam Builder](beam-builder.md)
+- [Optimal Builder](optimal-builder.md)
 
 #### `canaries`
 

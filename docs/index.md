@@ -46,6 +46,7 @@ ForestFire is intentionally opinionated in a few places:
 - Builders:
   - [Lookahead Builder](lookahead-builder.md): shortlist-based future-aware split ranking
   - [Beam Builder](beam-builder.md): width-limited continuation search for split ranking
+  - [Optimal Builder](optimal-builder.md): exhaustive subtree search with canary-driven stopping
 - [Categorical Strategies](categorical-strategies.md): `dummy`, `target`, and `fisher` categorical handling through the native training API
 - [Oblique Splits](oblique-splits.md): pairwise linear splits, weight computation, candidate competition, and when to use them
 - [Models And Introspection](models.md): prediction, optimization, serialization, and tree inspection
