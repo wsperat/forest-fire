@@ -1,5 +1,5 @@
 use super::*;
-use crate::tree::shared::MissingBranchDirection;
+use crate::tree::shared::{MissingBranchDirection, aggregate_beam_non_canary_score};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone)]
@@ -520,7 +520,7 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    let mut ranked = rank_shortlisted_oblivious_candidates(
+    let ranked = rank_shortlisted_oblivious_candidates(
         split_candidates,
         options.lookahead_top_k,
         |candidate| {
@@ -538,12 +538,14 @@ fn best_oblivious_split_lookahead_score(
             )
         },
     );
-    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
-    ranked
-        .into_iter()
-        .take(beam_width.max(1))
-        .map(|candidate| candidate.ranking_score.max(0.0))
-        .fold(0.0, f64::max)
+    aggregate_beam_non_canary_score(
+        table,
+        ranked,
+        options.canary_filter,
+        beam_width,
+        |candidate| candidate.ranking_score,
+        |candidate| candidate.candidate.feature_index,
+    )
 }
 
 fn rank_shortlisted_oblivious_candidates(

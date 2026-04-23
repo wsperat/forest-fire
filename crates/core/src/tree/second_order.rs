@@ -17,10 +17,10 @@ use crate::tree::regressor::{
     RegressionTreeOptions, RegressionTreeStructure,
 };
 use crate::tree::shared::{
-    FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
-    build_feature_histograms_parallel, candidate_feature_indices, choose_random_threshold,
-    node_seed, partition_rows_for_binary_split, select_best_non_canary_candidate,
-    subtract_feature_histograms,
+    FeatureHistogram, HistogramBin, MissingBranchDirection, aggregate_beam_non_canary_score,
+    build_feature_histograms, build_feature_histograms_parallel, candidate_feature_indices,
+    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    select_best_non_canary_candidate, subtract_feature_histograms,
 };
 use crate::{Criterion, Parallelism, SplitStrategy, capture_feature_preprocessing};
 use forestfire_data::TableAccess;
@@ -1244,7 +1244,7 @@ fn best_standard_split_lookahead_score(
             score_feature_from_hist(context, &histograms[*feature_index], *feature_index, rows)
         })
         .collect::<Vec<_>>();
-    let mut ranked = rank_standard_split_choices(
+    let ranked = rank_standard_split_choices(
         context,
         rows,
         depth,
@@ -1252,12 +1252,17 @@ fn best_standard_split_lookahead_score(
         &feature_indices,
         lookahead_depth,
     );
-    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
-    ranked
-        .into_iter()
-        .take(beam_width.max(1))
-        .map(|candidate| candidate.ranking_score.max(0.0))
-        .fold(0.0, f64::max)
+    aggregate_beam_non_canary_score(
+        context.table,
+        ranked,
+        context.options.tree_options.canary_filter,
+        beam_width,
+        |candidate| candidate.ranking_score,
+        |candidate| match &candidate.choice {
+            StandardSplitChoice::Axis(split) => split.feature_index,
+            StandardSplitChoice::Oblique(split) => split.feature_indices[0],
+        },
+    )
 }
 
 fn rank_shortlisted_candidates(
@@ -2003,7 +2008,7 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    let mut ranked = rank_shortlisted_oblivious_candidates(
+    let ranked = rank_shortlisted_oblivious_candidates(
         split_candidates,
         options.tree_options.lookahead_top_k,
         |candidate| {
@@ -2020,12 +2025,14 @@ fn best_oblivious_split_lookahead_score(
             )
         },
     );
-    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
-    ranked
-        .into_iter()
-        .take(beam_width.max(1))
-        .map(|candidate| candidate.ranking_score.max(0.0))
-        .fold(0.0, f64::max)
+    aggregate_beam_non_canary_score(
+        table,
+        ranked,
+        options.tree_options.canary_filter,
+        beam_width,
+        |candidate| candidate.ranking_score,
+        |candidate| candidate.choice.feature_index,
+    )
 }
 
 fn rank_shortlisted_oblivious_candidates(

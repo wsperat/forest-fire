@@ -25,8 +25,9 @@ use crate::tree::oblique::{
     resolve_oblique_missing_direction,
 };
 use crate::tree::shared::{
-    MissingBranchDirection, candidate_feature_indices, choose_random_threshold, node_seed,
-    partition_rows_for_binary_split, select_best_non_canary_candidate,
+    MissingBranchDirection, aggregate_beam_non_canary_score, candidate_feature_indices,
+    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    select_best_non_canary_candidate,
 };
 use crate::{
     BuilderStrategy, CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy,
@@ -1443,7 +1444,7 @@ fn best_standard_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    let mut ranked = rank_standard_split_choices(
+    let ranked = rank_standard_split_choices(
         context,
         rows,
         depth,
@@ -1452,12 +1453,17 @@ fn best_standard_split_lookahead_score(
         &feature_indices,
         lookahead_depth,
     );
-    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
-    ranked
-        .into_iter()
-        .take(beam_width.max(1))
-        .map(|candidate| candidate.ranking_score.max(0.0))
-        .fold(0.0, f64::max)
+    aggregate_beam_non_canary_score(
+        context.table,
+        ranked,
+        context.options.canary_filter,
+        beam_width,
+        |candidate| candidate.ranking_score,
+        |candidate| match &candidate.choice {
+            StandardSplitChoice::Axis(split) => split.feature_index,
+            StandardSplitChoice::Oblique(split) => split.feature_indices[0],
+        },
+    )
 }
 
 fn collect_oblique_classification_candidates(
@@ -1843,13 +1849,15 @@ fn best_multiway_split_lookahead_score(
             score_multiway_split_choice(&scoring, feature_index, rows, metric)
         })
         .collect::<Vec<_>>();
-    let mut ranked = rank_multiway_split_choices(context, rows, depth, metric, split_candidates);
-    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
-    ranked
-        .into_iter()
-        .take(beam_width.max(1))
-        .map(|candidate| candidate.ranking_score.max(0.0))
-        .fold(0.0, f64::max)
+    let ranked = rank_multiway_split_choices(context, rows, depth, metric, split_candidates);
+    aggregate_beam_non_canary_score(
+        context.table,
+        ranked,
+        context.options.canary_filter,
+        beam_width,
+        |candidate| candidate.ranking_score,
+        |candidate| candidate.choice.feature_index,
+    )
 }
 
 fn rank_shortlisted_candidates(

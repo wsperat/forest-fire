@@ -16,9 +16,9 @@ use crate::tree::oblique::{
     resolve_oblique_missing_direction,
 };
 use crate::tree::shared::{
-    FeatureHistogram, HistogramBin, MissingBranchDirection, build_feature_histograms,
-    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
-    select_best_non_canary_candidate, subtract_feature_histograms,
+    FeatureHistogram, HistogramBin, MissingBranchDirection, aggregate_beam_non_canary_score,
+    build_feature_histograms, candidate_feature_indices, choose_random_threshold, node_seed,
+    partition_rows_for_binary_split, select_best_non_canary_candidate, subtract_feature_histograms,
 };
 use crate::{
     BuilderStrategy, CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy,
@@ -1326,7 +1326,7 @@ fn best_standard_split_lookahead_score(
             }
         })
         .collect::<Vec<_>>();
-    let mut ranked = rank_standard_split_choices(
+    let ranked = rank_standard_split_choices(
         context,
         rows,
         depth,
@@ -1334,12 +1334,17 @@ fn best_standard_split_lookahead_score(
         &feature_indices,
         lookahead_depth,
     );
-    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
-    ranked
-        .into_iter()
-        .take(beam_width.max(1))
-        .map(|candidate| candidate.ranking_score.max(0.0))
-        .fold(0.0, f64::max)
+    aggregate_beam_non_canary_score(
+        context.table,
+        ranked,
+        context.options.canary_filter,
+        beam_width,
+        |candidate| candidate.ranking_score,
+        |candidate| match &candidate.choice {
+            StandardSplitChoice::Axis(split) => split.feature_index,
+            StandardSplitChoice::Oblique(split) => split.feature_indices[0],
+        },
+    )
 }
 
 fn rank_shortlisted_candidates(
@@ -1977,7 +1982,7 @@ fn best_oblivious_split_lookahead_score(
             )
         })
         .collect::<Vec<_>>();
-    let mut ranked = rank_shortlisted_oblivious_candidates(
+    let ranked = rank_shortlisted_oblivious_candidates(
         split_candidates,
         options.lookahead_top_k,
         |candidate| {
@@ -1994,12 +1999,14 @@ fn best_oblivious_split_lookahead_score(
             )
         },
     );
-    ranked.sort_by(|left, right| right.ranking_score.total_cmp(&left.ranking_score));
-    ranked
-        .into_iter()
-        .take(beam_width.max(1))
-        .map(|candidate| candidate.ranking_score.max(0.0))
-        .fold(0.0, f64::max)
+    aggregate_beam_non_canary_score(
+        table,
+        ranked,
+        options.canary_filter,
+        beam_width,
+        |candidate| candidate.ranking_score,
+        |candidate| candidate.candidate.feature_index,
+    )
 }
 
 fn rank_shortlisted_oblivious_candidates(
