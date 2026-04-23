@@ -420,7 +420,7 @@ wheels = [
 
 [[package]]
 name = "forestfire-ml"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "bindings/python" }
 dependencies = [
     { name = "numpy" },
@@ -462,7 +462,7 @@ dev = [
 
 [[package]]
 name = "forestfire-workspace"
-version = "0.5.1"
+version = "0.5.2"
 source = { virtual = "." }
 
 [package.dev-dependencies]
