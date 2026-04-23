@@ -190,6 +190,139 @@ def show_canary_filter_policy() -> None:
     print("top_5pct root ->", top_5_percent.tree_structure())
 
 
+def show_oblique_models() -> None:
+    rng = np.random.default_rng(7)
+    x = rng.normal(size=(6_000, 6))
+    y = (x[:, 0] + x[:, 1] > 0.5).astype(float)
+
+    axis_model = train(
+        x,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        split_strategy="axis_aligned",
+        canaries=2,
+    )
+    oblique_model = train(
+        x,
+        y,
+        algorithm="dt",
+        task="classification",
+        tree_type="cart",
+        split_strategy="oblique",
+        canaries=2,
+    )
+    optimized = oblique_model.optimize_inference(physical_cores=1)
+
+    print_section("Oblique Splits")
+    print("axis root     ->", axis_model.tree_node(0, tree_index=0))
+    print("oblique root  ->", oblique_model.tree_node(0, tree_index=0))
+    print("optimized pred->", optimized.predict_proba(x[:4]).tolist())
+
+
+def show_builder_strategies() -> None:
+    rng = np.random.default_rng(31)
+    x = rng.normal(size=(8_000, 6))
+    y = (
+        ((x[:, 0] > 0.5) & (x[:, 1] < -0.1))
+        | ((x[:, 2] + x[:, 3]) > 0.6)
+        | ((x[:, 4] - x[:, 5]) > 1.0)
+    ).astype(float)
+
+    configs = [
+        ("greedy", {}),
+        (
+            "lookahead",
+            {"lookahead_depth": 2, "lookahead_top_k": 4, "lookahead_weight": 0.5},
+        ),
+        (
+            "beam",
+            {
+                "lookahead_depth": 2,
+                "lookahead_top_k": 4,
+                "lookahead_weight": 0.5,
+                "beam_width": 2,
+            },
+        ),
+    ]
+
+    print_section("Builder Strategies")
+    for builder, extra in configs:
+        model = train(
+            x,
+            y,
+            task="classification",
+            tree_type="cart",
+            builder=builder,
+            canaries=0,
+            **extra,
+        )
+        print(f"{builder:>9} ->", model.tree_structure())
+
+
+def show_missing_value_routing() -> None:
+    x = np.array(
+        [
+            [0.0, np.nan, 1.0],
+            [0.0, 0.0, 1.0],
+            [1.0, np.nan, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ]
+    )
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0], dtype=float)
+
+    heuristic = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        missing_value_strategy="heuristic",
+    )
+    optimal = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        missing_value_strategy={"f0": "heuristic", "f1": "optimal", "f2": "heuristic"},
+    )
+    optimized = optimal.optimize_inference(physical_cores=1, missing_features=[1])
+
+    print_section("Missing Value Routing")
+    print("heuristic root->", heuristic.tree_node(0, tree_index=0))
+    print("optimal root  ->", optimal.tree_node(0, tree_index=0))
+    print("optimized pred->", optimized.predict_proba(x[:4]).tolist())
+
+
+def show_categorical_strategies() -> None:
+    x = [
+        ["red", "small", 1.2],
+        ["red", "large", 0.7],
+        ["blue", "small", 2.4],
+        ["blue", "large", 2.0],
+        ["green", "small", 0.4],
+        ["green", "large", 0.2],
+        ["red", "small", 1.0],
+        ["blue", "large", 2.3],
+    ]
+    y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0], dtype=float)
+
+    print_section("Categorical Strategies")
+    for strategy in ("dummy", "target", "fisher"):
+        model = train(
+            x,
+            y,
+            task="classification",
+            tree_type="cart",
+            categorical_strategy=strategy,
+            categorical_features=[0, 1],
+            target_smoothing=20.0,
+        )
+        print(f"{strategy:>8} ->", model.predict(x).tolist())
+
+
 def show_serialization() -> None:
     x, y = regression_rows()
     model = train(x, y, task="regression", tree_type="cart", canaries=0, bins="auto")
@@ -240,6 +373,10 @@ def main() -> None:
     show_training_tables()
     show_inference_inputs_and_optimized_runtime()
     show_canary_filter_policy()
+    show_oblique_models()
+    show_builder_strategies()
+    show_missing_value_routing()
+    show_categorical_strategies()
     show_serialization()
     show_optional_sparse_input()
 

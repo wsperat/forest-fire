@@ -217,6 +217,109 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn show_oblique_and_builder_strategies() -> Result<(), Box<dyn Error>> {
+    let x = vec![
+        vec![-2.0, 1.0],
+        vec![1.0, -2.0],
+        vec![-1.0, 2.0],
+        vec![2.0, -1.0],
+        vec![-3.0, 1.0],
+        vec![1.0, -3.0],
+        vec![-1.0, 3.0],
+        vec![3.0, -1.0],
+    ];
+    let y = vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0];
+    let table = Table::with_options(x.clone(), y, 0, NumericBins::Fixed(64))?;
+
+    let axis = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            split_strategy: SplitStrategy::AxisAligned,
+            builder: BuilderStrategy::Greedy,
+            lookahead_depth: 1,
+            lookahead_top_k: 8,
+            lookahead_weight: 1.0,
+            beam_width: 4,
+            criterion: Criterion::Gini,
+            ..TrainConfig::default()
+        },
+    )?;
+    let oblique_beam = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            split_strategy: SplitStrategy::Oblique,
+            builder: BuilderStrategy::Beam,
+            lookahead_depth: 2,
+            lookahead_top_k: 4,
+            lookahead_weight: 0.5,
+            beam_width: 2,
+            criterion: Criterion::Gini,
+            canary_filter: CanaryFilter::TopFraction(0.95),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    print_section("Oblique And Builder Strategies");
+    println!("axis used     -> {:?}", axis.used_feature_indices());
+    println!("oblique used  -> {:?}", oblique_beam.used_feature_indices());
+    println!("axis pred     -> {:?}", axis.predict_rows(x[..4].to_vec())?);
+    println!(
+        "oblique pred  -> {:?}",
+        oblique_beam.predict_rows(x[..4].to_vec())?
+    );
+    Ok(())
+}
+
+fn show_missing_value_routing() -> Result<(), Box<dyn Error>> {
+    let x = vec![
+        vec![0.0, f64::NAN, 1.0],
+        vec![0.0, 0.0, 1.0],
+        vec![1.0, f64::NAN, 0.0],
+        vec![1.0, 1.0, 0.0],
+        vec![0.0, 1.0, 1.0],
+        vec![1.0, 0.0, 0.0],
+    ];
+    let y = vec![0.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+    let table = Table::with_options(x.clone(), y, 0, NumericBins::Auto)?;
+
+    let heuristic = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            split_strategy: SplitStrategy::AxisAligned,
+            builder: BuilderStrategy::Greedy,
+            lookahead_depth: 1,
+            lookahead_top_k: 8,
+            lookahead_weight: 1.0,
+            beam_width: 4,
+            criterion: Criterion::Gini,
+            missing_value_strategy: MissingValueStrategyConfig::heuristic(),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    let optimized = heuristic.optimize_inference_with_missing_features(Some(1), Some(vec![1]))?;
+
+    print_section("Missing Value Routing");
+    println!(
+        "base pred     -> {:?}",
+        heuristic.predict_rows(x[..4].to_vec())?
+    );
+    println!(
+        "optimized pred-> {:?}",
+        optimized.predict_rows(x[..4].to_vec())?
+    );
+    Ok(())
+}
+
 fn show_serialization() -> Result<(), Box<dyn Error>> {
     let (x, y) = regression_rows();
     let table = Table::with_options(x.clone(), y, 0, NumericBins::Auto)?;
@@ -269,6 +372,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     show_classification_models()?;
     show_tables()?;
     show_inference_and_optimized_runtime()?;
+    show_oblique_and_builder_strategies()?;
+    show_missing_value_routing()?;
     show_serialization()?;
     Ok(())
 }
