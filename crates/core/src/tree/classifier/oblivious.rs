@@ -163,6 +163,7 @@ pub(super) fn train_oblivious_structure(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_oblivious_split(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -295,6 +296,7 @@ fn split_oblivious_leaves_in_place(
     }
     next_leaves
 }
+#[allow(clippy::too_many_arguments)]
 fn score_binary_oblivious_split(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -346,6 +348,7 @@ fn score_binary_oblivious_split(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_numeric_oblivious_split_fast(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -436,6 +439,7 @@ fn score_numeric_oblivious_split_fast(
             score,
         })
 }
+#[allow(clippy::too_many_arguments)]
 fn rank_oblivious_split_choices_with_limits(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -487,6 +491,7 @@ fn rank_oblivious_split_choices_with_limits(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn oblivious_split_recursive_ranking_score(
     table: &dyn TableAccess,
     row_indices: &[usize],

@@ -1420,6 +1420,7 @@ fn best_standard_split_recursive_score(
     )
 }
 
+#[allow(dead_code)]
 fn rank_optimal_standard_split_choices(
     context: &BuildContext<'_>,
     rows: &[usize],
@@ -1435,6 +1436,7 @@ fn rank_optimal_standard_split_choices(
         .collect()
 }
 
+#[allow(dead_code)]
 fn optimal_standard_split_ranking_score(
     context: &BuildContext<'_>,
     rows: &[usize],
@@ -1470,6 +1472,7 @@ fn optimal_standard_split_ranking_score(
         + best_standard_split_optimal_score(context, right_rows, depth + 1)
 }
 
+#[allow(dead_code)]
 fn best_standard_split_optimal_score(
     context: &BuildContext<'_>,
     rows: &mut [usize],
@@ -1532,6 +1535,7 @@ fn best_standard_split_optimal_score(
     .unwrap_or(0.0)
 }
 
+#[allow(dead_code)]
 fn best_standard_split_lookahead_score(
     context: &BuildContext<'_>,
     rows: &mut [usize],
@@ -1598,6 +1602,7 @@ fn best_standard_split_lookahead_score(
     )
 }
 
+#[allow(dead_code)]
 fn rank_shortlisted_candidates(
     candidates: Vec<StandardSplitChoice>,
     top_k: usize,
@@ -2159,6 +2164,7 @@ fn split_oblivious_leaves_in_place(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn oblivious_split_ranking_score(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -2281,6 +2287,7 @@ fn oblivious_split_recursive_ranking_score(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn rank_optimal_oblivious_split_choices(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -2310,6 +2317,7 @@ fn rank_optimal_oblivious_split_choices(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn optimal_oblivious_split_ranking_score(
     table: &dyn TableAccess,
     row_indices: &[usize],
@@ -2348,6 +2356,7 @@ fn optimal_oblivious_split_ranking_score(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn best_oblivious_split_lookahead_score(
     table: &dyn TableAccess,
     row_indices: &mut [usize],
@@ -2443,6 +2452,7 @@ fn best_oblivious_split_recursive_score(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn best_oblivious_split_optimal_score(
     table: &dyn TableAccess,
     row_indices: &mut [usize],
@@ -2500,6 +2510,7 @@ fn best_oblivious_split_optimal_score(
     .unwrap_or(0.0)
 }
 
+#[allow(dead_code)]
 fn rank_shortlisted_oblivious_candidates(
     candidates: Vec<ObliviousSplitCandidate>,
     top_k: usize,

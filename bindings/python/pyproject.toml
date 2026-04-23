@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "forestfire-ml"
-version = "0.5.2"
+version = "0.5.3"
 description = "Tree-based learning in Rust with a Python API."
 readme = "PYPI.md"
 license = "MIT"

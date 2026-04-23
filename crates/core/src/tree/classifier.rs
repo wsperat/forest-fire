@@ -1363,6 +1363,7 @@ fn rank_standard_split_choices(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rank_standard_split_choices_with_limits(
     context: &BuildContext<'_>,
     rows: &[usize],
@@ -1387,6 +1388,7 @@ fn rank_standard_split_choices_with_limits(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn standard_split_recursive_ranking_score(
     context: &BuildContext<'_>,
     rows: &[usize],
@@ -1852,6 +1854,7 @@ fn rank_multiway_split_choices(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rank_multiway_split_choices_with_limits(
     context: &BuildContext<'_>,
     rows: &[usize],
@@ -1878,6 +1881,7 @@ fn rank_multiway_split_choices_with_limits(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn multiway_split_recursive_ranking_score(
     context: &BuildContext<'_>,
     rows: &[usize],
@@ -1922,6 +1926,7 @@ fn multiway_split_recursive_ranking_score(
     immediate + future_weight * future
 }
 
+#[allow(clippy::too_many_arguments)]
 fn best_multiway_split_recursive_score(
     context: &BuildContext<'_>,
     rows: &mut [usize],
