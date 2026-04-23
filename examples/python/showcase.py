@@ -262,13 +262,46 @@ def show_builder_strategies() -> None:
         beam_width=2,
         canaries=0,
     )
+    optimal = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        builder="optimal",
+        max_depth=4,
+        canaries=2,
+        filter=0.95,
+    )
 
     for builder, model in (
         ("greedy", greedy),
         ("lookahead", lookahead),
         ("beam", beam),
+        ("optimal", optimal),
     ):
         print(f"{builder:>9} ->", model.tree_structure())
+
+
+def show_optimal_builder() -> None:
+    rng = np.random.default_rng(17)
+    x = rng.normal(size=(4_000, 5))
+    y = (((x[:, 0] > 0.2) & (x[:, 1] < -0.3)) | ((x[:, 2] + x[:, 3]) > 0.8)).astype(
+        float
+    )
+
+    model = train(
+        x,
+        y,
+        task="classification",
+        tree_type="cart",
+        builder="optimal",
+        max_depth=4,
+        canaries=2,
+        filter=0.95,
+    )
+
+    print_section("Optimal Builder")
+    print(model.tree_structure())
 
 
 def show_missing_value_routing() -> None:
@@ -385,6 +418,7 @@ def main() -> None:
     show_canary_filter_policy()
     show_oblique_models()
     show_builder_strategies()
+    show_optimal_builder()
     show_missing_value_routing()
     show_categorical_strategies()
     show_serialization()
