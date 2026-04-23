@@ -158,6 +158,26 @@ fn oblique_classification_table() -> DenseTable {
     .unwrap()
 }
 
+fn greedy_vs_optimal_depth_two_table() -> DenseTable {
+    DenseTable::with_options(
+        vec![
+            vec![0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 1.0, 1.0],
+            vec![1.0, 0.0, 0.0],
+            vec![1.0, 0.0, 1.0],
+            vec![1.0, 1.0, 0.0],
+            vec![1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 0.0],
+        ],
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+        0,
+        NumericBins::Fixed(8),
+    )
+    .unwrap()
+}
+
 #[test]
 fn id3_fits_basic_boolean_pattern() {
     let table = and_table();
@@ -346,6 +366,90 @@ fn cart_can_choose_between_gini_and_entropy() {
     assert_eq!(entropy_model.criterion(), Criterion::Entropy);
     assert_eq!(root_feature(&gini_model), 0);
     assert_eq!(root_feature(&entropy_model), 1);
+}
+
+#[test]
+fn optimal_cart_depth_two_can_differ_from_greedy() {
+    let table = greedy_vs_optimal_depth_two_table();
+    let greedy = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 2,
+            builder: BuilderStrategy::Greedy,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+    let optimal = train_cart_with_criterion_parallelism_and_options(
+        &table,
+        Criterion::Gini,
+        Parallelism::sequential(),
+        DecisionTreeOptions {
+            max_depth: 2,
+            builder: BuilderStrategy::Optimal,
+            ..DecisionTreeOptions::default()
+        },
+    )
+    .unwrap();
+
+    let targets = table_targets(&table);
+    let greedy_errors = greedy
+        .predict_table(&table)
+        .into_iter()
+        .zip(targets.iter())
+        .filter(|(pred, target)| pred != *target)
+        .count();
+    let optimal_errors = optimal
+        .predict_table(&table)
+        .into_iter()
+        .zip(targets.iter())
+        .filter(|(pred, target)| pred != *target)
+        .count();
+
+    assert_eq!(greedy_errors, 2);
+    assert_eq!(optimal_errors, 0);
+
+    let greedy_root_feature = match greedy.structure() {
+        TreeStructure::Standard { nodes, root } => match &nodes[*root] {
+            TreeNode::BinarySplit { feature_index, .. } => *feature_index,
+            node => panic!("expected greedy binary root split, found {node:?}"),
+        },
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    };
+    let (optimal_root_feature, left_child, right_child) = match optimal.structure() {
+        TreeStructure::Standard { nodes, root } => match &nodes[*root] {
+            TreeNode::BinarySplit {
+                feature_index,
+                left_child,
+                right_child,
+                ..
+            } => (*feature_index, *left_child, *right_child),
+            node => panic!("expected optimal binary root split, found {node:?}"),
+        },
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    };
+
+    assert_eq!(greedy_root_feature, 0);
+    assert_eq!(optimal_root_feature, 2);
+
+    match optimal.structure() {
+        TreeStructure::Standard { nodes, .. } => {
+            let left_feature = match &nodes[left_child] {
+                TreeNode::BinarySplit { feature_index, .. } => *feature_index,
+                node => panic!("expected left child split, found {node:?}"),
+            };
+            let right_feature = match &nodes[right_child] {
+                TreeNode::BinarySplit { feature_index, .. } => *feature_index,
+                node => panic!("expected right child split, found {node:?}"),
+            };
+
+            assert_eq!(left_feature, 0);
+            assert_eq!(right_feature, 1);
+        }
+        TreeStructure::Oblivious { .. } => panic!("expected standard tree"),
+    }
 }
 
 #[test]
