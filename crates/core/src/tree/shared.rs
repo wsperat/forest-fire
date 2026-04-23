@@ -324,7 +324,7 @@ where
         .filter(|candidate| !table.is_canary_binned_feature(feature_index(candidate)))
         .take(beam_width.max(1))
         .map(|candidate| score(&candidate).max(0.0))
-        .sum()
+        .fold(0.0, f64::max)
 }
 
 pub(crate) fn mix_seed(base_seed: u64, value: u64) -> u64 {
@@ -626,7 +626,7 @@ mod tests {
             |candidate| candidate.feature_index,
         );
 
-        assert!((score - 1.6).abs() < 1e-12);
+        assert!((score - 0.9).abs() < 1e-12);
     }
 
     #[test]

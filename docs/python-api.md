@@ -109,10 +109,10 @@ Current `auto` behavior:
 #### `builder`
 
 - `greedy`: ordinary immediate-gain split ranking
-- `lookahead`: re-rank the top immediate candidates by one-best-continuation
-  future score
-- `beam`: re-rank the top immediate candidates by width-limited continuation
-  search
+- `lookahead`: bounded recursive subtree rescoring over the top immediate
+  candidates
+- `beam`: the same bounded recursive rescoring, but with width-limited
+  continuation retention during future search
 - `optimal`: exhaustively score the full downstream subtree for every legal
   split until a real stopping condition is reached
 

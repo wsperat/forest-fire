@@ -2,9 +2,10 @@
 
 The optimal builder is an exhaustive tree-construction strategy.
 
-Unlike `greedy`, `lookahead`, and `beam`, it does not use a fixed local
-rescoring horizon. Instead, it evaluates the full downstream subtree objective
-for every legal split that survives ordinary split generation.
+Unlike `greedy`, `lookahead`, and `beam`, it does not use explicit builder-side
+limits such as a fixed rescoring horizon, shortlist cap, beam width, or future
+weight. Instead, it evaluates the full downstream subtree objective for every
+legal split that survives ordinary split generation.
 
 ## Public API
 

@@ -97,10 +97,12 @@ The public builders are:
 At a high level:
 
 - `greedy` ranks candidates by immediate node-local score only
-- `lookahead` shortlists the strongest immediate candidates and re-ranks them by
-  following the single best continuation up to `lookahead_depth`
-- `beam` uses the same shortlist idea, but keeps up to `beam_width`
-  continuations alive while estimating future score
+- `lookahead` uses a bounded version of the same recursive subtree scorer as
+  `optimal`, limited by `lookahead_depth`, `lookahead_top_k`, and
+  `lookahead_weight`
+- `beam` uses that same bounded scorer, but keeps up to `beam_width`
+  continuations alive during future search before taking the strongest
+  surviving continuation value
 - `optimal` recursively evaluates all legal cuts until ordinary stopping rules
   or canary blocking end that branch
 
