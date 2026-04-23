@@ -166,6 +166,8 @@ pub enum BuilderStrategy {
     Greedy,
     /// Rank splits by a finite lookahead horizon.
     Lookahead,
+    /// Rank splits by a width-limited continuation search.
+    Beam,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +349,8 @@ pub struct TrainConfig {
     pub lookahead_top_k: usize,
     /// Weight applied to future split value when lookahead rescoring is enabled.
     pub lookahead_weight: f64,
+    /// Number of continuation candidates kept alive at each lookahead step for beam search.
+    pub beam_width: usize,
 }
 
 impl Default for TrainConfig {
@@ -376,6 +380,7 @@ impl Default for TrainConfig {
             lookahead_depth: 1,
             lookahead_top_k: 8,
             lookahead_weight: 1.0,
+            beam_width: 4,
         }
     }
 }
@@ -420,6 +425,7 @@ pub enum TrainError {
     InvalidLookaheadDepth(usize),
     InvalidLookaheadTopK(usize),
     InvalidLookaheadWeight(f64),
+    InvalidBeamWidth(usize),
     InvalidTreeCount(usize),
     InvalidMaxFeatures(usize),
     InvalidCanaryFilterTopN(usize),
@@ -495,6 +501,9 @@ impl Display for TrainError {
                     "lookahead_weight must be finite and non-negative. Received {}.",
                     value
                 )
+            }
+            TrainError::InvalidBeamWidth(value) => {
+                write!(f, "beam_width must be at least 1. Received {}.", value)
             }
             TrainError::InvalidTreeCount(n_trees) => {
                 write!(

@@ -137,6 +137,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
         lookahead_depth: int = 1,
         lookahead_top_k: int = 8,
         lookahead_weight: float = 1.0,
+        beam_width: int = 4,
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
@@ -156,6 +157,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
         self.lookahead_depth = lookahead_depth
         self.lookahead_top_k = lookahead_top_k
         self.lookahead_weight = lookahead_weight
+        self.beam_width = beam_width
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
@@ -184,6 +186,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
             lookahead_depth=self.lookahead_depth,
             lookahead_top_k=self.lookahead_top_k,
             lookahead_weight=self.lookahead_weight,
+            beam_width=self.beam_width,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
             split_strategy=self.split_strategy,
@@ -211,6 +214,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
         lookahead_depth: int = 1,
         lookahead_top_k: int = 8,
         lookahead_weight: float = 1.0,
+        beam_width: int = 4,
         n_jobs: int | None = None,
         random_state: int | None = None,
         missing_value_strategy: str | dict[str, str] = "heuristic",
@@ -230,6 +234,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
         self.lookahead_depth = lookahead_depth
         self.lookahead_top_k = lookahead_top_k
         self.lookahead_weight = lookahead_weight
+        self.beam_width = beam_width
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.missing_value_strategy = missing_value_strategy
@@ -258,6 +263,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
             lookahead_depth=self.lookahead_depth,
             lookahead_top_k=self.lookahead_top_k,
             lookahead_weight=self.lookahead_weight,
+            beam_width=self.beam_width,
             seed=self.random_state,
             missing_value_strategy=self.missing_value_strategy,
             split_strategy=self.split_strategy,
@@ -286,6 +292,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
         lookahead_depth: int = 1,
         lookahead_top_k: int = 8,
         lookahead_weight: float = 1.0,
+        beam_width: int = 4,
         max_features: str | int | None = None,
         n_jobs: int | None = None,
         random_state: int | None = None,
@@ -308,6 +315,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
         self.lookahead_depth = lookahead_depth
         self.lookahead_top_k = lookahead_top_k
         self.lookahead_weight = lookahead_weight
+        self.beam_width = beam_width
         self.max_features = max_features
         self.n_jobs = n_jobs
         self.random_state = random_state
@@ -338,6 +346,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
             lookahead_depth=self.lookahead_depth,
             lookahead_top_k=self.lookahead_top_k,
             lookahead_weight=self.lookahead_weight,
+            beam_width=self.beam_width,
             n_trees=self.n_estimators,
             max_features=self.max_features,
             seed=self.random_state,
@@ -369,6 +378,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
         lookahead_depth: int = 1,
         lookahead_top_k: int = 8,
         lookahead_weight: float = 1.0,
+        beam_width: int = 4,
         max_features: str | int | None = None,
         n_jobs: int | None = None,
         random_state: int | None = None,
@@ -391,6 +401,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
         self.lookahead_depth = lookahead_depth
         self.lookahead_top_k = lookahead_top_k
         self.lookahead_weight = lookahead_weight
+        self.beam_width = beam_width
         self.max_features = max_features
         self.n_jobs = n_jobs
         self.random_state = random_state
@@ -421,6 +432,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
             lookahead_depth=self.lookahead_depth,
             lookahead_top_k=self.lookahead_top_k,
             lookahead_weight=self.lookahead_weight,
+            beam_width=self.beam_width,
             n_trees=self.n_estimators,
             max_features=self.max_features,
             seed=self.random_state,
@@ -451,6 +463,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
         lookahead_depth: int = 1,
         lookahead_top_k: int = 8,
         lookahead_weight: float = 1.0,
+        beam_width: int = 4,
         learning_rate: float | None = None,
         bootstrap: bool = False,
         top_gradient_fraction: float | None = None,
@@ -474,6 +487,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
         self.lookahead_depth = lookahead_depth
         self.lookahead_top_k = lookahead_top_k
         self.lookahead_weight = lookahead_weight
+        self.beam_width = beam_width
         self.learning_rate = learning_rate
         self.bootstrap = bootstrap
         self.top_gradient_fraction = top_gradient_fraction
@@ -505,6 +519,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
             lookahead_depth=self.lookahead_depth,
             lookahead_top_k=self.lookahead_top_k,
             lookahead_weight=self.lookahead_weight,
+            beam_width=self.beam_width,
             n_trees=self.n_estimators,
             seed=self.random_state,
             learning_rate=self.learning_rate,
@@ -537,6 +552,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
         lookahead_depth: int = 1,
         lookahead_top_k: int = 8,
         lookahead_weight: float = 1.0,
+        beam_width: int = 4,
         learning_rate: float | None = None,
         bootstrap: bool = False,
         top_gradient_fraction: float | None = None,
@@ -560,6 +576,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
         self.lookahead_depth = lookahead_depth
         self.lookahead_top_k = lookahead_top_k
         self.lookahead_weight = lookahead_weight
+        self.beam_width = beam_width
         self.learning_rate = learning_rate
         self.bootstrap = bootstrap
         self.top_gradient_fraction = top_gradient_fraction
@@ -591,6 +608,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
             lookahead_depth=self.lookahead_depth,
             lookahead_top_k=self.lookahead_top_k,
             lookahead_weight=self.lookahead_weight,
+            beam_width=self.beam_width,
             n_trees=self.n_estimators,
             seed=self.random_state,
             learning_rate=self.learning_rate,

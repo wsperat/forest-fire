@@ -35,6 +35,7 @@ The intended Rust lifecycle is:
 - `Task`
 - `TreeType`
 - `SplitStrategy`
+- `BuilderStrategy`
 - `Criterion`
 - `Model`
 - `OptimizedModel`
@@ -48,6 +49,22 @@ Current support:
 
 - `AxisAligned`: all supported tree families
 - `Oblique`: `dt`, `rf`, and `gbm` when `tree_type` is `Cart` or `Randomized`
+
+`TrainConfig::builder` selects the tree-construction strategy:
+
+- `BuilderStrategy::Greedy`
+- `BuilderStrategy::Lookahead`
+- `BuilderStrategy::Beam`
+
+Related `TrainConfig` fields:
+
+- `lookahead_depth`
+- `lookahead_top_k`
+- `lookahead_weight`
+- `beam_width`
+
+Those control how split candidates are ranked during tree growth, not which
+split family is available.
 
 ## Core capabilities
 

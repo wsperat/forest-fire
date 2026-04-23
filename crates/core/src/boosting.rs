@@ -189,6 +189,7 @@ impl GradientBoostedTrees {
             lookahead_depth: config.lookahead_depth,
             lookahead_top_k: config.lookahead_top_k,
             lookahead_weight: config.lookahead_weight,
+            beam_width: config.beam_width,
         };
         let tree_options = SecondOrderRegressionTreeOptions {
             tree_options,

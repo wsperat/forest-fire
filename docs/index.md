@@ -43,6 +43,9 @@ ForestFire is intentionally opinionated in a few places:
 - [Rust API](rust-api.md): Rust crates and training entrypoints
 - [Examples](examples.md): end-to-end workflows from training through reload and batch scoring
 - [Training](training.md): algorithms, parameters, and stopping behavior
+- Builders:
+  - [Lookahead Builder](lookahead-builder.md): shortlist-based future-aware split ranking
+  - [Beam Builder](beam-builder.md): width-limited continuation search for split ranking
 - [Categorical Strategies](categorical-strategies.md): `dummy`, `target`, and `fisher` categorical handling through the native training API
 - [Oblique Splits](oblique-splits.md): pairwise linear splits, weight computation, candidate competition, and when to use them
 - [Models And Introspection](models.md): prediction, optimization, serialization, and tree inspection

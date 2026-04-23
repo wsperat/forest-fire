@@ -357,6 +357,214 @@ What this example shows:
   because oblique nodes can cover two features in one split, and the winning
   competition may leave different features unused
 
+## Example 5: Missing-value routing and optimized inference
+
+This example shows the training-side missing-value strategies and the runtime
+side `missing_features` optimization knob.
+
+```python
+import numpy as np
+
+from forestfire import train
+
+X = np.array(
+    [
+        [0.0, np.nan, 1.0],
+        [0.0, 0.0, 1.0],
+        [1.0, np.nan, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 1.0],
+        [1.0, 0.0, 0.0],
+    ]
+)
+y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+
+heuristic = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    missing_value_strategy="heuristic",
+)
+
+optimal = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    missing_value_strategy={"f0": "heuristic", "f1": "optimal", "f2": "heuristic"},
+)
+
+batch = X[:4]
+
+base_pred = optimal.predict_proba(batch)
+optimized_all_missing = optimal.optimize_inference()
+optimized_only_f1_missing = optimal.optimize_inference(missing_features=[1])
+
+print(np.allclose(base_pred, optimized_all_missing.predict_proba(batch)))
+print(np.allclose(base_pred, optimized_only_f1_missing.predict_proba(batch)))
+print(heuristic.tree_structure())
+print(optimal.tree_structure())
+```
+
+What this example shows:
+
+- missing-value behavior is part of training, not a preprocessing afterthought
+- `missing_value_strategy` can be global or per feature
+- optimized inference preserves the learned missing routing
+- `missing_features=[...]` is only a runtime promise about which columns may be
+  missing later; it does not retrain the model
+
+## Example 6: Native categorical strategies
+
+This example uses raw string categories directly and compares the three exposed
+categorical strategies.
+
+```python
+import numpy as np
+
+from forestfire import Model, train
+
+X = [
+    ["red", "small", 1.2],
+    ["red", "large", 0.7],
+    ["blue", "small", 2.4],
+    ["blue", "large", 2.0],
+    ["green", "small", 0.4],
+    ["green", "large", 0.2],
+    ["red", "small", 1.0],
+    ["blue", "large", 2.3],
+]
+y = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+
+for strategy in ["dummy", "target", "fisher"]:
+    model = train(
+        X,
+        y,
+        task="classification",
+        tree_type="cart",
+        categorical_strategy=strategy,
+        categorical_features=[0, 1],
+        target_smoothing=20.0,
+    )
+
+    pred = model.predict(X)
+    payload = model.serialize()
+    reloaded = Model.deserialize(payload)
+
+    print(strategy, pred[:4], np.allclose(pred, reloaded.predict(X)))
+```
+
+What this example shows:
+
+- Python sends raw categorical values directly to the native Rust path
+- `dummy`, `target`, and `fisher` all fit through the same `train(...)` API
+- categorical transform state is preserved in serialization and reload
+- `target_smoothing` is the base regularization control for `target` and
+  Fisher-style ordering
+
+## Example 7: Greedy vs lookahead vs beam builders
+
+This example compares the three builder strategies on the same training task.
+
+```python
+import numpy as np
+
+from forestfire import train
+
+rng = np.random.default_rng(31)
+X = rng.normal(size=(10_000, 6))
+y = (
+    ((X[:, 0] > 0.5) & (X[:, 1] < -0.1))
+    | ((X[:, 2] + X[:, 3]) > 0.6)
+    | ((X[:, 4] - X[:, 5]) > 1.0)
+).astype(float)
+
+greedy = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    builder="greedy",
+)
+
+lookahead = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    builder="lookahead",
+    lookahead_depth=2,
+    lookahead_top_k=4,
+    lookahead_weight=0.5,
+)
+
+beam = train(
+    X,
+    y,
+    task="classification",
+    tree_type="cart",
+    builder="beam",
+    lookahead_depth=2,
+    lookahead_top_k=4,
+    lookahead_weight=0.5,
+    beam_width=2,
+)
+
+for label, model in [("greedy", greedy), ("lookahead", lookahead), ("beam", beam)]:
+    print(label)
+    print(model.tree_structure())
+```
+
+What this example shows:
+
+- builder strategy is independent from tree family and split family
+- `lookahead` and `beam` reuse the same public depth and weighting knobs
+- `beam_width` only matters for `builder="beam"`
+- all three builders still produce ordinary semantic models that support the
+  same introspection, optimization, and serialization flow
+
+## Example 8: Oblique splits with beam search
+
+This example combines two newer features: oblique split search and the beam
+builder.
+
+```python
+import numpy as np
+
+from forestfire import train
+
+rng = np.random.default_rng(9)
+X = rng.normal(size=(12_000, 6))
+y = ((0.8 * X[:, 0] - 1.1 * X[:, 1]) + (0.6 * X[:, 2] + 0.4 * X[:, 3]) > 0.3).astype(float)
+
+model = train(
+    X,
+    y,
+    algorithm="dt",
+    task="classification",
+    tree_type="randomized",
+    split_strategy="oblique",
+    builder="beam",
+    lookahead_depth=2,
+    lookahead_top_k=6,
+    lookahead_weight=0.5,
+    beam_width=3,
+    canaries=2,
+    filter=0.95,
+)
+
+print(model.tree_structure())
+print(model.tree_node(node_id=0, tree_index=0))
+```
+
+What this example shows:
+
+- oblique splits and builder strategy are orthogonal controls
+- canary competition still applies when oblique candidates are in the pool
+- beam search can be used on top of the same CART/randomized families that
+  already support oblique split search
+
 ## Why these examples matter
 
 ForestFire is not only a trainer and not only an inference runtime.

@@ -18,6 +18,11 @@ train(
     task="auto",
     tree_type="cart",
     split_strategy="axis_aligned",
+    builder="greedy",
+    lookahead_depth=1,
+    lookahead_top_k=8,
+    lookahead_weight=1.0,
+    beam_width=4,
     criterion="auto",
     canaries=2,
     bins="auto",
@@ -48,6 +53,7 @@ train(
 - `task="auto" | "regression" | "classification"`
 - `tree_type="id3" | "c45" | "cart" | "randomized" | "oblivious"`
 - `split_strategy="axis_aligned" | "oblique"`
+- `builder="greedy" | "lookahead" | "beam"`
 - `criterion="auto" | "gini" | "entropy" | "mean" | "median"`
 
 ### Parameter semantics
@@ -99,6 +105,32 @@ Current `auto` behavior:
 - classification `cart`, `randomized`, `oblivious` -> `gini`
 - regression models -> `mean`
 - `gbm` trains second-order trees internally when `criterion="auto"`
+
+#### `builder`
+
+- `greedy`: ordinary immediate-gain split ranking
+- `lookahead`: re-rank the top immediate candidates by one-best-continuation
+  future score
+- `beam`: re-rank the top immediate candidates by width-limited continuation
+  search
+
+Builder controls tree construction strategy independently of:
+
+- `algorithm`
+- `tree_type`
+- `split_strategy`
+
+Related parameters:
+
+- `lookahead_depth`
+- `lookahead_top_k`
+- `lookahead_weight`
+- `beam_width`
+
+For the detailed behavior, see:
+
+- [Lookahead Builder](lookahead-builder.md)
+- [Beam Builder](beam-builder.md)
 
 #### `canaries`
 
