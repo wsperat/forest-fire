@@ -15,7 +15,8 @@ use forestfire_core::{
     SplitStrategy, Task, TrainAlgorithm, TrainConfig, TreeType, categorical, train as train_model,
 };
 use forestfire_data::{
-    MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind, WeightedTable,
+    MAX_NUMERIC_BINS, MultiTargetDenseTable, NumericBins, Table, TableAccess, TableKind,
+    WeightedTable,
 };
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::types::{PyBytes, PyDict, PyType};
@@ -1667,6 +1668,34 @@ fn extract_weights(w: &Bound<PyAny>, expected_len: usize) -> PyResult<Vec<f64>> 
     Ok(weights)
 }
 
+fn try_extract_multi_target_y(y: &Bound<PyAny>) -> PyResult<Option<Vec<Vec<f64>>>> {
+    if !y.hasattr("shape")? {
+        return Ok(None);
+    }
+    let shape = y.getattr("shape")?;
+    if shape.len()? != 2 {
+        return Ok(None);
+    }
+    let n_cols: usize = shape.get_item(1)?.extract()?;
+    if n_cols <= 1 {
+        return Ok(None);
+    }
+    let rows: Vec<Vec<f64>> = y.call_method0("tolist")?.extract()?;
+    let n_rows = rows.len();
+    let mut cols = vec![Vec::with_capacity(n_rows); n_cols];
+    for row in &rows {
+        if row.len() != n_cols {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Multi-target y has ragged rows",
+            ));
+        }
+        for (j, &val) in row.iter().enumerate() {
+            cols[j].push(val);
+        }
+    }
+    Ok(Some(cols))
+}
+
 fn extract_training_targets(y: &Bound<PyAny>) -> PyResult<TrainingTargets> {
     if y.hasattr("to_pylist")? {
         let as_list = y.call_method0("to_pylist")?;
@@ -2273,14 +2302,6 @@ fn train(
             .map(|value| parse_bins(Some(value)))
             .transpose()?,
     };
-    if sample_weight.is_some()
-        && (config.task == Task::Regression || config.algorithm == TrainAlgorithm::Gbm)
-    {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "sample_weight is not yet supported for regression or GBM models",
-        ));
-    }
-
     if let Some(parsed_strategy) = parsed_strategy {
         let y = y.ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -2325,19 +2346,46 @@ fn train(
         return Py::new(py, model).map(|obj| obj.into_any());
     }
 
+    let multi_extra_targets = if config.task == Task::Regression {
+        y.and_then(|y_bound| try_extract_multi_target_y(y_bound).transpose())
+            .transpose()?
+            .filter(|cols| cols.len() > 1)
+            .map(|mut cols| {
+                cols.remove(0);
+                cols
+            })
+    } else {
+        None
+    };
+
     let (table, string_class_labels) = build_training_table(x, y, canaries, parsed_bins)?;
     let weights = sample_weight
         .map(|w| extract_weights(w, table.n_rows()))
         .transpose()?;
-    let model = if let Some(weights) = weights {
-        py.detach(move || {
-            let weighted = WeightedTable::new(&table, weights);
-            train_model(&weighted, config).map_err(|err| err.to_string())
-        })
-        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?
-    } else {
-        train_model_detached(py, table, config)?
+
+    let model = match (multi_extra_targets, weights) {
+        (Some(extra_targets), Some(weights)) => py
+            .detach(move || {
+                let mt = MultiTargetDenseTable::new(&table, extra_targets);
+                let weighted = WeightedTable::new(&mt, weights);
+                train_model(&weighted, config).map_err(|err| err.to_string())
+            })
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?,
+        (Some(extra_targets), None) => py
+            .detach(move || {
+                let mt = MultiTargetDenseTable::new(&table, extra_targets);
+                train_model(&mt, config).map_err(|err| err.to_string())
+            })
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?,
+        (None, Some(weights)) => py
+            .detach(move || {
+                let weighted = WeightedTable::new(&table, weights);
+                train_model(&weighted, config).map_err(|err| err.to_string())
+            })
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?,
+        (None, None) => train_model_detached(py, table, config)?,
     };
+
     Py::new(
         py,
         PyModel {
@@ -2361,6 +2409,19 @@ impl PyModel {
     }
 
     fn predict<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        if self.inner.is_multi_target() {
+            let rows = extract_matrix(x)?;
+            let preds = py
+                .detach(|| {
+                    self.inner
+                        .predict_all_rows(rows)
+                        .map_err(|err| err.to_string())
+                })
+                .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+            return PyArray2::from_vec2(py, &preds)
+                .map(|arr| arr.into_any())
+                .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()));
+        }
         let preds = if is_polars_lazyframe(x)? {
             predict_lazyframe_in_batches(x, |input| {
                 predict_input_with_model_detached(py, &self.inner, input)

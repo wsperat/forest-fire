@@ -357,6 +357,11 @@ impl Model {
         Ok(self.predict_table(&table))
     }
 
+    pub fn predict_all_rows(&self, rows: Vec<Vec<f64>>) -> Result<Vec<Vec<f64>>, PredictError> {
+        let table = InferenceTable::from_rows(rows, self.feature_preprocessing())?;
+        Ok(self.predict_all_table(&table))
+    }
+
     pub fn predict_proba_table(
         &self,
         table: &dyn TableAccess,
@@ -466,6 +471,26 @@ impl Model {
             Model::DecisionTreeClassifier(_) => Task::Classification,
             Model::RandomForest(model) => model.task(),
             Model::GradientBoostedTrees(model) => model.task(),
+        }
+    }
+
+    pub fn is_multi_target(&self) -> bool {
+        match self {
+            Model::DecisionTreeRegressor(model) => model.is_multi_target(),
+            _ => false,
+        }
+    }
+
+    pub fn predict_all_table(&self, table: &dyn TableAccess) -> Vec<Vec<f64>> {
+        match self {
+            Model::DecisionTreeRegressor(model) if model.is_multi_target() => {
+                model.predict_all_table(table)
+            }
+            _ => self
+                .predict_table(table)
+                .into_iter()
+                .map(|v| vec![v])
+                .collect(),
         }
     }
 

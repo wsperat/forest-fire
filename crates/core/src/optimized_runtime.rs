@@ -1602,6 +1602,7 @@ fn regressor_node_sample_count(
 ) -> usize {
     match &nodes[node_index] {
         tree::regressor::RegressionNode::Leaf { sample_count, .. }
+        | tree::regressor::RegressionNode::MultiTargetLeaf { sample_count, .. }
         | tree::regressor::RegressionNode::BinarySplit { sample_count, .. }
         | tree::regressor::RegressionNode::ObliqueSplit { sample_count, .. } => *sample_count,
     }
@@ -1777,6 +1778,10 @@ fn append_binary_regressor_node(
                 jump_if_greater,
                 missing_value: *missing_value,
             };
+        }
+        tree::regressor::RegressionNode::MultiTargetLeaf { values, .. } => {
+            layout[current_index] =
+                OptimizedBinaryRegressorNode::Leaf(*values.first().unwrap_or(&0.0));
         }
     }
 

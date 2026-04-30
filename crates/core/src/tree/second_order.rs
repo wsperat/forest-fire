@@ -662,12 +662,16 @@ fn train_standard_structure(
                     let left_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { left_child, .. }
                         | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { right_child, .. }
                         | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     [
                         ActiveNode {
@@ -723,12 +727,16 @@ fn train_standard_structure(
                     let left_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { left_child, .. }
                         | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { right_child, .. }
                         | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     [
                         ActiveNode {
