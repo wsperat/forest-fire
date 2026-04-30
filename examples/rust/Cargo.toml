@@ -8,8 +8,8 @@ repository = "https://github.com/wsperat/forest-fire"
 description = "Runnable Rust examples for the ForestFire project."
 
 [dependencies]
-forestfire-core = { version = "0.6.0", path = "../../crates/core" }
-forestfire-data = { version = "0.6.0", path = "../../crates/data" }
+forestfire-core = { version = "0.7.0", path = "../../crates/core" }
+forestfire-data = { version = "0.7.0", path = "../../crates/data" }
 
 [[bin]]
 name = "showcase"
