@@ -79,8 +79,7 @@ def _infer_n_features(x: Any) -> int | None:
 
 
 def _validate_sample_weight(sample_weight: Any) -> None:
-    if sample_weight is not None:
-        raise ValueError("sample_weight is not supported by ForestFire estimators.")
+    pass
 
 
 class _ForestFireEstimator(BaseEstimator, ABC):
@@ -168,7 +167,6 @@ class _TreeClassifierBase(_ForestFireClassifier):
         self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_TreeClassifierBase":
-        _validate_sample_weight(sample_weight)
         model = train(
             x,
             y,
@@ -194,6 +192,7 @@ class _TreeClassifierBase(_ForestFireClassifier):
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
+            sample_weight=sample_weight,
         )
         self._finalize_fit(x, y, model)
         return self
@@ -245,7 +244,6 @@ class _TreeRegressorBase(_ForestFireRegressor):
         self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_TreeRegressorBase":
-        _validate_sample_weight(sample_weight)
         model = train(
             x,
             y,
@@ -271,6 +269,7 @@ class _TreeRegressorBase(_ForestFireRegressor):
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
+            sample_weight=sample_weight,
         )
         self._finalize_fit(x, model)
         return self
@@ -328,7 +327,6 @@ class _ForestClassifierBase(_ForestFireClassifier):
         self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_ForestClassifierBase":
-        _validate_sample_weight(sample_weight)
         model = train(
             x,
             y,
@@ -357,6 +355,7 @@ class _ForestClassifierBase(_ForestFireClassifier):
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
+            sample_weight=sample_weight,
         )
         self._finalize_fit(x, y, model)
         return self
@@ -414,7 +413,6 @@ class _ForestRegressorBase(_ForestFireRegressor):
         self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_ForestRegressorBase":
-        _validate_sample_weight(sample_weight)
         model = train(
             x,
             y,
@@ -443,6 +441,7 @@ class _ForestRegressorBase(_ForestFireRegressor):
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
+            sample_weight=sample_weight,
         )
         self._finalize_fit(x, model)
         return self
@@ -502,7 +501,6 @@ class _GBMClassifierBase(_ForestFireClassifier):
         self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_GBMClassifierBase":
-        _validate_sample_weight(sample_weight)
         model = train(
             x,
             y,
@@ -532,6 +530,7 @@ class _GBMClassifierBase(_ForestFireClassifier):
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
+            sample_weight=sample_weight,
         )
         self._finalize_fit(x, y, model)
         return self
@@ -591,7 +590,6 @@ class _GBMRegressorBase(_ForestFireRegressor):
         self.target_smoothing = target_smoothing
 
     def fit(self, x: Any, y: Any, sample_weight: Any = None) -> "_GBMRegressorBase":
-        _validate_sample_weight(sample_weight)
         model = train(
             x,
             y,
@@ -621,6 +619,7 @@ class _GBMRegressorBase(_ForestFireRegressor):
             categorical_strategy=self.categorical_strategy,
             categorical_features=self.categorical_features,
             target_smoothing=self.target_smoothing,
+            sample_weight=sample_weight,
         )
         self._finalize_fit(x, model)
         return self

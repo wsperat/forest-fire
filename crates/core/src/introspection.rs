@@ -251,6 +251,110 @@ pub(crate) fn prediction_value_stats(
 fn leaf_payload_value(leaf: &ir::LeafPayload) -> f64 {
     match leaf {
         ir::LeafPayload::RegressionValue { value } => *value,
+        ir::LeafPayload::MultiTargetRegressionValue { values } => {
+            values.first().copied().unwrap_or(0.0)
+        }
         ir::LeafPayload::ClassIndex { class_value, .. } => *class_value,
+    }
+}
+
+/// Mean decrease impurity (MDI) feature importances.
+///
+/// For each split node the contribution is `gain * sample_count`, summed per
+/// feature and normalized to sum to 1.0 within each tree. The per-tree
+/// normalized vectors are then averaged across all trees in the model.
+///
+/// Oblique splits distribute their contribution equally across all participating
+/// feature indices.
+pub(crate) fn feature_importances(trees: &[ir::TreeDefinition], n_features: usize) -> Vec<f64> {
+    if trees.is_empty() || n_features == 0 {
+        return vec![0.0; n_features];
+    }
+
+    let mut total = vec![0.0f64; n_features];
+    for tree in trees {
+        let mut tree_importances = vec![0.0f64; n_features];
+        accumulate_tree_importances(tree, &mut tree_importances);
+        let sum: f64 = tree_importances.iter().sum();
+        if sum > 0.0 {
+            for v in &mut tree_importances {
+                *v /= sum;
+            }
+        }
+        for (t, ti) in total.iter_mut().zip(tree_importances.iter()) {
+            *t += ti;
+        }
+    }
+    let n_trees = trees.len() as f64;
+    for v in &mut total {
+        *v /= n_trees;
+    }
+    total
+}
+
+fn accumulate_tree_importances(tree: &ir::TreeDefinition, importances: &mut [f64]) {
+    match tree {
+        ir::TreeDefinition::NodeTree { nodes, .. } => {
+            for node in nodes {
+                match node {
+                    ir::NodeTreeNode::BinaryBranch { split, stats, .. } => {
+                        if let Some(gain) = stats.gain {
+                            let mass = node_mass(stats);
+                            let contribution = gain * mass;
+                            let indices = binary_split_importance_indices(split);
+                            let share = contribution / indices.len() as f64;
+                            for fi in indices {
+                                if fi < importances.len() {
+                                    importances[fi] += share;
+                                }
+                            }
+                        }
+                    }
+                    ir::NodeTreeNode::MultiwayBranch { split, stats, .. } => {
+                        if let Some(gain) = stats.gain {
+                            let fi = split.feature_index;
+                            if fi < importances.len() {
+                                importances[fi] += gain * node_mass(stats);
+                            }
+                        }
+                    }
+                    ir::NodeTreeNode::Leaf { .. } => {}
+                }
+            }
+        }
+        ir::TreeDefinition::ObliviousLevels { levels, .. } => {
+            for level in levels {
+                if let Some(gain) = level.stats.gain {
+                    let fi = oblivious_importance_feature_index(&level.split);
+                    if fi < importances.len() {
+                        importances[fi] += gain * node_mass(&level.stats);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn node_mass(stats: &ir::NodeStats) -> f64 {
+    stats
+        .class_counts
+        .as_deref()
+        .map_or(stats.sample_count as f64, |cc| cc.iter().sum())
+}
+
+fn binary_split_importance_indices(split: &ir::BinarySplit) -> Vec<usize> {
+    match split {
+        ir::BinarySplit::NumericBinThreshold { feature_index, .. }
+        | ir::BinarySplit::BooleanTest { feature_index, .. } => vec![*feature_index],
+        ir::BinarySplit::ObliqueLinearCombination {
+            feature_indices, ..
+        } => feature_indices.clone(),
+    }
+}
+
+fn oblivious_importance_feature_index(split: &ir::ObliviousSplit) -> usize {
+    match split {
+        ir::ObliviousSplit::NumericBinThreshold { feature_index, .. }
+        | ir::ObliviousSplit::BooleanTest { feature_index, .. } => *feature_index,
     }
 }

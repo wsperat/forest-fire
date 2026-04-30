@@ -7,7 +7,8 @@ struct ObliviousLeafState {
     start: usize,
     end: usize,
     class_index: usize,
-    class_counts: Vec<usize>,
+    class_counts: Vec<f64>,
+    weight: f64,
 }
 
 impl ObliviousLeafState {
@@ -38,13 +39,15 @@ pub(super) fn train_oblivious_structure(
     options: DecisionTreeOptions,
 ) -> TreeStructure {
     let mut row_indices: Vec<usize> = (0..table.n_rows()).collect();
-    let total_class_counts = class_counts(&row_indices, class_indices, class_labels.len());
-    let total_impurity = classification_impurity(&total_class_counts, row_indices.len(), criterion);
+    let total_class_counts = class_counts(table, &row_indices, class_indices, class_labels.len());
+    let total_weight: f64 = total_class_counts.iter().sum();
+    let total_impurity = classification_impurity(&total_class_counts, total_weight, criterion);
     let mut leaves = vec![ObliviousLeafState {
         start: 0,
         end: row_indices.len(),
-        class_index: majority_class(&row_indices, class_indices, class_labels.len()),
+        class_index: majority_class(table, &row_indices, class_indices, class_labels.len()),
         class_counts: total_class_counts.clone(),
+        weight: total_weight,
     }];
     let mut splits = Vec::new();
 
@@ -207,6 +210,7 @@ fn score_oblivious_split(
         })
         .collect::<BTreeSet<_>>();
 
+    let min_w = min_samples_leaf as f64;
     candidate_thresholds
         .into_iter()
         .filter_map(|threshold_bin| {
@@ -217,20 +221,21 @@ fn score_oblivious_split(
                         table.binned_value(feature_index, *row_idx) <= threshold_bin
                     });
 
-                if left_rows.len() < min_samples_leaf || right_rows.len() < min_samples_leaf {
+                let left_w: f64 = left_rows.iter().map(|r| table.sample_weight(*r)).sum();
+                let right_w: f64 = right_rows.iter().map(|r| table.sample_weight(*r)).sum();
+
+                if left_w < min_w || right_w < min_w {
                     return score;
                 }
 
-                let parent_counts = leaf.class_counts.clone();
-                let left_counts = class_counts(&left_rows, class_indices, num_classes);
-                let right_counts = class_counts(&right_rows, class_indices, num_classes);
+                let left_counts = class_counts(table, &left_rows, class_indices, num_classes);
+                let right_counts = class_counts(table, &right_rows, class_indices, num_classes);
 
-                let weighted_parent_impurity = leaf.len() as f64
-                    * classification_impurity(&parent_counts, leaf.len(), criterion);
-                let weighted_children_impurity = left_rows.len() as f64
-                    * classification_impurity(&left_counts, left_rows.len(), criterion)
-                    + right_rows.len() as f64
-                        * classification_impurity(&right_counts, right_rows.len(), criterion);
+                let weighted_parent_impurity = leaf.weight
+                    * classification_impurity(&leaf.class_counts, leaf.weight, criterion);
+                let weighted_children_impurity = left_w
+                    * classification_impurity(&left_counts, left_w, criterion)
+                    + right_w * classification_impurity(&right_counts, right_w, criterion);
 
                 score + (weighted_parent_impurity - weighted_children_impurity)
             });
@@ -263,13 +268,19 @@ fn split_oblivious_leaves_in_place(
             &mut row_indices[leaf.start..leaf.end],
         );
         let mid = leaf.start + left_count;
-        let mut left_class_counts = vec![0usize; num_classes];
-        let mut right_class_counts = vec![0usize; num_classes];
+        let mut left_class_counts = vec![0.0f64; num_classes];
+        let mut right_class_counts = vec![0.0f64; num_classes];
+        let mut left_weight = 0.0f64;
+        let mut right_weight = 0.0f64;
         for row_idx in &row_indices[leaf.start..mid] {
-            left_class_counts[class_indices[*row_idx]] += 1;
+            let w = table.sample_weight(*row_idx);
+            left_class_counts[class_indices[*row_idx]] += w;
+            left_weight += w;
         }
         for row_idx in &row_indices[mid..leaf.end] {
-            right_class_counts[class_indices[*row_idx]] += 1;
+            let w = table.sample_weight(*row_idx);
+            right_class_counts[class_indices[*row_idx]] += w;
+            right_weight += w;
         }
         let left_class_index = if left_count == 0 {
             leaf.class_index
@@ -286,16 +297,19 @@ fn split_oblivious_leaves_in_place(
             end: mid,
             class_index: left_class_index,
             class_counts: left_class_counts,
+            weight: left_weight,
         });
         next_leaves.push(ObliviousLeafState {
             start: mid,
             end: leaf.end,
             class_index: right_class_index,
             class_counts: right_class_counts,
+            weight: right_weight,
         });
     }
     next_leaves
 }
+
 #[allow(clippy::too_many_arguments)]
 fn score_binary_oblivious_split(
     table: &dyn TableAccess,
@@ -307,23 +321,25 @@ fn score_binary_oblivious_split(
     criterion: Criterion,
     min_samples_leaf: usize,
 ) -> Option<ObliviousSplitCandidate> {
+    let min_w = min_samples_leaf as f64;
     let mut score = 0.0;
     let mut found_valid = false;
 
     for leaf in leaves {
-        let mut left_counts = vec![0usize; num_classes];
-        let mut left_size = 0usize;
+        let mut left_counts = vec![0.0f64; num_classes];
+        let mut left_weight = 0.0f64;
         for row_idx in &row_indices[leaf.start..leaf.end] {
             if !table
                 .binned_boolean_value(feature_index, *row_idx)
                 .expect("binary feature must expose boolean values")
             {
-                left_counts[class_indices[*row_idx]] += 1;
-                left_size += 1;
+                let w = table.sample_weight(*row_idx);
+                left_counts[class_indices[*row_idx]] += w;
+                left_weight += w;
             }
         }
-        let right_size = leaf.len() - left_size;
-        if left_size < min_samples_leaf || right_size < min_samples_leaf {
+        let right_weight = leaf.weight - left_weight;
+        if left_weight < min_w || right_weight < min_w {
             continue;
         }
         found_valid = true;
@@ -334,10 +350,10 @@ fn score_binary_oblivious_split(
             .map(|(parent, left)| parent - left)
             .collect::<Vec<_>>();
         let weighted_parent_impurity =
-            leaf.len() as f64 * classification_impurity(&leaf.class_counts, leaf.len(), criterion);
-        let weighted_children_impurity = left_size as f64
-            * classification_impurity(&left_counts, left_size, criterion)
-            + right_size as f64 * classification_impurity(&right_counts, right_size, criterion);
+            leaf.weight * classification_impurity(&leaf.class_counts, leaf.weight, criterion);
+        let weighted_children_impurity = left_weight
+            * classification_impurity(&left_counts, left_weight, criterion)
+            + right_weight * classification_impurity(&right_counts, right_weight, criterion);
         score += weighted_parent_impurity - weighted_children_impurity;
     }
 
@@ -364,16 +380,19 @@ fn score_numeric_oblivious_split_fast(
         return None;
     }
 
-    let mut threshold_scores = vec![0.0; bin_cap];
+    let min_w = min_samples_leaf as f64;
+    let mut threshold_scores = vec![0.0f64; bin_cap];
     let mut observed_any = false;
 
-    let mut bin_class_counts = vec![vec![0usize; num_classes]; bin_cap];
+    let mut bin_class_counts = vec![vec![0.0f64; num_classes]; bin_cap];
+    let mut bin_weights = vec![0.0f64; bin_cap];
     let mut observed_bins = vec![false; bin_cap];
 
     for leaf in leaves {
         for counts in &mut bin_class_counts {
-            counts.fill(0);
+            counts.fill(0.0);
         }
+        bin_weights.fill(0.0);
         observed_bins.fill(false);
 
         for row_idx in &row_indices[leaf.start..leaf.end] {
@@ -381,33 +400,35 @@ fn score_numeric_oblivious_split_fast(
             if bin >= bin_cap {
                 return None;
             }
-            bin_class_counts[bin][class_indices[*row_idx]] += 1;
+            let w = table.sample_weight(*row_idx);
+            bin_class_counts[bin][class_indices[*row_idx]] += w;
+            bin_weights[bin] += w;
             observed_bins[bin] = true;
         }
 
-        let observed_bins: Vec<usize> = observed_bins
+        let observed_bins_list: Vec<usize> = observed_bins
             .iter()
             .enumerate()
             .filter_map(|(bin, seen)| (*seen).then_some(bin))
             .collect();
-        if observed_bins.len() <= 1 {
+        if observed_bins_list.len() <= 1 {
             continue;
         }
         observed_any = true;
 
         let parent_weighted_impurity =
-            leaf.len() as f64 * classification_impurity(&leaf.class_counts, leaf.len(), criterion);
-        let mut left_counts = vec![0usize; num_classes];
-        let mut left_size = 0usize;
+            leaf.weight * classification_impurity(&leaf.class_counts, leaf.weight, criterion);
+        let mut left_counts = vec![0.0f64; num_classes];
+        let mut left_weight = 0.0f64;
 
-        for &bin in &observed_bins {
+        for &bin in &observed_bins_list {
             for class_index in 0..num_classes {
                 left_counts[class_index] += bin_class_counts[bin][class_index];
             }
-            left_size += bin_class_counts[bin].iter().sum::<usize>();
-            let right_size = leaf.len() - left_size;
+            left_weight += bin_weights[bin];
+            let right_weight = leaf.weight - left_weight;
 
-            if left_size < min_samples_leaf || right_size < min_samples_leaf {
+            if left_weight < min_w || right_weight < min_w {
                 continue;
             }
 
@@ -417,9 +438,9 @@ fn score_numeric_oblivious_split_fast(
                 .zip(left_counts.iter())
                 .map(|(parent, left)| parent - left)
                 .collect::<Vec<_>>();
-            let weighted_children_impurity = left_size as f64
-                * classification_impurity(&left_counts, left_size, criterion)
-                + right_size as f64 * classification_impurity(&right_counts, right_size, criterion);
+            let weighted_children_impurity = left_weight
+                * classification_impurity(&left_counts, left_weight, criterion)
+                + right_weight * classification_impurity(&right_counts, right_weight, criterion);
             threshold_scores[bin] += parent_weighted_impurity - weighted_children_impurity;
         }
     }
@@ -439,6 +460,7 @@ fn score_numeric_oblivious_split_fast(
             score,
         })
 }
+
 #[allow(clippy::too_many_arguments)]
 fn rank_oblivious_split_choices_with_limits(
     table: &dyn TableAccess,

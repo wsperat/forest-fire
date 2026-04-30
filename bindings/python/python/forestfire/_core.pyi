@@ -50,6 +50,7 @@ def train(
     categorical_strategy: str | None = None,
     categorical_features: str | list[str | int] | None = None,
     target_smoothing: float = 20.0,
+    sample_weight: Any | None = None,
 ) -> "Model": ...
 
 class CategoricalModel:
@@ -92,6 +93,7 @@ class OptimizedModel:
     tree_count: int
     used_feature_count: int
     used_feature_indices: list[int]
+    feature_importances_: NDArray[np.float64]
 
     @classmethod
     def deserialize_compiled(
@@ -145,6 +147,7 @@ class Model:
     tree_count: int
     used_feature_count: int
     used_feature_indices: list[int]
+    feature_importances_: NDArray[np.float64]
 
     @classmethod
     def deserialize(cls, serialized: str) -> "Model": ...

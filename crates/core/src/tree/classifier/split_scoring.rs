@@ -24,28 +24,30 @@ pub(super) fn score_multiway_split_choice(
     rows: &[usize],
     metric: MultiwayMetric,
 ) -> Option<MultiwaySplitChoice> {
+    let min_samples_leaf = context.min_samples_leaf as f64;
     let (grouped_counts, missing_counts, missing_size) =
         if context.table.is_binary_binned_feature(feature_index) {
-            let mut false_counts = vec![0usize; context.num_classes];
-            let mut true_counts = vec![0usize; context.num_classes];
-            let mut missing_counts = vec![0usize; context.num_classes];
-            let mut false_size = 0usize;
-            let mut true_size = 0usize;
-            let mut missing_size = 0usize;
+            let mut false_counts = vec![0.0f64; context.num_classes];
+            let mut true_counts = vec![0.0f64; context.num_classes];
+            let mut missing_counts = vec![0.0f64; context.num_classes];
+            let mut false_size = 0.0f64;
+            let mut true_size = 0.0f64;
+            let mut missing_size = 0.0f64;
             for row_idx in rows {
                 let class_index = context.class_indices[*row_idx];
+                let w = context.table.sample_weight(*row_idx);
                 match context.table.binned_boolean_value(feature_index, *row_idx) {
                     Some(false) => {
-                        false_counts[class_index] += 1;
-                        false_size += 1;
+                        false_counts[class_index] += w;
+                        false_size += w;
                     }
                     Some(true) => {
-                        true_counts[class_index] += 1;
-                        true_size += 1;
+                        true_counts[class_index] += w;
+                        true_size += w;
                     }
                     None => {
-                        missing_counts[class_index] += 1;
-                        missing_size += 1;
+                        missing_counts[class_index] += w;
+                        missing_size += w;
                     }
                 }
             }
@@ -55,28 +57,29 @@ pub(super) fn score_multiway_split_choice(
                     (1u16, (true_size, true_counts)),
                 ]
                 .into_iter()
-                .filter(|(_, (size, _))| *size > 0)
+                .filter(|(_, (size, _))| *size > 0.0)
                 .collect::<Vec<_>>(),
                 missing_counts,
                 missing_size,
             )
         } else {
-            let mut grouped = BTreeMap::<u16, (usize, Vec<usize>)>::new();
-            let mut missing_counts = vec![0usize; context.num_classes];
-            let mut missing_size = 0usize;
+            let mut grouped = BTreeMap::<u16, (f64, Vec<f64>)>::new();
+            let mut missing_counts = vec![0.0f64; context.num_classes];
+            let mut missing_size = 0.0f64;
             let missing_bin = numeric_missing_bin(context.table);
             for row_idx in rows {
                 let bin = context.table.binned_value(feature_index, *row_idx);
+                let w = context.table.sample_weight(*row_idx);
                 if bin == missing_bin {
-                    missing_counts[context.class_indices[*row_idx]] += 1;
-                    missing_size += 1;
+                    missing_counts[context.class_indices[*row_idx]] += w;
+                    missing_size += w;
                     continue;
                 }
                 let entry = grouped
                     .entry(bin)
-                    .or_insert_with(|| (0usize, vec![0usize; context.num_classes]));
-                entry.0 += 1;
-                entry.1[context.class_indices[*row_idx]] += 1;
+                    .or_insert_with(|| (0.0f64, vec![0.0f64; context.num_classes]));
+                entry.0 += w;
+                entry.1[context.class_indices[*row_idx]] += w;
             }
             (
                 grouped.into_iter().collect::<Vec<_>>(),
@@ -88,22 +91,30 @@ pub(super) fn score_multiway_split_choice(
     if grouped_counts.len() <= 1
         || grouped_counts
             .iter()
-            .any(|(_, (group_size, _))| *group_size < context.min_samples_leaf)
+            .any(|(_, (group_size, _))| *group_size < min_samples_leaf)
     {
         return None;
     }
 
-    let parent_counts = class_counts(rows, context.class_indices, context.num_classes);
-    let parent_impurity = classification_impurity(&parent_counts, rows.len(), context.criterion);
-    let (score, missing_branch_bin) = if missing_size == 0 {
+    let parent_counts: Vec<f64> = {
+        let mut pc = vec![0.0f64; context.num_classes];
+        for (_, (_, counts)) in &grouped_counts {
+            for (p, c) in pc.iter_mut().zip(counts.iter()) {
+                *p += c;
+            }
+        }
+        for (p, m) in pc.iter_mut().zip(missing_counts.iter()) {
+            *p += m;
+        }
+        pc
+    };
+    let parent_total: f64 = parent_counts.iter().sum();
+    let parent_impurity = classification_impurity(&parent_counts, parent_total, context.criterion);
+
+    let row_count: f64 = parent_total;
+    let (score, missing_branch_bin) = if missing_size == 0.0 {
         (
-            score_multiway_grouping(
-                context,
-                &grouped_counts,
-                rows.len(),
-                parent_impurity,
-                metric,
-            )?,
+            score_multiway_grouping(context, &grouped_counts, row_count, parent_impurity, metric)?,
             None,
         )
     } else {
@@ -127,7 +138,7 @@ pub(super) fn score_multiway_split_choice(
                         }
                     })
                     .collect::<Vec<_>>();
-                score_multiway_grouping(context, &augmented, rows.len(), parent_impurity, metric)
+                score_multiway_grouping(context, &augmented, row_count, parent_impurity, metric)
                     .map(|score| (score, Some(*bin)))
             })
             .max_by(|left, right| left.0.total_cmp(&right.0))?
@@ -146,7 +157,7 @@ pub(super) fn score_binary_split_choice_from_hist(
     histogram: &ClassificationFeatureHistogram,
     feature_index: usize,
     rows: &[usize],
-    parent_counts: &[usize],
+    parent_counts: &[f64],
     algorithm: DecisionTreeAlgorithm,
 ) -> Option<BinarySplitChoice> {
     match (algorithm, histogram) {
@@ -178,7 +189,6 @@ pub(super) fn score_binary_split_choice_from_hist(
             context,
             feature_index,
             parent_counts,
-            rows.len(),
             bins,
             observed_bins,
         ),
@@ -219,13 +229,13 @@ pub(super) fn score_binary_split_choice_from_hist(
 fn score_binary_cart_split_choice_from_counts(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
-    parent_counts: &[usize],
-    left_counts: &[usize],
-    left_size: usize,
-    right_counts: &[usize],
-    right_size: usize,
-    missing_counts: &[usize],
-    missing_size: usize,
+    parent_counts: &[f64],
+    left_counts: &[f64],
+    left_size: f64,
+    right_counts: &[f64],
+    right_size: f64,
+    missing_counts: &[f64],
+    missing_size: f64,
 ) -> Option<BinarySplitChoice> {
     if matches!(
         context
@@ -264,8 +274,7 @@ fn score_binary_cart_split_choice_from_counts(
 fn score_numeric_cart_split_choice_from_hist(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
-    parent_counts: &[usize],
-    row_count: usize,
+    parent_counts: &[f64],
     bin_class_counts: &[ClassificationHistogramBin],
     observed_bins: &[usize],
 ) -> Option<BinarySplitChoice> {
@@ -281,7 +290,6 @@ fn score_numeric_cart_split_choice_from_hist(
             context,
             feature_index,
             parent_counts,
-            row_count,
             bin_class_counts,
             observed_bins,
         );
@@ -298,12 +306,12 @@ fn score_numeric_cart_split_choice_from_hist(
     let missing_counts = bin_class_counts
         .get(missing_bin)
         .map(|bin| bin.counts.clone())
-        .unwrap_or_else(|| vec![0usize; context.num_classes]);
+        .unwrap_or_else(|| vec![0.0f64; context.num_classes]);
     let missing_size = bin_class_counts
         .get(missing_bin)
-        .map_or(0usize, ClassificationHistogramBin::size);
-    let mut left_counts = vec![0usize; context.num_classes];
-    let mut left_size = 0usize;
+        .map_or(0.0f64, ClassificationHistogramBin::size);
+    let mut left_counts = vec![0.0f64; context.num_classes];
+    let mut left_size = 0.0f64;
     let mut best = None;
 
     for bin in observed_bins {
@@ -314,13 +322,13 @@ fn score_numeric_cart_split_choice_from_hist(
             *left_count += *bin_count;
         }
         left_size += bin_class_counts[bin].size();
-        let right_size = row_count - left_size;
         let right_counts = parent_counts
             .iter()
             .zip(left_counts.iter())
             .zip(missing_counts.iter())
             .map(|((parent, left), missing)| parent - left - missing)
             .collect::<Vec<_>>();
+        let right_size = right_counts.iter().sum::<f64>().max(0.0);
         if let Some(candidate) = score_binary_missing_assignment(
             context,
             feature_index,
@@ -329,7 +337,7 @@ fn score_numeric_cart_split_choice_from_hist(
             left_counts.clone(),
             left_size,
             right_counts,
-            right_size.saturating_sub(missing_size),
+            right_size,
             &missing_counts,
             missing_size,
         ) && best
@@ -346,11 +354,11 @@ fn score_numeric_cart_split_choice_from_hist(
 fn score_numeric_cart_split_choice_from_hist_heuristic(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
-    parent_counts: &[usize],
-    row_count: usize,
+    parent_counts: &[f64],
     bin_class_counts: &[ClassificationHistogramBin],
     observed_bins: &[usize],
 ) -> Option<BinarySplitChoice> {
+    let min_samples_leaf = context.min_samples_leaf as f64;
     let missing_bin = usize::from(numeric_missing_bin(context.table));
     let observed_bins = observed_bins
         .iter()
@@ -363,20 +371,20 @@ fn score_numeric_cart_split_choice_from_hist_heuristic(
     let missing_counts = bin_class_counts
         .get(missing_bin)
         .map(|bin| bin.counts.clone())
-        .unwrap_or_else(|| vec![0usize; context.num_classes]);
+        .unwrap_or_else(|| vec![0.0f64; context.num_classes]);
     let missing_size = bin_class_counts
         .get(missing_bin)
-        .map_or(0usize, ClassificationHistogramBin::size);
+        .map_or(0.0f64, ClassificationHistogramBin::size);
     let observed_parent_counts = parent_counts
         .iter()
         .zip(missing_counts.iter())
         .map(|(parent, missing)| parent - missing)
         .collect::<Vec<_>>();
-    let observed_total = row_count.saturating_sub(missing_size);
+    let observed_total: f64 = observed_parent_counts.iter().sum::<f64>().max(0.0);
     let parent_impurity =
         classification_impurity(&observed_parent_counts, observed_total, context.criterion);
-    let mut left_counts = vec![0usize; context.num_classes];
-    let mut left_size = 0usize;
+    let mut left_counts = vec![0.0f64; context.num_classes];
+    let mut left_size = 0.0f64;
     let mut best_threshold = None;
     let mut best_observed_score = f64::NEG_INFINITY;
 
@@ -388,8 +396,8 @@ fn score_numeric_cart_split_choice_from_hist_heuristic(
             *left_count += *bin_count;
         }
         left_size += bin_class_counts[bin].size();
-        let right_size = observed_total.saturating_sub(left_size);
-        if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+        let right_size = (observed_total - left_size).max(0.0);
+        if left_size < min_samples_leaf || right_size < min_samples_leaf {
             continue;
         }
         let right_counts = observed_parent_counts
@@ -397,9 +405,9 @@ fn score_numeric_cart_split_choice_from_hist_heuristic(
             .zip(left_counts.iter())
             .map(|(parent, left)| parent - left)
             .collect::<Vec<_>>();
-        let weighted_impurity = (left_size as f64 / observed_total as f64)
+        let weighted_impurity = (left_size / observed_total)
             * classification_impurity(&left_counts, left_size, context.criterion)
-            + (right_size as f64 / observed_total as f64)
+            + (right_size / observed_total)
                 * classification_impurity(&right_counts, right_size, context.criterion);
         let observed_score = parent_impurity - weighted_impurity;
         if observed_score > best_observed_score {
@@ -409,7 +417,7 @@ fn score_numeric_cart_split_choice_from_hist_heuristic(
     }
 
     let (threshold_bin, left_counts, left_size, right_counts) = best_threshold?;
-    let right_size = observed_total.saturating_sub(left_size);
+    let right_size = (observed_total - left_size).max(0.0);
     score_binary_missing_assignment(
         context,
         feature_index,
@@ -428,7 +436,7 @@ fn score_numeric_randomized_split_choice_from_hist(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
     rows: &[usize],
-    parent_counts: &[usize],
+    parent_counts: &[f64],
     observed_bins: &[usize],
     histogram: &ClassificationFeatureHistogram,
 ) -> Option<BinarySplitChoice> {
@@ -451,12 +459,12 @@ fn score_numeric_randomized_split_choice_from_hist(
     let missing_counts = bins
         .get(missing_bin)
         .map(|bin| bin.counts.clone())
-        .unwrap_or_else(|| vec![0usize; context.num_classes]);
+        .unwrap_or_else(|| vec![0.0f64; context.num_classes]);
     let missing_size = bins
         .get(missing_bin)
-        .map_or(0usize, ClassificationHistogramBin::size);
-    let mut left_counts = vec![0usize; context.num_classes];
-    let mut left_size = 0usize;
+        .map_or(0.0f64, ClassificationHistogramBin::size);
+    let mut left_counts = vec![0.0f64; context.num_classes];
+    let mut left_size = 0.0f64;
     for bin in 0..=threshold_bin as usize {
         if bin >= bins.len() {
             break;
@@ -466,14 +474,13 @@ fn score_numeric_randomized_split_choice_from_hist(
         }
         left_size += bins[bin].size();
     }
-    let row_count = rows.len();
-    let right_size = row_count - left_size;
     let right_counts = parent_counts
         .iter()
         .zip(left_counts.iter())
         .zip(missing_counts.iter())
         .map(|((parent, left), missing)| parent - left - missing)
         .collect::<Vec<_>>();
+    let right_size = right_counts.iter().sum::<f64>().max(0.0);
     score_binary_missing_assignment(
         context,
         feature_index,
@@ -482,7 +489,7 @@ fn score_numeric_randomized_split_choice_from_hist(
         left_counts,
         left_size,
         right_counts,
-        right_size.saturating_sub(missing_size),
+        right_size,
         &missing_counts,
         missing_size,
     )
@@ -490,14 +497,15 @@ fn score_numeric_randomized_split_choice_from_hist(
 
 fn score_multiway_grouping(
     context: &SplitScoringContext<'_>,
-    grouped_counts: &[(u16, (usize, Vec<usize>))],
-    row_count: usize,
+    grouped_counts: &[(u16, (f64, Vec<f64>))],
+    row_count: f64,
     parent_impurity: f64,
     metric: MultiwayMetric,
 ) -> Option<f64> {
+    let min_samples_leaf = context.min_samples_leaf as f64;
     if grouped_counts
         .iter()
-        .any(|(_, (group_size, _))| *group_size < context.min_samples_leaf)
+        .any(|(_, (group_size, _))| *group_size < min_samples_leaf)
     {
         return None;
     }
@@ -505,7 +513,7 @@ fn score_multiway_grouping(
     let weighted_child_impurity = grouped_counts
         .iter()
         .map(|(_, (group_size, counts))| {
-            (*group_size as f64 / row_count as f64)
+            (*group_size / row_count)
                 * classification_impurity(counts, *group_size, context.criterion)
         })
         .sum::<f64>();
@@ -517,7 +525,7 @@ fn score_multiway_grouping(
             let split_info = grouped_counts
                 .iter()
                 .map(|(_, (group_size, _))| {
-                    let probability = *group_size as f64 / row_count as f64;
+                    let probability = *group_size / row_count;
                     -probability * probability.log2()
                 })
                 .sum::<f64>();
@@ -531,14 +539,15 @@ fn score_binary_missing_assignment(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
     threshold_bin: u16,
-    parent_counts: &[usize],
-    left_counts: Vec<usize>,
-    left_size: usize,
-    right_counts: Vec<usize>,
-    right_size: usize,
-    missing_counts: &[usize],
-    missing_size: usize,
+    parent_counts: &[f64],
+    left_counts: Vec<f64>,
+    left_size: f64,
+    right_counts: Vec<f64>,
+    right_size: f64,
+    missing_counts: &[f64],
+    missing_size: f64,
 ) -> Option<BinarySplitChoice> {
+    let min_samples_leaf = context.min_samples_leaf as f64;
     let parent_impurity = classification_impurity(
         parent_counts,
         left_size + right_size + missing_size,
@@ -566,19 +575,17 @@ fn score_binary_missing_assignment(
             }
             MissingBranchDirection::Node => {}
         }
-        if candidate_left_size < context.min_samples_leaf
-            || candidate_right_size < context.min_samples_leaf
-        {
+        if candidate_left_size < min_samples_leaf || candidate_right_size < min_samples_leaf {
             return None;
         }
         let total_count = candidate_left_size + candidate_right_size;
-        let weighted_impurity = (candidate_left_size as f64 / total_count as f64)
+        let weighted_impurity = (candidate_left_size / total_count)
             * classification_impurity(
                 &candidate_left_counts,
                 candidate_left_size,
                 context.criterion,
             )
-            + (candidate_right_size as f64 / total_count as f64)
+            + (candidate_right_size / total_count)
                 * classification_impurity(
                     &candidate_right_counts,
                     candidate_right_size,
@@ -592,7 +599,7 @@ fn score_binary_missing_assignment(
         })
     };
 
-    if missing_size == 0 {
+    if missing_size == 0.0 {
         evaluate(MissingBranchDirection::Node)
     } else {
         [MissingBranchDirection::Left, MissingBranchDirection::Right]
@@ -607,14 +614,15 @@ fn score_binary_observed_split_then_assign_missing(
     context: &SplitScoringContext<'_>,
     feature_index: usize,
     threshold_bin: u16,
-    left_counts: Vec<usize>,
-    left_size: usize,
-    right_counts: Vec<usize>,
-    right_size: usize,
-    missing_counts: &[usize],
-    missing_size: usize,
+    left_counts: Vec<f64>,
+    left_size: f64,
+    right_counts: Vec<f64>,
+    right_size: f64,
+    missing_counts: &[f64],
+    missing_size: f64,
 ) -> Option<BinarySplitChoice> {
-    if left_size < context.min_samples_leaf || right_size < context.min_samples_leaf {
+    let min_samples_leaf = context.min_samples_leaf as f64;
+    if left_size < min_samples_leaf || right_size < min_samples_leaf {
         return None;
     }
     let parent_counts = left_counts
@@ -622,11 +630,12 @@ fn score_binary_observed_split_then_assign_missing(
         .zip(right_counts.iter())
         .map(|(left, right)| left + right)
         .collect::<Vec<_>>();
+    let observed_total = left_size + right_size;
     let parent_impurity =
-        classification_impurity(&parent_counts, left_size + right_size, context.criterion);
-    let weighted_impurity = (left_size as f64 / (left_size + right_size) as f64)
+        classification_impurity(&parent_counts, observed_total, context.criterion);
+    let weighted_impurity = (left_size / observed_total)
         * classification_impurity(&left_counts, left_size, context.criterion)
-        + (right_size as f64 / (left_size + right_size) as f64)
+        + (right_size / observed_total)
             * classification_impurity(&right_counts, right_size, context.criterion);
     let observed_score = parent_impurity - weighted_impurity;
     if !observed_score.is_finite() {
