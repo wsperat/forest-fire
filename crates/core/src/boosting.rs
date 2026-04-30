@@ -540,6 +540,19 @@ impl TableAccess for SampledTable<'_> {
     fn target_value(&self, row_index: usize) -> f64 {
         self.base.target_value(self.resolve_row(row_index))
     }
+
+    fn sample_weight(&self, row_index: usize) -> f64 {
+        self.base.sample_weight(self.resolve_row(row_index))
+    }
+
+    fn n_targets(&self) -> usize {
+        self.base.n_targets()
+    }
+
+    fn target_value_at(&self, row_index: usize, target_index: usize) -> f64 {
+        self.base
+            .target_value_at(self.resolve_row(row_index), target_index)
+    }
 }
 
 fn validate_boosting_parameters(
