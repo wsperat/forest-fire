@@ -299,7 +299,8 @@ fn accumulate_tree_importances(tree: &ir::TreeDefinition, importances: &mut [f64
                 match node {
                     ir::NodeTreeNode::BinaryBranch { split, stats, .. } => {
                         if let Some(gain) = stats.gain {
-                            let contribution = gain * stats.sample_count as f64;
+                            let mass = node_mass(stats);
+                            let contribution = gain * mass;
                             let indices = binary_split_importance_indices(split);
                             let share = contribution / indices.len() as f64;
                             for fi in indices {
@@ -313,7 +314,7 @@ fn accumulate_tree_importances(tree: &ir::TreeDefinition, importances: &mut [f64
                         if let Some(gain) = stats.gain {
                             let fi = split.feature_index;
                             if fi < importances.len() {
-                                importances[fi] += gain * stats.sample_count as f64;
+                                importances[fi] += gain * node_mass(stats);
                             }
                         }
                     }
@@ -326,12 +327,19 @@ fn accumulate_tree_importances(tree: &ir::TreeDefinition, importances: &mut [f64
                 if let Some(gain) = level.stats.gain {
                     let fi = oblivious_importance_feature_index(&level.split);
                     if fi < importances.len() {
-                        importances[fi] += gain * level.stats.sample_count as f64;
+                        importances[fi] += gain * node_mass(&level.stats);
                     }
                 }
             }
         }
     }
+}
+
+fn node_mass(stats: &ir::NodeStats) -> f64 {
+    stats
+        .class_counts
+        .as_deref()
+        .map_or(stats.sample_count as f64, |cc| cc.iter().sum())
 }
 
 fn binary_split_importance_indices(split: &ir::BinarySplit) -> Vec<usize> {
