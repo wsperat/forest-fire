@@ -17,8 +17,9 @@ use crate::tree::oblique::{
 };
 use crate::tree::shared::{
     FeatureHistogram, HistogramBin, MissingBranchDirection, aggregate_beam_non_canary_score,
-    build_feature_histograms, candidate_feature_indices, choose_random_threshold, node_seed,
-    partition_rows_for_binary_split, select_best_non_canary_candidate, subtract_feature_histograms,
+    build_feature_histograms, build_feature_histograms_parallel, candidate_feature_indices,
+    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    select_best_non_canary_candidate, subtract_feature_histograms,
 };
 use crate::{
     BuilderStrategy, CanaryFilter, Criterion, FeaturePreprocessing, MissingValueStrategy,
@@ -472,8 +473,12 @@ fn train_regressor(
     }
 
     let structure = match algorithm {
-        RegressionTreeAlgorithm::Cart => {
-            let mut nodes = Vec::new();
+        RegressionTreeAlgorithm::Cart | RegressionTreeAlgorithm::Randomized => {
+            let mut nodes = vec![RegressionNode::Leaf {
+                value: 0.0,
+                sample_count: 0,
+                variance: None,
+            }];
             let mut all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
             let context = BuildContext {
                 table: train_set,
@@ -483,24 +488,7 @@ fn train_regressor(
                 options: options.clone(),
                 algorithm,
             };
-            // CART and randomized regression reuse a single mutable row-index
-            // buffer so child partitions are formed in place instead of by
-            // allocating fresh row vectors for every split.
-            let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
-            RegressionTreeStructure::Standard { nodes, root }
-        }
-        RegressionTreeAlgorithm::Randomized => {
-            let mut nodes = Vec::new();
-            let mut all_rows: Vec<usize> = (0..train_set.n_rows()).collect();
-            let context = BuildContext {
-                table: train_set,
-                targets: &targets,
-                criterion,
-                parallelism,
-                options: options.clone(),
-                algorithm,
-            };
-            let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
+            let root = train_binary_structure(&context, &mut nodes, &mut all_rows);
             RegressionTreeStructure::Standard { nodes, root }
         }
         RegressionTreeAlgorithm::Oblivious => {
@@ -1123,46 +1111,105 @@ fn finite_targets(train_set: &dyn TableAccess) -> Result<Vec<f64>, RegressionTre
         .collect()
 }
 
-fn build_binary_node_in_place(
-    context: &BuildContext<'_>,
-    nodes: &mut Vec<RegressionNode>,
-    rows: &mut [usize],
+// ── Frontier-based binary structure builder ─────────────────────────────────
+//
+// Replaces the recursive `build_binary_node_in_place` with a level-wise loop
+// so nodes at the same depth can be evaluated and have their histograms built
+// in parallel, using the same two-level (node-parallel × feature-parallel)
+// rayon work-stealing strategy as the second-order tree.
+
+struct ActiveRegressionNode {
+    node_index: usize,
     depth: usize,
-) -> usize {
-    build_binary_node_in_place_with_hist(context, nodes, rows, depth, None)
+    start: usize,
+    end: usize,
+    histograms: Option<Vec<RegressionFeatureHistogram>>,
 }
 
-fn build_binary_node_in_place_with_hist(
+struct RegressionNodeEval {
+    leaf_value: f64,
+    leaf_variance: Option<f64>,
+    impurity: f64,
+    histograms: Option<Vec<RegressionFeatureHistogram>>,
+    best_split: Option<StandardSplitChoice>,
+}
+
+struct RegressionSplitWork {
+    depth: usize,
+    start: usize,
+    mid: usize,
+    end: usize,
+    left_child: usize,
+    right_child: usize,
+    // None when Criterion::Variance (no histograms); subtraction is skipped and
+    // children build fresh histograms on demand.
+    histograms: Option<Vec<RegressionFeatureHistogram>>,
+}
+
+fn build_regression_node_histograms_par(
     context: &BuildContext<'_>,
-    nodes: &mut Vec<RegressionNode>,
-    rows: &mut [usize],
+    rows: &[usize],
+    parallelism: Parallelism,
+) -> Vec<RegressionFeatureHistogram> {
+    let make_bin = |_| RegressionHistogramBin {
+        count: 0.0,
+        sum: 0.0,
+        sum_sq: 0.0,
+    };
+    let add_row = |_feature_index, payload: &mut RegressionHistogramBin, row_idx| {
+        let w = context.table.sample_weight(row_idx);
+        let value = context.targets[row_idx];
+        payload.count += w;
+        payload.sum += w * value;
+        payload.sum_sq += w * value * value;
+    };
+    if parallelism.enabled() {
+        build_feature_histograms_parallel(context.table, rows, make_bin, add_row)
+    } else {
+        build_feature_histograms(context.table, rows, make_bin, add_row)
+    }
+}
+
+fn evaluate_regression_node(
+    context: &BuildContext<'_>,
+    rows: &[usize],
     depth: usize,
     histograms: Option<Vec<RegressionFeatureHistogram>>,
-) -> usize {
+    scoring_par: Parallelism,
+) -> RegressionNodeEval {
     let leaf_value = regression_value(context.table, rows, context.targets, context.criterion);
     let leaf_variance = variance(context.table, rows, context.targets);
+    let impurity = regression_loss(context.table, rows, context.targets, context.criterion);
 
     if rows.is_empty()
         || depth >= context.options.max_depth
         || rows.len() < context.options.min_samples_split
         || has_constant_target(rows, context.targets)
     {
-        return push_leaf(nodes, leaf_value, rows.len(), leaf_variance);
+        return RegressionNodeEval {
+            leaf_value,
+            leaf_variance,
+            impurity,
+            histograms: None,
+            best_split: None,
+        };
     }
 
-    let histograms = if matches!(context.criterion, Criterion::Mean) {
-        Some(histograms.unwrap_or_else(|| {
-            build_regression_node_histograms(context.table, context.targets, rows)
-        }))
-    } else {
-        None
-    };
+    let histograms =
+        if matches!(context.criterion, Criterion::Mean) {
+            Some(histograms.unwrap_or_else(|| {
+                build_regression_node_histograms_par(context, rows, scoring_par)
+            }))
+        } else {
+            None
+        };
+
     let feature_indices = candidate_feature_indices(
         context.table,
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xA11C_E5E1u64),
     );
-    let split_candidates = if context.parallelism.enabled() {
+    let split_candidates = if scoring_par.enabled() {
         feature_indices
             .par_iter()
             .filter_map(|feature_index| {
@@ -1195,7 +1242,7 @@ fn build_binary_node_in_place_with_hist(
             })
             .collect::<Vec<_>>()
     };
-    let ranked_splits = rank_standard_split_choices(
+    let ranked = rank_standard_split_choices(
         context,
         rows,
         depth,
@@ -1205,122 +1252,222 @@ fn build_binary_node_in_place_with_hist(
     );
     let best_split = select_best_non_canary_candidate(
         context.table,
-        ranked_splits,
+        ranked,
         context.options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.choice.ranking_feature_index(),
+        |c| c.ranking_score,
+        |c| c.choice.ranking_feature_index(),
     )
     .selected
-    .map(|candidate| candidate.choice);
+    .map(|c| c.choice);
 
-    match best_split {
-        Some(best_split) if best_split.score() > 0.0 => {
-            let impurity = regression_loss(context.table, rows, context.targets, context.criterion);
-            let left_count = match &best_split {
-                StandardSplitChoice::Axis(choice) => partition_rows_for_binary_split(
-                    context.table,
-                    choice.feature_index,
-                    choice.threshold_bin,
-                    choice.missing_direction,
-                    rows,
-                ),
-                StandardSplitChoice::Oblique(choice) => partition_rows_for_oblique_split(
-                    context.table,
-                    [choice.feature_indices[0], choice.feature_indices[1]],
-                    [choice.weights[0], choice.weights[1]],
-                    choice.threshold,
-                    [choice.missing_directions[0], choice.missing_directions[1]],
-                    rows,
-                ),
-            };
-            let (left_rows, right_rows) = rows.split_at_mut(left_count);
-            let (left_child, right_child) = if let Some(histograms) = histograms {
-                if left_rows.len() <= right_rows.len() {
-                    let left_histograms =
-                        build_regression_node_histograms(context.table, context.targets, left_rows);
-                    let right_histograms =
-                        subtract_regression_node_histograms(&histograms, &left_histograms);
-                    (
-                        build_binary_node_in_place_with_hist(
-                            context,
-                            nodes,
-                            left_rows,
-                            depth + 1,
-                            Some(left_histograms),
-                        ),
-                        build_binary_node_in_place_with_hist(
-                            context,
-                            nodes,
-                            right_rows,
-                            depth + 1,
-                            Some(right_histograms),
-                        ),
-                    )
-                } else {
-                    let right_histograms = build_regression_node_histograms(
-                        context.table,
-                        context.targets,
-                        right_rows,
-                    );
-                    let left_histograms =
-                        subtract_regression_node_histograms(&histograms, &right_histograms);
-                    (
-                        build_binary_node_in_place_with_hist(
-                            context,
-                            nodes,
-                            left_rows,
-                            depth + 1,
-                            Some(left_histograms),
-                        ),
-                        build_binary_node_in_place_with_hist(
-                            context,
-                            nodes,
-                            right_rows,
-                            depth + 1,
-                            Some(right_histograms),
-                        ),
-                    )
-                }
-            } else {
-                (
-                    build_binary_node_in_place(context, nodes, left_rows, depth + 1),
-                    build_binary_node_in_place(context, nodes, right_rows, depth + 1),
-                )
-            };
-
-            push_node(
-                nodes,
-                match best_split {
-                    StandardSplitChoice::Axis(best_split) => RegressionNode::BinarySplit {
-                        feature_index: best_split.feature_index,
-                        threshold_bin: best_split.threshold_bin,
-                        missing_direction: best_split.missing_direction,
-                        missing_values: vec![leaf_value],
-                        left_child,
-                        right_child,
-                        sample_count: rows.len(),
-                        impurity,
-                        gain: best_split.score,
-                        variance: leaf_variance,
-                    },
-                    StandardSplitChoice::Oblique(best_split) => RegressionNode::ObliqueSplit {
-                        feature_indices: best_split.feature_indices,
-                        weights: best_split.weights,
-                        missing_directions: best_split.missing_directions,
-                        threshold: best_split.threshold,
-                        missing_values: vec![leaf_value],
-                        left_child,
-                        right_child,
-                        sample_count: rows.len(),
-                        impurity,
-                        gain: best_split.score,
-                        variance: leaf_variance,
-                    },
-                },
-            )
-        }
-        _ => push_leaf(nodes, leaf_value, rows.len(), leaf_variance),
+    RegressionNodeEval {
+        leaf_value,
+        leaf_variance,
+        impurity,
+        histograms,
+        best_split,
     }
+}
+
+fn regression_child_active_nodes(
+    work: RegressionSplitWork,
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    hist_par: Parallelism,
+) -> [ActiveRegressionNode; 2] {
+    let left_len = work.mid - work.start;
+    let right_len = work.end - work.mid;
+    let (left_histograms, right_histograms) = match work.histograms {
+        Some(parent_histograms) => {
+            if left_len <= right_len {
+                let left = build_regression_node_histograms_par(
+                    context,
+                    &rows[work.start..work.mid],
+                    hist_par,
+                );
+                let right = subtract_regression_node_histograms(&parent_histograms, &left);
+                (Some(left), Some(right))
+            } else {
+                let right = build_regression_node_histograms_par(
+                    context,
+                    &rows[work.mid..work.end],
+                    hist_par,
+                );
+                let left = subtract_regression_node_histograms(&parent_histograms, &right);
+                (Some(left), Some(right))
+            }
+        }
+        None => (None, None),
+    };
+    [
+        ActiveRegressionNode {
+            node_index: work.left_child,
+            depth: work.depth + 1,
+            start: work.start,
+            end: work.mid,
+            histograms: left_histograms,
+        },
+        ActiveRegressionNode {
+            node_index: work.right_child,
+            depth: work.depth + 1,
+            start: work.mid,
+            end: work.end,
+            histograms: right_histograms,
+        },
+    ]
+}
+
+fn train_binary_structure(
+    context: &BuildContext<'_>,
+    nodes: &mut Vec<RegressionNode>,
+    rows: &mut [usize],
+) -> usize {
+    let root = 0usize;
+    let mut frontier = vec![ActiveRegressionNode {
+        node_index: root,
+        depth: 0,
+        start: 0,
+        end: rows.len(),
+        histograms: None,
+    }];
+
+    while !frontier.is_empty() {
+        let use_par = context.parallelism.enabled() && frontier.len() >= 2;
+        let evals: Vec<(usize, usize, usize, usize, RegressionNodeEval)> = if use_par {
+            frontier
+                .into_par_iter()
+                .map(|active| {
+                    let eval = evaluate_regression_node(
+                        context,
+                        &rows[active.start..active.end],
+                        active.depth,
+                        active.histograms,
+                        context.parallelism,
+                    );
+                    (
+                        active.node_index,
+                        active.depth,
+                        active.start,
+                        active.end,
+                        eval,
+                    )
+                })
+                .collect()
+        } else {
+            frontier
+                .into_iter()
+                .map(|active| {
+                    let eval = evaluate_regression_node(
+                        context,
+                        &rows[active.start..active.end],
+                        active.depth,
+                        active.histograms,
+                        context.parallelism,
+                    );
+                    (
+                        active.node_index,
+                        active.depth,
+                        active.start,
+                        active.end,
+                        eval,
+                    )
+                })
+                .collect()
+        };
+
+        let mut split_work: Vec<RegressionSplitWork> = Vec::new();
+
+        for (node_index, depth, start, end, eval) in evals {
+            match eval.best_split {
+                Some(split) if split.score() > 0.0 => {
+                    let left_count = match &split {
+                        StandardSplitChoice::Axis(s) => partition_rows_for_binary_split(
+                            context.table,
+                            s.feature_index,
+                            s.threshold_bin,
+                            s.missing_direction,
+                            &mut rows[start..end],
+                        ),
+                        StandardSplitChoice::Oblique(s) => partition_rows_for_oblique_split(
+                            context.table,
+                            [s.feature_indices[0], s.feature_indices[1]],
+                            [s.weights[0], s.weights[1]],
+                            s.threshold,
+                            [s.missing_directions[0], s.missing_directions[1]],
+                            &mut rows[start..end],
+                        ),
+                    };
+                    let mid = start + left_count;
+                    let left_child =
+                        push_leaf(nodes, eval.leaf_value, mid - start, eval.leaf_variance);
+                    let right_child =
+                        push_leaf(nodes, eval.leaf_value, end - mid, eval.leaf_variance);
+                    nodes[node_index] = match split {
+                        StandardSplitChoice::Axis(s) => RegressionNode::BinarySplit {
+                            feature_index: s.feature_index,
+                            threshold_bin: s.threshold_bin,
+                            missing_direction: s.missing_direction,
+                            missing_values: vec![eval.leaf_value],
+                            left_child,
+                            right_child,
+                            sample_count: end - start,
+                            impurity: eval.impurity,
+                            gain: s.score,
+                            variance: eval.leaf_variance,
+                        },
+                        StandardSplitChoice::Oblique(s) => RegressionNode::ObliqueSplit {
+                            feature_indices: s.feature_indices,
+                            weights: s.weights,
+                            missing_directions: s.missing_directions,
+                            threshold: s.threshold,
+                            missing_values: vec![eval.leaf_value],
+                            left_child,
+                            right_child,
+                            sample_count: end - start,
+                            impurity: eval.impurity,
+                            gain: s.score,
+                            variance: eval.leaf_variance,
+                        },
+                    };
+                    split_work.push(RegressionSplitWork {
+                        depth,
+                        start,
+                        mid,
+                        end,
+                        left_child,
+                        right_child,
+                        histograms: eval.histograms,
+                    });
+                }
+                _ => {
+                    nodes[node_index] = RegressionNode::Leaf {
+                        value: eval.leaf_value,
+                        sample_count: end - start,
+                        variance: eval.leaf_variance,
+                    };
+                }
+            }
+        }
+
+        let use_child_par = context.parallelism.enabled() && split_work.len() >= 2;
+        frontier = if use_child_par {
+            split_work
+                .into_par_iter()
+                .flat_map_iter(|work| {
+                    regression_child_active_nodes(work, context, rows, context.parallelism)
+                })
+                .collect()
+        } else {
+            split_work
+                .into_iter()
+                .flat_map(|work| {
+                    regression_child_active_nodes(work, context, rows, context.parallelism)
+                })
+                .collect()
+        };
+    }
+
+    root
 }
 
 fn score_oblique_split_choices(

@@ -25,8 +25,8 @@ use crate::tree::oblique::{
     resolve_oblique_missing_direction,
 };
 use crate::tree::shared::{
-    MissingBranchDirection, aggregate_beam_non_canary_score, candidate_feature_indices,
-    choose_random_threshold, node_seed, partition_rows_for_binary_split,
+    MissingBranchDirection, aggregate_beam_non_canary_score, build_feature_histograms_parallel,
+    candidate_feature_indices, choose_random_threshold, node_seed, partition_rows_for_binary_split,
     select_best_non_canary_candidate,
 };
 use crate::{
@@ -522,7 +522,7 @@ fn train_classifier(
                 parallelism,
                 options: options.clone(),
             };
-            let root = build_binary_node_in_place(&context, &mut nodes, &mut all_rows, 0);
+            let root = train_binary_structure_classifier(&context, &mut nodes, &mut all_rows);
             TreeStructure::Standard { nodes, root }
         }
         DecisionTreeAlgorithm::Id3 | DecisionTreeAlgorithm::C45 => {
@@ -1064,22 +1064,68 @@ impl DecisionTreeClassifier {
     }
 }
 
-fn build_binary_node_in_place(
-    context: &BuildContext<'_>,
-    nodes: &mut Vec<TreeNode>,
-    rows: &mut [usize],
+// ── Frontier (level-wise) binary tree builder for Cart / Randomized ─────────
+
+struct ActiveClassificationNode {
+    node_index: usize,
     depth: usize,
-) -> usize {
-    build_binary_node_in_place_with_hist(context, nodes, rows, depth, None)
+    start: usize,
+    end: usize,
+    histograms: Option<Vec<ClassificationFeatureHistogram>>,
 }
 
-fn build_binary_node_in_place_with_hist(
+struct ClassificationNodeEval {
+    majority_class_index: usize,
+    class_counts: Vec<f64>,
+    impurity: f64,
+    histograms: Option<Vec<ClassificationFeatureHistogram>>,
+    best_split: Option<StandardSplitChoice>,
+}
+
+struct ClassificationSplitWork {
+    depth: usize,
+    start: usize,
+    mid: usize,
+    end: usize,
+    left_child: usize,
+    right_child: usize,
+    histograms: Vec<ClassificationFeatureHistogram>,
+}
+
+fn build_classification_node_histograms_par(
     context: &BuildContext<'_>,
-    nodes: &mut Vec<TreeNode>,
-    rows: &mut [usize],
+    rows: &[usize],
+    parallelism: Parallelism,
+) -> Vec<ClassificationFeatureHistogram> {
+    let num_classes = context.class_labels.len();
+    let make_bin = |_| {
+        use histogram::ClassificationHistogramBin;
+        ClassificationHistogramBin::new(num_classes)
+    };
+    let add_row = |_feature_index, payload: &mut _, row_idx| {
+        use histogram::ClassificationHistogramBin;
+        let payload: &mut ClassificationHistogramBin = payload;
+        payload.counts[context.class_indices[row_idx]] += context.table.sample_weight(row_idx);
+    };
+    if parallelism.enabled() {
+        build_feature_histograms_parallel(context.table, rows, make_bin, add_row)
+    } else {
+        build_classification_node_histograms(
+            context.table,
+            context.class_indices,
+            rows,
+            num_classes,
+        )
+    }
+}
+
+fn evaluate_classification_node(
+    context: &BuildContext<'_>,
+    rows: &[usize],
     depth: usize,
     histograms: Option<Vec<ClassificationFeatureHistogram>>,
-) -> usize {
+    scoring_par: Parallelism,
+) -> ClassificationNodeEval {
     let majority_class_index = majority_class(
         context.table,
         rows,
@@ -1098,13 +1144,20 @@ fn build_binary_node_in_place_with_hist(
         || rows.len() < context.options.min_samples_split
         || is_pure(rows, context.class_indices)
     {
-        return push_leaf(
-            nodes,
+        return ClassificationNodeEval {
             majority_class_index,
-            rows.len(),
-            current_class_counts,
-        );
+            class_counts: current_class_counts,
+            impurity: 0.0,
+            histograms: None,
+            best_split: None,
+        };
     }
+
+    let total_weight: f64 = current_class_counts.iter().sum();
+    let impurity = classification_impurity(&current_class_counts, total_weight, context.criterion);
+
+    let histograms = histograms
+        .unwrap_or_else(|| build_classification_node_histograms_par(context, rows, scoring_par));
 
     let scoring = SplitScoringContext {
         table: context.table,
@@ -1114,20 +1167,12 @@ fn build_binary_node_in_place_with_hist(
         min_samples_leaf: context.options.min_samples_leaf,
         missing_value_strategies: &context.options.missing_value_strategies,
     };
-    let histograms = histograms.unwrap_or_else(|| {
-        build_classification_node_histograms(
-            context.table,
-            context.class_indices,
-            rows,
-            context.class_labels.len(),
-        )
-    });
     let feature_indices = candidate_feature_indices(
         context.table,
         context.options.max_features,
         node_seed(context.options.random_seed, depth, rows, 0xC1A5_5EEDu64),
     );
-    let split_candidates = if context.parallelism.enabled() {
+    let split_candidates: Vec<BinarySplitChoice> = if scoring_par.enabled() {
         feature_indices
             .par_iter()
             .filter_map(|feature_index| {
@@ -1140,7 +1185,7 @@ fn build_binary_node_in_place_with_hist(
                     context.algorithm,
                 )
             })
-            .collect::<Vec<_>>()
+            .collect()
     } else {
         feature_indices
             .iter()
@@ -1154,9 +1199,9 @@ fn build_binary_node_in_place_with_hist(
                     context.algorithm,
                 )
             })
-            .collect::<Vec<_>>()
+            .collect()
     };
-    let ranked_splits = rank_standard_split_choices(
+    let ranked = rank_standard_split_choices(
         context,
         rows,
         depth,
@@ -1167,109 +1212,230 @@ fn build_binary_node_in_place_with_hist(
     );
     let best_split = select_best_non_canary_candidate(
         context.table,
-        ranked_splits,
+        ranked,
         context.options.canary_filter,
-        |candidate| candidate.ranking_score,
-        |candidate| candidate.choice.ranking_feature_index(),
+        |c| c.ranking_score,
+        |c| c.choice.ranking_feature_index(),
     )
     .selected
-    .map(|candidate| candidate.choice);
+    .map(|c| c.choice);
 
-    match best_split {
-        Some(best_split) if best_split.score() > 0.0 => {
-            let total_weight: f64 = current_class_counts.iter().sum();
-            let impurity =
-                classification_impurity(&current_class_counts, total_weight, context.criterion);
-            let left_count = match &best_split {
-                StandardSplitChoice::Axis(choice) => partition_rows_for_binary_split(
-                    context.table,
-                    choice.feature_index,
-                    choice.threshold_bin,
-                    choice.missing_direction,
-                    rows,
-                ),
-                StandardSplitChoice::Oblique(choice) => partition_rows_for_oblique_split(
-                    context.table,
-                    [choice.feature_indices[0], choice.feature_indices[1]],
-                    [choice.weights[0], choice.weights[1]],
-                    choice.threshold,
-                    [choice.missing_directions[0], choice.missing_directions[1]],
-                    rows,
-                ),
-            };
-            let (left_rows, right_rows) = rows.split_at_mut(left_count);
-            let (left_histograms, right_histograms) = if left_rows.len() <= right_rows.len() {
-                let left_histograms = build_classification_node_histograms(
-                    context.table,
-                    context.class_indices,
-                    left_rows,
-                    context.class_labels.len(),
-                );
-                let right_histograms =
-                    subtract_classification_node_histograms(&histograms, &left_histograms);
-                (left_histograms, right_histograms)
-            } else {
-                let right_histograms = build_classification_node_histograms(
-                    context.table,
-                    context.class_indices,
-                    right_rows,
-                    context.class_labels.len(),
-                );
-                let left_histograms =
-                    subtract_classification_node_histograms(&histograms, &right_histograms);
-                (left_histograms, right_histograms)
-            };
-            let left_child = build_binary_node_in_place_with_hist(
-                context,
-                nodes,
-                left_rows,
-                depth + 1,
-                Some(left_histograms),
-            );
-            let right_child = build_binary_node_in_place_with_hist(
-                context,
-                nodes,
-                right_rows,
-                depth + 1,
-                Some(right_histograms),
-            );
-
-            push_node(
-                nodes,
-                match best_split {
-                    StandardSplitChoice::Axis(best_split) => TreeNode::BinarySplit {
-                        feature_index: best_split.feature_index,
-                        threshold_bin: best_split.threshold_bin,
-                        missing_direction: best_split.missing_direction,
-                        left_child,
-                        right_child,
-                        sample_count: rows.len(),
-                        impurity,
-                        gain: best_split.score,
-                        class_counts: current_class_counts,
-                    },
-                    StandardSplitChoice::Oblique(best_split) => TreeNode::ObliqueSplit {
-                        feature_indices: best_split.feature_indices,
-                        weights: best_split.weights,
-                        missing_directions: best_split.missing_directions,
-                        threshold: best_split.threshold,
-                        left_child,
-                        right_child,
-                        sample_count: rows.len(),
-                        impurity,
-                        gain: best_split.score,
-                        class_counts: current_class_counts,
-                    },
-                },
-            )
-        }
-        _ => push_leaf(
-            nodes,
-            majority_class_index,
-            rows.len(),
-            current_class_counts,
-        ),
+    ClassificationNodeEval {
+        majority_class_index,
+        class_counts: current_class_counts,
+        impurity,
+        histograms: Some(histograms),
+        best_split,
     }
+}
+
+fn classification_child_active_nodes(
+    work: ClassificationSplitWork,
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    hist_par: Parallelism,
+) -> [ActiveClassificationNode; 2] {
+    let left_len = work.mid - work.start;
+    let right_len = work.end - work.mid;
+    let (left_histograms, right_histograms) = if left_len <= right_len {
+        let left = build_classification_node_histograms_par(
+            context,
+            &rows[work.start..work.mid],
+            hist_par,
+        );
+        let right = subtract_classification_node_histograms(&work.histograms, &left);
+        (left, right)
+    } else {
+        let right =
+            build_classification_node_histograms_par(context, &rows[work.mid..work.end], hist_par);
+        let left = subtract_classification_node_histograms(&work.histograms, &right);
+        (left, right)
+    };
+    [
+        ActiveClassificationNode {
+            node_index: work.left_child,
+            depth: work.depth + 1,
+            start: work.start,
+            end: work.mid,
+            histograms: Some(left_histograms),
+        },
+        ActiveClassificationNode {
+            node_index: work.right_child,
+            depth: work.depth + 1,
+            start: work.mid,
+            end: work.end,
+            histograms: Some(right_histograms),
+        },
+    ]
+}
+
+fn train_binary_structure_classifier(
+    context: &BuildContext<'_>,
+    nodes: &mut Vec<TreeNode>,
+    rows: &mut [usize],
+) -> usize {
+    let root = 0usize;
+    // Pre-allocate root placeholder so node indices are stable from the start.
+    nodes.push(TreeNode::Leaf {
+        class_index: 0,
+        sample_count: 0,
+        class_counts: vec![0.0; context.class_labels.len()],
+    });
+    let mut frontier = vec![ActiveClassificationNode {
+        node_index: root,
+        depth: 0,
+        start: 0,
+        end: rows.len(),
+        histograms: None,
+    }];
+
+    while !frontier.is_empty() {
+        let use_par = context.parallelism.enabled() && frontier.len() >= 2;
+        let evals: Vec<(usize, usize, usize, usize, ClassificationNodeEval)> = if use_par {
+            frontier
+                .into_par_iter()
+                .map(|active| {
+                    let eval = evaluate_classification_node(
+                        context,
+                        &rows[active.start..active.end],
+                        active.depth,
+                        active.histograms,
+                        context.parallelism,
+                    );
+                    (
+                        active.node_index,
+                        active.depth,
+                        active.start,
+                        active.end,
+                        eval,
+                    )
+                })
+                .collect()
+        } else {
+            frontier
+                .into_iter()
+                .map(|active| {
+                    let eval = evaluate_classification_node(
+                        context,
+                        &rows[active.start..active.end],
+                        active.depth,
+                        active.histograms,
+                        context.parallelism,
+                    );
+                    (
+                        active.node_index,
+                        active.depth,
+                        active.start,
+                        active.end,
+                        eval,
+                    )
+                })
+                .collect()
+        };
+
+        let mut split_work: Vec<ClassificationSplitWork> = Vec::new();
+
+        for (node_index, depth, start, end, eval) in evals {
+            match eval.best_split {
+                Some(split) if split.score() > 0.0 => {
+                    let left_count = match &split {
+                        StandardSplitChoice::Axis(s) => partition_rows_for_binary_split(
+                            context.table,
+                            s.feature_index,
+                            s.threshold_bin,
+                            s.missing_direction,
+                            &mut rows[start..end],
+                        ),
+                        StandardSplitChoice::Oblique(s) => partition_rows_for_oblique_split(
+                            context.table,
+                            [s.feature_indices[0], s.feature_indices[1]],
+                            [s.weights[0], s.weights[1]],
+                            s.threshold,
+                            [s.missing_directions[0], s.missing_directions[1]],
+                            &mut rows[start..end],
+                        ),
+                    };
+                    let mid = start + left_count;
+                    let left_child = push_leaf(
+                        nodes,
+                        eval.majority_class_index,
+                        mid - start,
+                        eval.class_counts.clone(),
+                    );
+                    let right_child = push_leaf(
+                        nodes,
+                        eval.majority_class_index,
+                        end - mid,
+                        eval.class_counts.clone(),
+                    );
+                    let impurity = eval.impurity;
+                    let gain = split.score();
+                    nodes[node_index] = match split {
+                        StandardSplitChoice::Axis(s) => TreeNode::BinarySplit {
+                            feature_index: s.feature_index,
+                            threshold_bin: s.threshold_bin,
+                            missing_direction: s.missing_direction,
+                            left_child,
+                            right_child,
+                            sample_count: end - start,
+                            impurity,
+                            gain,
+                            class_counts: eval.class_counts,
+                        },
+                        StandardSplitChoice::Oblique(s) => TreeNode::ObliqueSplit {
+                            feature_indices: s.feature_indices,
+                            weights: s.weights,
+                            missing_directions: s.missing_directions,
+                            threshold: s.threshold,
+                            left_child,
+                            right_child,
+                            sample_count: end - start,
+                            impurity,
+                            gain,
+                            class_counts: eval.class_counts,
+                        },
+                    };
+                    // histograms must be Some when best_split is Some
+                    let histograms = eval.histograms.unwrap();
+                    split_work.push(ClassificationSplitWork {
+                        depth,
+                        start,
+                        mid,
+                        end,
+                        left_child,
+                        right_child,
+                        histograms,
+                    });
+                }
+                _ => {
+                    nodes[node_index] = TreeNode::Leaf {
+                        class_index: eval.majority_class_index,
+                        sample_count: end - start,
+                        class_counts: eval.class_counts,
+                    };
+                }
+            }
+        }
+
+        let use_child_par = context.parallelism.enabled() && split_work.len() >= 2;
+        frontier = if use_child_par {
+            split_work
+                .into_par_iter()
+                .flat_map_iter(|work| {
+                    classification_child_active_nodes(work, context, rows, context.parallelism)
+                })
+                .collect()
+        } else {
+            split_work
+                .into_iter()
+                .flat_map(|work| {
+                    classification_child_active_nodes(work, context, rows, context.parallelism)
+                })
+                .collect()
+        };
+    }
+
+    root
 }
 
 fn score_oblique_split_choices(
