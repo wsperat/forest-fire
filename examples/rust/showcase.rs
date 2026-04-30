@@ -5,7 +5,7 @@ use forestfire_core::{
     BuilderStrategy, CanaryFilter, Criterion, MaxFeatures, MissingValueStrategyConfig, Model,
     OptimizedModel, SplitStrategy, Task, TrainAlgorithm, TrainConfig, TreeType, train,
 };
-use forestfire_data::{NumericBins, Table};
+use forestfire_data::{MultiTargetDenseTable, NumericBins, Table, WeightedTable};
 
 fn print_section(title: &str) {
     println!("\n== {title} ==");
@@ -477,6 +477,257 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn show_random_forests() -> Result<(), Box<dyn Error>> {
+    // Regression RF
+    let (x, y) = regression_rows();
+    let table = Table::with_options(x.clone(), y, 0, NumericBins::Auto)?;
+    let rf_reg = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Rf,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            n_trees: Some(50),
+            max_features: MaxFeatures::Sqrt,
+            compute_oob: true,
+            seed: Some(0),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    // Classification RF
+    let (x_clf, y_clf) = classification_rows();
+    let table_clf = Table::with_options(x_clf.clone(), y_clf, 0, NumericBins::Auto)?;
+    let rf_clf = train(
+        &table_clf,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Rf,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            n_trees: Some(50),
+            max_features: MaxFeatures::Sqrt,
+            compute_oob: true,
+            seed: Some(0),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    print_section("Random Forests");
+    println!("rf_reg oob_score  -> {:?}", rf_reg.oob_score());
+    println!(
+        "rf_reg preds[:4]  -> {:?}",
+        rf_reg.predict_rows(x[..4].to_vec())?
+    );
+    println!("rf_clf oob_score  -> {:?}", rf_clf.oob_score());
+    println!(
+        "rf_clf preds      -> {:?}",
+        rf_clf.predict_rows(x_clf.clone())?
+    );
+    Ok(())
+}
+
+fn show_gradient_boosting() -> Result<(), Box<dyn Error>> {
+    // Regression GBM
+    let (x, y) = regression_rows();
+    let table = Table::with_options(x.clone(), y, 0, NumericBins::Auto)?;
+    let gbm_reg = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Gbm,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            n_trees: Some(80),
+            learning_rate: Some(0.1),
+            seed: Some(0),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    // Classification GBM
+    let (x_clf, y_clf) = classification_rows();
+    let table_clf = Table::with_options(x_clf.clone(), y_clf, 0, NumericBins::Auto)?;
+    let gbm_clf = train(
+        &table_clf,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Gbm,
+            task: Task::Classification,
+            tree_type: TreeType::Cart,
+            n_trees: Some(80),
+            learning_rate: Some(0.1),
+            top_gradient_fraction: Some(0.5),
+            other_gradient_fraction: Some(0.1),
+            seed: Some(0),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    print_section("Gradient Boosting");
+    println!("gbm_reg tree_count -> {}", gbm_reg.tree_count());
+    println!(
+        "gbm_reg preds[:4]  -> {:?}",
+        gbm_reg.predict_rows(x[..4].to_vec())?
+    );
+    println!("gbm_clf tree_count -> {}", gbm_clf.tree_count());
+    println!(
+        "gbm_clf preds      -> {:?}",
+        gbm_clf.predict_rows(x_clf.clone())?
+    );
+    Ok(())
+}
+
+fn show_sample_weights() -> Result<(), Box<dyn Error>> {
+    let (x, y) = regression_rows();
+    let weights: Vec<f64> = (0..x.len())
+        .map(|i| if i % 2 == 0 { 2.0 } else { 0.5 })
+        .collect();
+
+    let table = Table::with_options(x.clone(), y.clone(), 0, NumericBins::Auto)?;
+    let weighted_table = WeightedTable::new(&table, weights.clone());
+
+    let unweighted = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            ..TrainConfig::default()
+        },
+    )?;
+    let weighted = train(
+        &weighted_table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            ..TrainConfig::default()
+        },
+    )?;
+
+    // RF with weights
+    let rf_weighted = train(
+        &weighted_table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Rf,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            n_trees: Some(20),
+            seed: Some(0),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    print_section("Sample Weights");
+    println!(
+        "unweighted preds[:4]  -> {:?}",
+        unweighted.predict_rows(x[..4].to_vec())?
+    );
+    println!(
+        "weighted preds[:4]    -> {:?}",
+        weighted.predict_rows(x[..4].to_vec())?
+    );
+    println!(
+        "rf_weighted preds[:4] -> {:?}",
+        rf_weighted.predict_rows(x[..4].to_vec())?
+    );
+    Ok(())
+}
+
+fn show_multi_target() -> Result<(), Box<dyn Error>> {
+    // Build base table on first target column
+    let x = vec![
+        vec![0.0, 0.0],
+        vec![0.0, 1.0],
+        vec![1.0, 0.0],
+        vec![1.0, 1.0],
+        vec![2.0, 0.0],
+        vec![2.0, 1.0],
+    ];
+    // First target: sum of features; second target: difference
+    let y1: Vec<f64> = x.iter().map(|r| r[0] + r[1]).collect();
+    let y2: Vec<f64> = x.iter().map(|r| r[0] - r[1]).collect();
+    let table = Table::with_options(x.clone(), y1, 0, NumericBins::Auto)?;
+    let mt = MultiTargetDenseTable::new(&table, vec![y2]);
+
+    let model = train(
+        &mt,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            ..TrainConfig::default()
+        },
+    )?;
+
+    let preds = model.predict_all_rows(x)?;
+
+    print_section("Multi-Target Regression");
+    println!("n_targets -> {}", preds[0].len());
+    for (i, row_preds) in preds.iter().enumerate() {
+        println!("row {i}: {:?}", row_preds);
+    }
+    Ok(())
+}
+
+fn show_feature_importances() -> Result<(), Box<dyn Error>> {
+    // Informative features: 0, 1, 2. Noise features: 3, 4, 5.
+    let x: Vec<Vec<f64>> = (0..200)
+        .map(|i| {
+            let v = (i as f64) * 0.1;
+            vec![v.sin(), v.cos(), v * 0.05, 0.0, 0.0, 0.0]
+        })
+        .collect();
+    let y: Vec<f64> = x
+        .iter()
+        .map(|r| r[0] * 3.0 - r[1] * 1.5 + r[2] * 0.8)
+        .collect();
+
+    let table = Table::with_options(x.clone(), y.clone(), 0, NumericBins::Auto)?;
+
+    let dt = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Dt,
+            task: Task::Regression,
+            tree_type: TreeType::Cart,
+            ..TrainConfig::default()
+        },
+    )?;
+    let rf = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Rf,
+            task: Task::Regression,
+            n_trees: Some(50),
+            seed: Some(0),
+            ..TrainConfig::default()
+        },
+    )?;
+    let gbm = train(
+        &table,
+        TrainConfig {
+            algorithm: TrainAlgorithm::Gbm,
+            task: Task::Regression,
+            n_trees: Some(50),
+            learning_rate: Some(0.1),
+            seed: Some(0),
+            ..TrainConfig::default()
+        },
+    )?;
+
+    print_section("Feature Importances (MDI)");
+    for (label, model) in [("dt ", &dt), ("rf ", &rf), ("gbm", &gbm)] {
+        let imp = model.feature_importances();
+        let top = imp
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i);
+        println!("{label} importances -> {imp:.4?}");
+        println!("    top feature  -> {top:?}");
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     show_regression_models()?;
     show_classification_models()?;
@@ -487,5 +738,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     show_optimal_builder()?;
     show_missing_value_routing()?;
     show_serialization()?;
+    show_random_forests()?;
+    show_gradient_boosting()?;
+    show_sample_weights()?;
+    show_multi_target()?;
+    show_feature_importances()?;
     Ok(())
 }
