@@ -1,6 +1,6 @@
 [package]
 name = "forestfire-core"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/wsperat/forest-fire"
@@ -12,7 +12,7 @@ polars = ["dep:polars"]
 
 [dependencies]
 arrow.workspace = true
-forestfire-data = { version = "0.5.3", path = "../data" }
+forestfire-data = { version = "0.6.0", path = "../data" }
 num_cpus.workspace = true
 rand.workspace = true
 polars = { version = "0.46", optional = true, default-features = false, features = ["lazy"] }
