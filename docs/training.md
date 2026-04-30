@@ -438,8 +438,8 @@ the tree.
 
 ### The active-node frontier
 
-Standard second-order CART and randomized trees now grow with an active-node
-frontier instead of depth-first recursion.
+CART and randomized trees — regression, classification, and gradient boosting
+alike — now grow with an active-node frontier instead of depth-first recursion.
 
 The frontier is simply the set of nodes at the current depth that are still
 eligible to split.
@@ -480,8 +480,8 @@ That separation is the architectural point of the frontier:
   occupy contiguous ranges"
 - child creation is "record those new ranges as the next active frontier"
 
-The standard second-order path now uses that boundary in three explicit phases
-for each depth:
+The standard CART/randomized path now uses that boundary in three explicit
+phases for each depth:
 
 1. evaluate the current frontier in parallel
 2. partition row ranges for the nodes that actually split in parallel across
@@ -489,8 +489,8 @@ for each depth:
 3. build child histograms for the next frontier in parallel
 
 That means the frontier is no longer only a structural preparation for future
-parallelism. It is now the execution model used by the standard second-order
-builder.
+parallelism. It is now the execution model used by all standard CART/randomized
+builders: regression, classification, and gradient boosting.
 
 ### What is evaluated for each active node
 
@@ -531,7 +531,7 @@ That keeps the in-place row-buffer model intact while allowing non-overlapping
 partitions to run concurrently.
 
 Oblique splitting now participates in that same frontier flow for standard
-second-order `cart` and `randomized` boosting trees.
+`cart` and `randomized` trees across all learner families.
 
 In that mode:
 
@@ -572,8 +572,8 @@ splitting nodes.
 
 ### Why the frontier matters for parallelism
 
-The frontier now provides both the execution boundary and part of the actual
-parallel work for standard second-order trees.
+The frontier provides both the execution boundary and the actual parallel work
+for all standard CART/randomized trees.
 
 Without a frontier, same-depth siblings are entangled with mutation order:
 
@@ -597,7 +597,7 @@ view of the current row ownership. That makes several future steps much cleaner:
   partitioning
 - postponing row partitioning until after split selection is complete
 
-The stage loop of gradient boosting still remains serial. The frontier only
+For gradient boosting, the stage loop still remains serial. The frontier only
 changes the work inside one stage’s tree fit.
 
 That is the intended balance:
@@ -610,15 +610,14 @@ That is the intended balance:
 Oblivious second-order trees were already level-wise by construction because
 every node at a given depth shares the same feature/threshold pair.
 
-The active-node frontier brings the standard CART/randomized second-order path
-closer to that same batching style, but without changing the standard-tree
-semantics:
+The active-node frontier brings all standard CART/randomized paths closer to
+that same batching style, but without changing the standard-tree semantics:
 
 - standard trees still choose splits independently per node
 - oblivious trees still choose one shared split per depth
 
-What they now share is the important scheduling idea that depth-level work can
-be evaluated as a batch before the next level is created.
+What they share is the key scheduling idea that depth-level work can be
+evaluated as a batch before the next level is created.
 
 ## Training optimizations
 
@@ -636,10 +635,11 @@ ForestFire training is optimized around a compact binned core and shared row-ind
 - CART/randomized classification and mean-regression builders reuse parent histograms and derive sibling histograms by subtraction
 - oblivious split scoring reuses cached per-leaf counts or `sum`/`sum_sq`
 - random forests parallelize across trees while limiting intra-tree parallelism
-- standard second-order CART/randomized trees now grow through a level-wise
-  active-node frontier, with parallel frontier evaluation, feature-parallel
-  split scoring, parallel row partitioning over disjoint slices, and parallel
-  child-histogram construction separated by explicit frontier phases
+- all standard CART/randomized trees (regression, classification, and
+  gradient boosting) now grow through a level-wise active-node frontier, with
+  parallel frontier evaluation, feature-parallel split scoring, parallel row
+  partitioning over disjoint slices, and parallel child-histogram construction
+  separated by explicit frontier phases
 - binary sparse inputs stay sparse through training and inference
 - classifier, regressor, and second-order tree builders now share the same core
   histogram/partitioning/randomization helpers instead of carrying separate

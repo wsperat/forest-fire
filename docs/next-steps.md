@@ -8,78 +8,41 @@ place instead of scattering them across otherwise stable reference pages.
 
 ## Gradient boosting parallelism
 
-One of the clearest remaining training gaps is gradient-boosting parallelism.
-
 Random forests parallelize naturally across trees, but boosting does not. Each
 stage depends on the current ensemble state, so the outer training loop is
-inherently sequential. The practical way to improve GBM CPU, and eventually GPU,
-utilization is to make each individual tree fit much more parallel internally.
+inherently sequential. The strategy is to keep the stage loop serial while
+making the work inside each stage aggressively parallel — the same approach
+used by XGBoost, LightGBM, and CatBoost.
 
-The implementation plan should be staged rather than treated as one large
-rewrite:
+### What is in place
 
-1. Keep the boosting stage loop serial, but make one second-order tree fit more
-   parallel internally.
-2. Separate node evaluation from row-buffer mutation so active nodes can be
-   evaluated in batches at one depth.
-3. Make histogram construction and split scoring parallel across features and
-   then across batches of active nodes.
-4. Only after those pieces are stable, parallelize row partitioning and add
-   more aggressive SIMD work in the histogram hot path.
+The two-level rayon work-stealing approach is implemented across all binary tree
+families (second-order, regression, and classification CART/randomized):
 
-The highest-value technical milestones are:
+- **Active-node frontier**: a whole depth is evaluated before any node
+  partitions the shared row-index buffer, so node evaluation is pure read-only
+  and can run in parallel without coordination.
+- **Two-level parallelism**: frontier evaluation runs node-parallel across all
+  nodes at a given depth while, simultaneously, each node's split scoring runs
+  feature-parallel within the same rayon pool via work-stealing. All threads
+  stay busy even at shallow depths where the frontier is small.
+- **Parallel row partitioning**: once split choices are fixed, disjoint
+  row-buffer slices are partitioned in parallel across all splitting nodes.
+- **Histogram subtraction**: the smaller child is built fresh; the larger child
+  is derived by subtracting the smaller from the parent, halving histogram
+  construction work.
+- **Parallel histogram building**: thread-local accumulators with a reduction
+  step, usable both at the node level and feature level.
 
-- parallel histogram building with thread-local `count` / gradient / Hessian
-  accumulators and a reduction step
-- parallel split search across features once those histograms exist
-- continued histogram subtraction so one child can be derived from the parent
-  and its sibling instead of being rebuilt
-- level-wise batching of active nodes where that is compatible with the tree
-  family
-- parallel row-index partitioning once the winning split has been chosen
+Measured regression RF speedup on 12 CPUs is 6–8× depending on dataset width
+and tree count (see the RF section below for the full table).
+
+### Remaining work
+
 - SIMD-friendly accumulation in the histogram hot path
-
-The most important implementation detail is to separate stage-level seriality
-from node-level parallelism:
-
-- the boosting stage loop stays serial
-- the work inside one stage should be aggressively parallel
-
-That is the basic strategy used by systems like XGBoost, LightGBM, and
-CatBoost. In practice, the first two steps above, histogram building and
-feature-parallel split scoring, are likely to deliver the biggest visible gain.
-
-A substantial portion of that plan is now in place:
-
-- the second-order tree path has an explicit “evaluate one node” step separate
-  from the recursive child-building step, which is the structural prerequisite
-  for level-wise active-node batching
-- standard second-order CART/randomized trees now use an active-node frontier,
-  so a whole depth is evaluated before any node at that depth partitions the
-  shared row-index buffer
-- same-depth frontier evaluation runs in parallel across all nodes at a given
-  depth and, simultaneously, each node's split scoring runs feature-parallel
-  within the same rayon thread pool via nested work-stealing
-- same-depth row partitioning runs in parallel across disjoint row-buffer
-  slices after split choices have been fixed
-- child histogram construction for the next frontier runs node-parallel across
-  all splitting nodes, with each node's smaller child built feature-parallel
-  and the larger child derived by subtraction from the parent histogram
-- second-order histogram construction has a parallel-capable shared helper
-  used across the histogram and split-scoring hot paths
-
-The two-level approach — node-parallel outer loop with feature-parallel inner
-operations, all sharing a single rayon thread pool via work-stealing — keeps
-all available threads busy at every depth, including early depths where the
-frontier is small.
-
-The remaining concrete implementation steps are:
-
-- add more aggressive SIMD work in histogram accumulation and reduction hot
-  paths
-- profile whether the gradient / hessian recomputation and prediction-update
-  steps per stage are a meaningful fraction of wall time on large datasets, and
-  parallelize those if so
+- Profile whether gradient / hessian recomputation and prediction-update steps
+  per boosting stage are a meaningful fraction of wall time on large datasets,
+  and parallelize those if so
 
 ## Experimental alternatives to second-order leaf optimization
 
@@ -286,17 +249,19 @@ The baseline should remain explicit:
 - `GreedyBuilder` stays the default and the main speed baseline
 - stronger builders should begin as clearly experimental alternatives
 
-### 15. Refactor the tree-construction interface
+### 15. Tree-construction interface
 
-- the tree-construction interface is now pluggable instead of hard-coded to
-  greedy search
-- the current public builders are:
-  - `GreedyBuilder`
-  - `LookaheadBuilder`
-  - `BeamSearchBuilder`
-- next builder families still worth exploring:
-  - `RefinementBuilder`
-  - `OptimalTreeBuilder`
+The tree-construction interface is pluggable. The current builders are:
+
+- `GreedyBuilder` — default; single-pass split selection by immediate gain
+- `LookaheadBuilder` — re-scores the top-K axis candidates with bounded future
+  expansion; see 15.1
+- `BeamSearchBuilder` — width-limited continuation search; see 15.2
+- `OptimalBuilder` — exhaustive search to max depth; see 15.4
+
+Next builder families worth exploring:
+
+- `RefinementBuilder` — post-build node-by-node re-optimization; see 15.3
 
 ### 15.1 Lookahead
 
@@ -342,15 +307,19 @@ The baseline should remain explicit:
 - recompute leaf weights after each accepted change
 - stop after a fixed number of passes or when no more improvement is found
 
-### 15.4 Optimal or near-optimal shallow search
+### 15.4 Optimal builder
 
-- add a shallow-tree experimental mode using branch-and-bound or dynamic
-  programming style search
-- restrict the first version to:
-  - small depth
-  - small feature subsets
-- add a time-budgeted anytime mode
-- compare directly against greedy and lookahead builders
+`OptimalBuilder` is implemented: it scores all feature candidates and
+recursively re-scores to `max_depth`, selecting the globally best subtree
+at each node. It is correct but expensive — cost grows exponentially with
+depth, so it is most useful for shallow trees or small feature sets.
+
+Next work:
+
+- add a time-budgeted anytime mode that stops early if a wall-clock limit
+  is hit and falls back to the best candidate found so far
+- benchmark quality vs wall-clock tradeoff against lookahead and beam search
+  at matched depth limits
 
 ### 15.5 Evaluation
 
