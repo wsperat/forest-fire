@@ -1646,7 +1646,7 @@ fn append_binary_regressor_node(
             feature_index,
             threshold_bin,
             missing_direction,
-            missing_value,
+            missing_values,
             left_child,
             right_child,
             ..
@@ -1706,7 +1706,9 @@ fn append_binary_regressor_node(
                             }),
                             None,
                         ),
-                        tree::shared::MissingBranchDirection::Node => (None, Some(*missing_value)),
+                        tree::shared::MissingBranchDirection::Node => {
+                            (None, Some(missing_values[0]))
+                        }
                     }
                 } else {
                     (None, None)
@@ -1727,7 +1729,7 @@ fn append_binary_regressor_node(
             weights,
             missing_directions,
             threshold,
-            missing_value,
+            missing_values,
             left_child,
             right_child,
             ..
@@ -1776,7 +1778,7 @@ fn append_binary_regressor_node(
                 threshold: *threshold,
                 jump_index,
                 jump_if_greater,
-                missing_value: *missing_value,
+                missing_value: missing_values[0],
             };
         }
         tree::regressor::RegressionNode::MultiTargetLeaf { values, .. } => {

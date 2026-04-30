@@ -163,7 +163,7 @@ pub(crate) enum RegressionNode {
         feature_index: usize,
         threshold_bin: u16,
         missing_direction: MissingBranchDirection,
-        missing_value: f64,
+        missing_values: Vec<f64>,
         left_child: usize,
         right_child: usize,
         sample_count: usize,
@@ -176,7 +176,7 @@ pub(crate) enum RegressionNode {
         weights: Vec<f64>,
         missing_directions: Vec<MissingBranchDirection>,
         threshold: f64,
-        missing_value: f64,
+        missing_values: Vec<f64>,
         left_child: usize,
         right_child: usize,
         sample_count: usize,
@@ -552,7 +552,7 @@ impl DecisionTreeRegressor {
                             feature_index,
                             threshold_bin,
                             missing_direction,
-                            missing_value,
+                            missing_values,
                             left_child,
                             right_child,
                             ..
@@ -565,7 +565,7 @@ impl DecisionTreeRegressor {
                                     MissingBranchDirection::Right => {
                                         node_index = *right_child;
                                     }
-                                    MissingBranchDirection::Node => return *missing_value,
+                                    MissingBranchDirection::Node => return missing_values[0],
                                 }
                                 continue;
                             }
@@ -581,7 +581,7 @@ impl DecisionTreeRegressor {
                             weights,
                             missing_directions,
                             threshold,
-                            missing_value,
+                            missing_values,
                             left_child,
                             right_child,
                             ..
@@ -600,7 +600,7 @@ impl DecisionTreeRegressor {
                                 continue;
                             }
                             if missing_mask != 0 {
-                                return *missing_value;
+                                return missing_values[0];
                             }
                             let projection = weights
                                 .iter()
@@ -649,7 +649,7 @@ impl DecisionTreeRegressor {
                             feature_index,
                             threshold_bin,
                             missing_direction,
-                            missing_value,
+                            missing_values,
                             left_child,
                             right_child,
                             ..
@@ -662,7 +662,7 @@ impl DecisionTreeRegressor {
                                     MissingBranchDirection::Right => {
                                         node_index = *right_child;
                                     }
-                                    MissingBranchDirection::Node => return vec![*missing_value],
+                                    MissingBranchDirection::Node => return missing_values.clone(),
                                 }
                                 continue;
                             }
@@ -678,7 +678,7 @@ impl DecisionTreeRegressor {
                             weights,
                             missing_directions,
                             threshold,
-                            missing_value,
+                            missing_values,
                             left_child,
                             right_child,
                             ..
@@ -697,7 +697,7 @@ impl DecisionTreeRegressor {
                                 continue;
                             }
                             if missing_mask != 0 {
-                                return vec![*missing_value];
+                                return missing_values.clone();
                             }
                             let projection = weights
                                 .iter()
@@ -834,7 +834,7 @@ impl DecisionTreeRegressor {
                                 feature_index,
                                 threshold_bin,
                                 missing_direction,
-                                missing_value: _,
+                                missing_values: _,
                                 left_child,
                                 right_child,
                                 sample_count,
@@ -1295,7 +1295,7 @@ fn build_binary_node_in_place_with_hist(
                         feature_index: best_split.feature_index,
                         threshold_bin: best_split.threshold_bin,
                         missing_direction: best_split.missing_direction,
-                        missing_value: leaf_value,
+                        missing_values: vec![leaf_value],
                         left_child,
                         right_child,
                         sample_count: rows.len(),
@@ -1308,7 +1308,7 @@ fn build_binary_node_in_place_with_hist(
                         weights: best_split.weights,
                         missing_directions: best_split.missing_directions,
                         threshold: best_split.threshold,
-                        missing_value: leaf_value,
+                        missing_values: vec![leaf_value],
                         left_child,
                         right_child,
                         sample_count: rows.len(),
@@ -2039,62 +2039,92 @@ fn build_multi_target_node_in_place(
         node_seed(context.options.random_seed, depth, rows, 0xA11C_E5E1u64),
     );
 
-    // Score each feature by summing gains across all target columns.
+    // Score each feature by evaluating the combined gain across all targets at
+    // each candidate threshold, so the score and applied threshold are always
+    // for the same split point.
     let best_split = feature_indices
         .iter()
         .filter_map(|&feature_index| {
-            // Sum scores across targets; use histogram fast path for each.
-            let combined_score: Option<BinarySplitChoice> = {
-                let mut total_score = 0.0;
-                let mut best_choice: Option<BinarySplitChoice> = None;
-                for hists in &all_hists {
-                    let hist = &hists[feature_index];
-                    // We only use axis-aligned Mean criterion here.
-                    let choice = match hist {
-                        RegressionFeatureHistogram::Binary {
+            let first_hist = &all_hists[0][feature_index];
+            match first_hist {
+                RegressionFeatureHistogram::Binary {
+                    false_bin,
+                    true_bin,
+                    missing_bin,
+                } if missing_bin.count == 0.0 => {
+                    // Binary features have a single threshold, so summing each
+                    // target's gain at that threshold is already consistent.
+                    let mut total_score = 0.0;
+                    let mut any_valid = false;
+                    for hists in &all_hists {
+                        if let RegressionFeatureHistogram::Binary {
                             false_bin,
                             true_bin,
                             missing_bin,
-                        } if missing_bin.count == 0.0 => score_binary_split_choice_mean_from_stats(
-                            context,
-                            feature_index,
-                            false_bin.count,
-                            false_bin.sum,
-                            false_bin.sum_sq,
-                            true_bin.count,
-                            true_bin.sum,
-                            true_bin.sum_sq,
-                        ),
-                        RegressionFeatureHistogram::Numeric {
-                            bins,
-                            observed_bins,
-                        } if bins
-                            .get(context.table.numeric_bin_cap())
-                            .is_none_or(|mb| mb.count == 0.0) =>
+                        } = &hists[feature_index]
                         {
-                            score_numeric_split_choice_mean_from_hist(
+                            if missing_bin.count != 0.0 {
+                                return None;
+                            }
+                            if let Some(c) = score_binary_split_choice_mean_from_stats(
                                 context,
                                 feature_index,
-                                bins.iter().map(|b| b.count).sum::<f64>(),
-                                bins,
-                                observed_bins,
-                            )
-                        }
-                        _ => None,
-                    };
-                    if let Some(c) = choice {
-                        total_score += c.score;
-                        if best_choice.is_none() {
-                            best_choice = Some(c);
+                                false_bin.count,
+                                false_bin.sum,
+                                false_bin.sum_sq,
+                                true_bin.count,
+                                true_bin.sum,
+                                true_bin.sum_sq,
+                            ) {
+                                total_score += c.score;
+                                any_valid = true;
+                            }
                         }
                     }
+                    if any_valid && total_score > 0.0 {
+                        Some(BinarySplitChoice {
+                            feature_index,
+                            threshold_bin: 0,
+                            score: total_score,
+                            missing_direction: MissingBranchDirection::Node,
+                        })
+                    } else {
+                        None
+                    }
                 }
-                best_choice.map(|c| BinarySplitChoice {
-                    score: total_score,
-                    ..c
-                })
-            };
-            combined_score
+                RegressionFeatureHistogram::Numeric {
+                    bins,
+                    observed_bins,
+                } if bins
+                    .get(context.table.numeric_bin_cap())
+                    .is_none_or(|mb| mb.count == 0.0) =>
+                {
+                    // Collect the bins slice for every target, then find the
+                    // threshold that maximises the combined gain in one pass.
+                    let target_bins: Vec<&[RegressionHistogramBin]> = all_hists
+                        .iter()
+                        .filter_map(|hists| {
+                            if let RegressionFeatureHistogram::Numeric { bins, .. } =
+                                &hists[feature_index]
+                            {
+                                Some(bins.as_slice())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if target_bins.len() != all_hists.len() {
+                        return None;
+                    }
+                    score_multi_target_numeric_split_combined(
+                        context,
+                        feature_index,
+                        &target_bins,
+                        observed_bins,
+                    )
+                }
+                _ => None,
+            }
         })
         .filter(|c| c.score > 0.0)
         .max_by(|a, b| a.score.total_cmp(&b.score));
@@ -2131,7 +2161,7 @@ fn build_multi_target_node_in_place(
                     feature_index: split.feature_index,
                     threshold_bin: split.threshold_bin,
                     missing_direction: split.missing_direction,
-                    missing_value: leaf_values[0],
+                    missing_values: leaf_values.clone(),
                     left_child,
                     right_child,
                     sample_count,
@@ -3327,6 +3357,79 @@ fn score_binary_split_choice_mean_from_stats(
     })
 }
 
+/// Score a numeric feature by evaluating each candidate threshold against ALL
+/// target histograms simultaneously, so the chosen threshold and combined gain
+/// are always consistent — the split that is applied is the same one that was
+/// scored.
+fn score_multi_target_numeric_split_combined(
+    context: &BuildContext<'_>,
+    feature_index: usize,
+    target_bins: &[&[RegressionHistogramBin]],
+    observed_bins: &[usize],
+) -> Option<BinarySplitChoice> {
+    if observed_bins.len() <= 1 {
+        return None;
+    }
+    // All targets share the same row weights, so counts are identical across
+    // targets. We use target 0's counts for the min_samples_leaf check.
+    let totals: Vec<(f64, f64, f64)> = target_bins
+        .iter()
+        .map(|bins| {
+            let w = bins.iter().map(|b| b.count).sum::<f64>();
+            let s = bins.iter().map(|b| b.sum).sum::<f64>();
+            let sq = bins.iter().map(|b| b.sum_sq).sum::<f64>();
+            (w, s, sq)
+        })
+        .collect();
+
+    let mut left_counts = vec![0.0_f64; target_bins.len()];
+    let mut left_sums = vec![0.0_f64; target_bins.len()];
+    let mut left_sums_sq = vec![0.0_f64; target_bins.len()];
+    let mut best_threshold = None;
+    let mut best_score = f64::NEG_INFINITY;
+
+    for &bin in observed_bins {
+        for (t, bins) in target_bins.iter().enumerate() {
+            left_counts[t] += bins[bin].count;
+            left_sums[t] += bins[bin].sum;
+            left_sums_sq[t] += bins[bin].sum_sq;
+        }
+        let right_count = totals[0].0 - left_counts[0];
+        if left_counts[0] < context.options.min_samples_leaf as f64
+            || right_count < context.options.min_samples_leaf as f64
+        {
+            continue;
+        }
+        let mut combined_gain = 0.0;
+        for t in 0..target_bins.len() {
+            let (total_w, total_s, total_sq) = totals[t];
+            let lc = left_counts[t];
+            let ls = left_sums[t];
+            let lsq = left_sums_sq[t];
+            let rc = total_w - lc;
+            let rs = total_s - ls;
+            let rsq = total_sq - lsq;
+            let parent_loss = total_sq - (total_s * total_s) / total_w;
+            let left_loss = lsq - (ls * ls) / lc;
+            let right_loss = rsq - (rs * rs) / rc;
+            combined_gain += parent_loss - (left_loss + right_loss);
+        }
+        if combined_gain > best_score {
+            best_score = combined_gain;
+            best_threshold = Some(bin as u16);
+        }
+    }
+
+    best_threshold
+        .filter(|_| best_score > 0.0)
+        .map(|threshold_bin| BinarySplitChoice {
+            feature_index,
+            threshold_bin,
+            score: best_score,
+            missing_direction: MissingBranchDirection::Node,
+        })
+}
+
 fn score_numeric_split_choice_mean_from_hist(
     context: &BuildContext<'_>,
     feature_index: usize,
@@ -4394,7 +4497,7 @@ mod tests {
                             crate::tree::shared::MissingBranchDirection::Right,
                         ],
                         threshold: 1.5,
-                        missing_value: 0.0,
+                        missing_values: vec![0.0],
                         left_child: 0,
                         right_child: 1,
                         sample_count: 4,
@@ -4462,7 +4565,7 @@ mod tests {
                         feature_index: 0,
                         threshold_bin: 0,
                         missing_direction: crate::tree::shared::MissingBranchDirection::Node,
-                        missing_value: -1.0,
+                        missing_values: vec![-1.0],
                         left_child: 0,
                         right_child: 1,
                         sample_count: 5,
@@ -4497,7 +4600,7 @@ mod tests {
                         feature_index: 0,
                         threshold_bin: 0,
                         missing_direction: crate::tree::shared::MissingBranchDirection::Node,
-                        missing_value: -1.0,
+                        missing_values: vec![-1.0],
                         left_child: 0,
                         right_child: 1,
                         sample_count: 5,

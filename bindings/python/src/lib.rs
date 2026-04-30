@@ -2346,19 +2346,32 @@ fn train(
         return Py::new(py, model).map(|obj| obj.into_any());
     }
 
-    let multi_extra_targets = if config.task == Task::Regression {
-        y.and_then(|y_bound| try_extract_multi_target_y(y_bound).transpose())
+    // For multi-target regression, extract all columns first and build the base
+    // Table from the first column only — passing the original 2D y through
+    // build_training_table would hit the single-target extraction path and fail.
+    let (table, string_class_labels, multi_extra_targets) = if config.task == Task::Regression {
+        match y
+            .and_then(|y_bound| try_extract_multi_target_y(y_bound).transpose())
             .transpose()?
-            .filter(|cols| cols.len() > 1)
-            .map(|mut cols| {
-                cols.remove(0);
-                cols
-            })
+        {
+            Some(mut cols) if cols.len() > 1 => {
+                let first_col = cols.remove(0);
+                let extra_targets = cols;
+                let x_rows = extract_matrix(x)?;
+                let tbl = Table::with_options(x_rows, first_col, canaries, parsed_bins).map_err(
+                    |err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()),
+                )?;
+                (tbl, None, Some(extra_targets))
+            }
+            _ => {
+                let (tbl, labels) = build_training_table(x, y, canaries, parsed_bins)?;
+                (tbl, labels, None)
+            }
+        }
     } else {
-        None
+        let (tbl, labels) = build_training_table(x, y, canaries, parsed_bins)?;
+        (tbl, labels, None)
     };
-
-    let (table, string_class_labels) = build_training_table(x, y, canaries, parsed_bins)?;
     let weights = sample_weight
         .map(|w| extract_weights(w, table.n_rows()))
         .transpose()?;
