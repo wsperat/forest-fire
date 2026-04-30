@@ -1,6 +1,6 @@
 [package]
 name = "forestfire-data"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/wsperat/forest-fire"
