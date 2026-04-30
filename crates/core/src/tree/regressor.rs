@@ -2934,14 +2934,6 @@ fn variance(table: &dyn TableAccess, rows: &[usize], targets: &[f64]) -> Option<
     variance_from_stats(total_w, sum, sum_sq)
 }
 
-fn mean(rows: &[usize], targets: &[f64]) -> f64 {
-    if rows.is_empty() {
-        0.0
-    } else {
-        rows.iter().map(|row_idx| targets[*row_idx]).sum::<f64>() / rows.len() as f64
-    }
-}
-
 fn median(rows: &[usize], targets: &[f64]) -> f64 {
     if rows.is_empty() {
         return 0.0;
@@ -2955,16 +2947,6 @@ fn median(rows: &[usize], targets: &[f64]) -> f64 {
     } else {
         values[mid]
     }
-}
-
-fn sum_squared_error(rows: &[usize], targets: &[f64]) -> f64 {
-    let mean = mean(rows, targets);
-    rows.iter()
-        .map(|row_idx| {
-            let diff = targets[*row_idx] - mean;
-            diff * diff
-        })
-        .sum()
 }
 
 fn sum_absolute_error(rows: &[usize], targets: &[f64]) -> f64 {
