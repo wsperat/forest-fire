@@ -49,7 +49,7 @@ That is the basic strategy used by systems like XGBoost, LightGBM, and
 CatBoost. In practice, the first two steps above, histogram building and
 feature-parallel split scoring, are likely to deliver the biggest visible gain.
 
-Some groundwork for that plan is now in place:
+A substantial portion of that plan is now in place:
 
 - the second-order tree path has an explicit “evaluate one node” step separate
   from the recursive child-building step, which is the structural prerequisite
@@ -57,25 +57,29 @@ Some groundwork for that plan is now in place:
 - standard second-order CART/randomized trees now use an active-node frontier,
   so a whole depth is evaluated before any node at that depth partitions the
   shared row-index buffer
-- same-depth frontier evaluation now runs in parallel, so standard
-  second-order trees already batch node work at one depth
-- same-depth row partitioning now also runs in parallel across disjoint
-  row-buffer slices after split choices have been fixed
-- child histogram construction for the next frontier now also runs in parallel
-  across the nodes that split at the current depth
-- second-order histogram construction now has a parallel-capable shared helper
-  instead of forcing the GBM path through a purely sequential per-feature build
+- same-depth frontier evaluation runs in parallel across all nodes at a given
+  depth and, simultaneously, each node's split scoring runs feature-parallel
+  within the same rayon thread pool via nested work-stealing
+- same-depth row partitioning runs in parallel across disjoint row-buffer
+  slices after split choices have been fixed
+- child histogram construction for the next frontier runs node-parallel across
+  all splitting nodes, with each node's smaller child built feature-parallel
+  and the larger child derived by subtraction from the parent histogram
+- second-order histogram construction has a parallel-capable shared helper
+  used across the histogram and split-scoring hot paths
 
-That changes the next concrete implementation step. The structural batching
-boundary now exists and is partially exercised, so the next work should focus
-on pushing it further:
+The two-level approach — node-parallel outer loop with feature-parallel inner
+operations, all sharing a single rayon thread pool via work-stealing — keeps
+all available threads busy at every depth, including early depths where the
+frontier is small.
 
-- reduce overhead in the frontier batch path so same-depth parallelism scales
-  better on larger trees
+The remaining concrete implementation steps are:
+
 - add more aggressive SIMD work in histogram accumulation and reduction hot
   paths
-- profile whether frontier-level work scheduling should become more adaptive on
-  small trees where synchronization overhead can outweigh gains
+- profile whether the gradient / hessian recomputation and prediction-update
+  steps per stage are a meaningful fraction of wall time on large datasets, and
+  parallelize those if so
 
 ## Experimental alternatives to second-order leaf optimization
 

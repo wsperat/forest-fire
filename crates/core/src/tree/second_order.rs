@@ -503,7 +503,13 @@ fn train_standard_structure(
     }];
 
     while !frontier.is_empty() {
-        let evaluations = if context.parallelism.enabled() {
+        // Use node-parallel evaluation whenever there are 2+ nodes and parallelism
+        // is enabled. Each node's split scoring also runs feature-parallel. Rayon's
+        // work-stealing distributes both levels across the same thread pool without
+        // over-subscription, keeping all threads busy even at shallow depths where
+        // the frontier is small.
+        let use_node_parallel_eval = context.parallelism.enabled() && frontier.len() >= 2;
+        let evaluations = if use_node_parallel_eval {
             frontier
                 .into_par_iter()
                 .map(|active| FrontierNodeEvaluation {
@@ -516,6 +522,7 @@ fn train_standard_structure(
                         &rows[active.start..active.end],
                         active.depth,
                         active.histograms,
+                        context.parallelism,
                     ),
                 })
                 .collect::<Vec<_>>()
@@ -532,6 +539,7 @@ fn train_standard_structure(
                         &rows[active.start..active.end],
                         active.depth,
                         active.histograms,
+                        context.parallelism,
                     ),
                 })
                 .collect::<Vec<_>>()
@@ -626,140 +634,101 @@ fn train_standard_structure(
             context.parallelism,
         );
 
-        frontier = if context.parallelism.enabled() {
+        // Use node-parallel child histogram construction whenever there are 2+ splits
+        // and parallelism is enabled. Each node's inner histogram build also uses
+        // feature-level parallelism. Rayon's work-stealing schedules both levels
+        // across the same pool, maximizing utilization at all depths.
+        let use_node_parallel = context.parallelism.enabled() && pending_splits.len() >= 2;
+
+        frontier = if use_node_parallel {
             pending_splits
                 .into_par_iter()
                 .flat_map_iter(|pending| {
-                    let parent_histograms = pending
-                        .evaluation
-                        .histograms
-                        .expect("splittable second-order node must retain histograms");
-                    let left_len = pending.mid - pending.start;
-                    let right_len = pending.end - pending.mid;
-                    let (left_histograms, right_histograms) = if left_len <= right_len {
-                        let left_histograms = build_second_order_feature_histograms(
-                            context.table,
-                            context.gradients,
-                            context.hessians,
-                            &rows[pending.start..pending.mid],
-                            Parallelism::sequential(),
-                        );
-                        let right_histograms =
-                            subtract_feature_histograms(&parent_histograms, &left_histograms);
-                        (left_histograms, right_histograms)
-                    } else {
-                        let right_histograms = build_second_order_feature_histograms(
-                            context.table,
-                            context.gradients,
-                            context.hessians,
-                            &rows[pending.mid..pending.end],
-                            Parallelism::sequential(),
-                        );
-                        let left_histograms =
-                            subtract_feature_histograms(&parent_histograms, &right_histograms);
-                        (left_histograms, right_histograms)
-                    };
-                    let left_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { left_child, .. }
-                        | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
-                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
-                            unreachable!("split node must exist")
-                        }
-                    };
-                    let right_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { right_child, .. }
-                        | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
-                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
-                            unreachable!("split node must exist")
-                        }
-                    };
-                    [
-                        ActiveNode {
-                            node_index: left_child,
-                            depth: pending.depth + 1,
-                            start: pending.start,
-                            end: pending.mid,
-                            histograms: Some(left_histograms),
-                        },
-                        ActiveNode {
-                            node_index: right_child,
-                            depth: pending.depth + 1,
-                            start: pending.mid,
-                            end: pending.end,
-                            histograms: Some(right_histograms),
-                        },
-                    ]
+                    child_active_nodes(pending, context, rows, nodes, context.parallelism)
                 })
                 .collect::<Vec<_>>()
         } else {
             pending_splits
                 .into_iter()
                 .flat_map(|pending| {
-                    let parent_histograms = pending
-                        .evaluation
-                        .histograms
-                        .expect("splittable second-order node must retain histograms");
-                    let left_len = pending.mid - pending.start;
-                    let right_len = pending.end - pending.mid;
-                    let (left_histograms, right_histograms) = if left_len <= right_len {
-                        let left_histograms = build_second_order_feature_histograms(
-                            context.table,
-                            context.gradients,
-                            context.hessians,
-                            &rows[pending.start..pending.mid],
-                            Parallelism::sequential(),
-                        );
-                        let right_histograms =
-                            subtract_feature_histograms(&parent_histograms, &left_histograms);
-                        (left_histograms, right_histograms)
-                    } else {
-                        let right_histograms = build_second_order_feature_histograms(
-                            context.table,
-                            context.gradients,
-                            context.hessians,
-                            &rows[pending.mid..pending.end],
-                            Parallelism::sequential(),
-                        );
-                        let left_histograms =
-                            subtract_feature_histograms(&parent_histograms, &right_histograms);
-                        (left_histograms, right_histograms)
-                    };
-                    let left_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { left_child, .. }
-                        | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
-                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
-                            unreachable!("split node must exist")
-                        }
-                    };
-                    let right_child = match &nodes[pending.node_index] {
-                        RegressionNode::BinarySplit { right_child, .. }
-                        | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
-                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
-                            unreachable!("split node must exist")
-                        }
-                    };
-                    [
-                        ActiveNode {
-                            node_index: left_child,
-                            depth: pending.depth + 1,
-                            start: pending.start,
-                            end: pending.mid,
-                            histograms: Some(left_histograms),
-                        },
-                        ActiveNode {
-                            node_index: right_child,
-                            depth: pending.depth + 1,
-                            start: pending.mid,
-                            end: pending.end,
-                            histograms: Some(right_histograms),
-                        },
-                    ]
+                    child_active_nodes(pending, context, rows, nodes, context.parallelism)
                 })
                 .collect::<Vec<_>>()
         };
     }
 
     root
+}
+
+/// Build the two child [`ActiveNode`]s produced by a split decision.
+///
+/// Builds the smaller child's histograms from scratch (using `hist_par` to
+/// control feature-level parallelism) and derives the larger child's histograms
+/// by subtracting from the parent.
+fn child_active_nodes(
+    pending: PendingSplit,
+    context: &BuildContext<'_>,
+    rows: &[usize],
+    nodes: &[RegressionNode],
+    hist_par: Parallelism,
+) -> [ActiveNode; 2] {
+    let parent_histograms = pending
+        .evaluation
+        .histograms
+        .expect("splittable second-order node must retain histograms");
+    let left_len = pending.mid - pending.start;
+    let right_len = pending.end - pending.mid;
+    let (left_histograms, right_histograms) = if left_len <= right_len {
+        let left_histograms = build_second_order_feature_histograms(
+            context.table,
+            context.gradients,
+            context.hessians,
+            &rows[pending.start..pending.mid],
+            hist_par,
+        );
+        let right_histograms = subtract_feature_histograms(&parent_histograms, &left_histograms);
+        (left_histograms, right_histograms)
+    } else {
+        let right_histograms = build_second_order_feature_histograms(
+            context.table,
+            context.gradients,
+            context.hessians,
+            &rows[pending.mid..pending.end],
+            hist_par,
+        );
+        let left_histograms = subtract_feature_histograms(&parent_histograms, &right_histograms);
+        (left_histograms, right_histograms)
+    };
+    let left_child = match &nodes[pending.node_index] {
+        RegressionNode::BinarySplit { left_child, .. }
+        | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
+        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+            unreachable!("split node must exist")
+        }
+    };
+    let right_child = match &nodes[pending.node_index] {
+        RegressionNode::BinarySplit { right_child, .. }
+        | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
+        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+            unreachable!("split node must exist")
+        }
+    };
+    [
+        ActiveNode {
+            node_index: left_child,
+            depth: pending.depth + 1,
+            start: pending.start,
+            end: pending.mid,
+            histograms: Some(left_histograms),
+        },
+        ActiveNode {
+            node_index: right_child,
+            depth: pending.depth + 1,
+            start: pending.mid,
+            end: pending.end,
+            histograms: Some(right_histograms),
+        },
+    ]
 }
 
 fn train_oblivious_structure(
@@ -1014,6 +983,7 @@ fn evaluate_standard_node(
     rows: &[usize],
     depth: usize,
     histograms: Option<Vec<SecondOrderFeatureHistogram>>,
+    scoring_par: Parallelism,
 ) -> StandardNodeEvaluation {
     let stats = node_stats(rows, context.gradients, context.hessians);
     let leaf_prediction = leaf_value(
@@ -1062,7 +1032,7 @@ fn evaluate_standard_node(
             0xA11C_E5E1u64,
         ),
     );
-    let split_candidates = if context.parallelism.enabled() {
+    let split_candidates = if scoring_par.enabled() {
         feature_indices
             .par_iter()
             .filter_map(|feature_index| {
