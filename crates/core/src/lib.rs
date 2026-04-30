@@ -94,6 +94,7 @@ pub(crate) use inference_input::InferenceTable;
 pub(crate) use inference_input::ProjectedTableView;
 #[cfg(feature = "polars")]
 pub(crate) use inference_input::polars_named_columns;
+pub(crate) use introspection::feature_importances;
 pub(crate) use introspection::prediction_value_stats;
 pub(crate) use introspection::tree_structure_summary;
 pub(crate) use optimized_runtime::InferenceExecutor;

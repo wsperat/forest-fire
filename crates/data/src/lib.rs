@@ -42,6 +42,10 @@ pub trait TableAccess: Sync {
     fn is_binary_binned_feature(&self, index: usize) -> bool;
     fn target_value(&self, row_index: usize) -> f64;
 
+    fn sample_weight(&self, _row_index: usize) -> f64 {
+        1.0
+    }
+
     fn is_canary_binned_feature(&self, index: usize) -> bool {
         matches!(
             self.binned_column_kind(index),
@@ -1281,6 +1285,68 @@ fn shuffle_sparse_binary_column(
             .enumerate()
             .filter_map(|(row_idx, value)| value.then_some(row_idx))
             .collect(),
+    }
+}
+
+/// Table view that attaches per-row sample weights to any existing table.
+///
+/// All structural methods delegate directly to the base table. Only
+/// `sample_weight` is overridden to return the stored weight for each row.
+/// Weights should be non-negative; the training code does not validate them.
+#[derive(Clone)]
+pub struct WeightedTable<'a> {
+    base: &'a dyn TableAccess,
+    weights: Vec<f64>,
+}
+
+impl<'a> WeightedTable<'a> {
+    pub fn new(base: &'a dyn TableAccess, weights: Vec<f64>) -> Self {
+        Self { base, weights }
+    }
+}
+
+impl TableAccess for WeightedTable<'_> {
+    fn n_rows(&self) -> usize {
+        self.base.n_rows()
+    }
+    fn n_features(&self) -> usize {
+        self.base.n_features()
+    }
+    fn canaries(&self) -> usize {
+        self.base.canaries()
+    }
+    fn numeric_bin_cap(&self) -> usize {
+        self.base.numeric_bin_cap()
+    }
+    fn binned_feature_count(&self) -> usize {
+        self.base.binned_feature_count()
+    }
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        self.base.feature_value(feature_index, row_index)
+    }
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base.is_missing(feature_index, row_index)
+    }
+    fn is_binary_feature(&self, index: usize) -> bool {
+        self.base.is_binary_feature(index)
+    }
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        self.base.binned_value(feature_index, row_index)
+    }
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        self.base.binned_boolean_value(feature_index, row_index)
+    }
+    fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        self.base.binned_column_kind(index)
+    }
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        self.base.is_binary_binned_feature(index)
+    }
+    fn target_value(&self, row_index: usize) -> f64 {
+        self.base.target_value(row_index)
+    }
+    fn sample_weight(&self, row_index: usize) -> f64 {
+        self.weights[row_index]
     }
 }
 

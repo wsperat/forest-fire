@@ -271,6 +271,10 @@ impl OptimizedModel {
         self.feature_projection.len()
     }
 
+    pub fn feature_importances(&self) -> Vec<f64> {
+        self.source_model.feature_importances()
+    }
+
     pub fn tree_structure(
         &self,
         tree_index: usize,
@@ -739,6 +743,16 @@ impl Model {
 
     pub fn used_feature_count(&self) -> usize {
         self.used_feature_indices().len()
+    }
+
+    /// Mean decrease impurity feature importances, one value per input feature.
+    ///
+    /// Values are non-negative and sum to 1.0. Features that never appear in
+    /// any split have importance 0.0. For ensembles the per-tree normalized
+    /// vectors are averaged.
+    pub fn feature_importances(&self) -> Vec<f64> {
+        let ir = self.to_ir();
+        feature_importances(&ir.model.trees, self.num_features())
     }
 
     pub(crate) fn class_labels(&self) -> Option<Vec<f64>> {

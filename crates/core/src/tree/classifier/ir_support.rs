@@ -1,15 +1,12 @@
 use super::*;
 
-pub(super) fn normalized_class_probabilities(class_counts: &[usize]) -> Vec<f64> {
-    let total = class_counts.iter().sum::<usize>();
-    if total == 0 {
+pub(super) fn normalized_class_probabilities(class_counts: &[f64]) -> Vec<f64> {
+    let total: f64 = class_counts.iter().sum();
+    if total == 0.0 {
         return vec![0.0; class_counts.len()];
     }
 
-    class_counts
-        .iter()
-        .map(|count| *count as f64 / total as f64)
-        .collect()
+    class_counts.iter().map(|count| count / total).collect()
 }
 
 pub(super) fn standard_node_depths(nodes: &[TreeNode], root: usize) -> Vec<usize> {

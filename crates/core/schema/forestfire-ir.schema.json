@@ -744,6 +744,28 @@
         {
           "type": "object",
           "required": [
+            "prediction_kind",
+            "values"
+          ],
+          "properties": {
+            "prediction_kind": {
+              "type": "string",
+              "enum": [
+                "multi_target_regression_value"
+              ]
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
             "class_index",
             "class_value",
             "prediction_kind"
@@ -883,9 +905,8 @@
             "null"
           ],
           "items": {
-            "type": "integer",
-            "format": "uint",
-            "minimum": 0.0
+            "type": "number",
+            "format": "double"
           }
         },
         "gain": {

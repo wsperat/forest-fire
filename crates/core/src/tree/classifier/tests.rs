@@ -618,12 +618,12 @@ fn oblique_classifier_routes_missing_features_independently() {
                 TreeNode::Leaf {
                     class_index: 0,
                     sample_count: 2,
-                    class_counts: vec![2, 0],
+                    class_counts: vec![2.0, 0.0],
                 },
                 TreeNode::Leaf {
                     class_index: 1,
                     sample_count: 2,
-                    class_counts: vec![0, 2],
+                    class_counts: vec![0.0, 2.0],
                 },
                 TreeNode::ObliqueSplit {
                     feature_indices: vec![0, 1],
@@ -638,7 +638,7 @@ fn oblique_classifier_routes_missing_features_independently() {
                     sample_count: 4,
                     impurity: 0.0,
                     gain: 1.0,
-                    class_counts: vec![2, 2],
+                    class_counts: vec![2.0, 2.0],
                 },
             ],
             root: 2,
@@ -692,12 +692,12 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::Leaf {
                     class_index: 0,
                     sample_count: 3,
-                    class_counts: vec![3, 0],
+                    class_counts: vec![3.0, 0.0],
                 },
                 TreeNode::Leaf {
                     class_index: 1,
                     sample_count: 2,
-                    class_counts: vec![0, 2],
+                    class_counts: vec![0.0, 2.0],
                 },
                 TreeNode::MultiwaySplit {
                     feature_index: 1,
@@ -707,7 +707,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.24,
-                    class_counts: vec![3, 2],
+                    class_counts: vec![3.0, 2.0],
                 },
             ],
             root: 2,
@@ -726,12 +726,12 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::Leaf {
                     class_index: 0,
                     sample_count: 3,
-                    class_counts: vec![3, 0],
+                    class_counts: vec![3.0, 0.0],
                 },
                 TreeNode::Leaf {
                     class_index: 1,
                     sample_count: 2,
-                    class_counts: vec![0, 2],
+                    class_counts: vec![0.0, 2.0],
                 },
                 TreeNode::MultiwaySplit {
                     feature_index: 1,
@@ -741,7 +741,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.24,
-                    class_counts: vec![3, 2],
+                    class_counts: vec![3.0, 2.0],
                 },
             ],
             root: 2,
@@ -760,12 +760,12 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::Leaf {
                     class_index: 0,
                     sample_count: 3,
-                    class_counts: vec![3, 0],
+                    class_counts: vec![3.0, 0.0],
                 },
                 TreeNode::Leaf {
                     class_index: 1,
                     sample_count: 2,
-                    class_counts: vec![0, 2],
+                    class_counts: vec![0.0, 2.0],
                 },
                 TreeNode::BinarySplit {
                     feature_index: 0,
@@ -776,7 +776,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.24,
-                    class_counts: vec![3, 2],
+                    class_counts: vec![3.0, 2.0],
                 },
             ],
             root: 2,
@@ -795,12 +795,12 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                 TreeNode::Leaf {
                     class_index: 0,
                     sample_count: 3,
-                    class_counts: vec![3, 0],
+                    class_counts: vec![3.0, 0.0],
                 },
                 TreeNode::Leaf {
                     class_index: 1,
                     sample_count: 2,
-                    class_counts: vec![0, 2],
+                    class_counts: vec![0.0, 2.0],
                 },
                 TreeNode::BinarySplit {
                     feature_index: 0,
@@ -811,7 +811,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
                     sample_count: 5,
                     impurity: 0.48,
                     gain: 0.2,
-                    class_counts: vec![3, 2],
+                    class_counts: vec![3.0, 2.0],
                 },
             ],
             root: 2,
@@ -836,7 +836,7 @@ fn manually_built_classifier_models_serialize_for_each_tree_type() {
             }],
             leaf_class_indices: vec![0, 1],
             leaf_sample_counts: vec![2, 2],
-            leaf_class_counts: vec![vec![2, 0], vec![0, 2]],
+            leaf_class_counts: vec![vec![2.0, 0.0], vec![0.0, 2.0]],
         },
         options,
         num_features: 2,

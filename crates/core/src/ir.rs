@@ -210,6 +210,9 @@ pub enum LeafPayload {
     RegressionValue {
         value: f64,
     },
+    MultiTargetRegressionValue {
+        values: Vec<f64>,
+    },
     ClassIndex {
         class_index: usize,
         class_value: f64,
@@ -441,7 +444,7 @@ pub struct NodeStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gain: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub class_counts: Option<Vec<usize>>,
+    pub class_counts: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variance: Option<f64>,
 }
@@ -1185,9 +1188,11 @@ fn classifier_class_index(leaf: &LeafPayload, class_labels: &[f64]) -> Result<us
             }
             Ok(*class_index)
         }
-        LeafPayload::RegressionValue { .. } => Err(IrError::InvalidLeaf(
-            "expected class_index leaf".to_string(),
-        )),
+        LeafPayload::RegressionValue { .. } | LeafPayload::MultiTargetRegressionValue { .. } => {
+            Err(IrError::InvalidLeaf(
+                "expected class_index leaf".to_string(),
+            ))
+        }
     }
 }
 
@@ -1213,7 +1218,7 @@ fn rebuild_classifier_nodes(
                         sample_count: stats.sample_count,
                         class_counts: stats
                             .class_counts
-                            .unwrap_or_else(|| vec![0; class_labels.len()]),
+                            .unwrap_or_else(|| vec![0.0; class_labels.len()]),
                     },
                 )?;
             }
@@ -1242,7 +1247,7 @@ fn rebuild_classifier_nodes(
                             gain: stats.gain.unwrap_or(0.0),
                             class_counts: stats
                                 .class_counts
-                                .unwrap_or_else(|| vec![0; class_labels.len()]),
+                                .unwrap_or_else(|| vec![0.0; class_labels.len()]),
                         },
                     )?;
                 }
@@ -1267,7 +1272,7 @@ fn rebuild_classifier_nodes(
                             gain: stats.gain.unwrap_or(0.0),
                             class_counts: stats
                                 .class_counts
-                                .unwrap_or_else(|| vec![0; class_labels.len()]),
+                                .unwrap_or_else(|| vec![0.0; class_labels.len()]),
                         },
                     )?;
                 }
@@ -1297,7 +1302,7 @@ fn rebuild_classifier_nodes(
                         gain: stats.gain.unwrap_or(0.0),
                         class_counts: stats
                             .class_counts
-                            .unwrap_or_else(|| vec![0; class_labels.len()]),
+                            .unwrap_or_else(|| vec![0.0; class_labels.len()]),
                     },
                 )?;
             }
@@ -1471,7 +1476,7 @@ fn rebuild_regressor_leaf_values(leaves: Vec<IndexedLeaf>) -> Result<Vec<f64>, I
     for indexed_leaf in leaves {
         let value = match indexed_leaf.leaf {
             LeafPayload::RegressionValue { value } => value,
-            LeafPayload::ClassIndex { .. } => {
+            LeafPayload::ClassIndex { .. } | LeafPayload::MultiTargetRegressionValue { .. } => {
                 return Err(IrError::InvalidLeaf(
                     "regression oblivious leaves require regression_value".to_string(),
                 ));
@@ -1509,7 +1514,7 @@ fn rebuild_leaf_variances(leaves: &[IndexedLeaf]) -> Result<Vec<Option<f64>>, Ir
 fn rebuild_classifier_leaf_class_counts(
     leaves: &[IndexedLeaf],
     num_classes: usize,
-) -> Result<Vec<Vec<usize>>, IrError> {
+) -> Result<Vec<Vec<f64>>, IrError> {
     let mut rebuilt = vec![None; leaves.len()];
     for indexed_leaf in leaves {
         assign_node(
@@ -1519,7 +1524,7 @@ fn rebuild_classifier_leaf_class_counts(
                 .stats
                 .class_counts
                 .clone()
-                .unwrap_or_else(|| vec![0; num_classes]),
+                .unwrap_or_else(|| vec![0.0; num_classes]),
         )?;
     }
     collect_nodes(rebuilt)

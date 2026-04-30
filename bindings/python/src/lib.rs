@@ -14,7 +14,9 @@ use forestfire_core::{
     MissingValueStrategy, MissingValueStrategyConfig, Model, OptimizedModel as CoreOptimizedModel,
     SplitStrategy, Task, TrainAlgorithm, TrainConfig, TreeType, categorical, train as train_model,
 };
-use forestfire_data::{MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind};
+use forestfire_data::{
+    MAX_NUMERIC_BINS, NumericBins, Table, TableAccess, TableKind, WeightedTable,
+};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::types::{PyBytes, PyDict, PyType};
 use pyo3::{Bound, prelude::*};
@@ -77,7 +79,7 @@ struct TreeDataFrameRow {
     impurity: Option<f64>,
     gain: Option<f64>,
     variance: Option<f64>,
-    class_counts: Option<Vec<usize>>,
+    class_counts: Option<Vec<f64>>,
 }
 
 fn table_kind_name(kind: TableKind) -> &'static str {
@@ -1641,6 +1643,30 @@ fn extract_vector(y: &Bound<PyAny>) -> PyResult<Vec<f64>> {
         .collect()
 }
 
+fn extract_weights(w: &Bound<PyAny>, expected_len: usize) -> PyResult<Vec<f64>> {
+    let weights: Vec<f64> = if w.hasattr("tolist")? {
+        w.call_method0("tolist")?.extract()?
+    } else {
+        w.extract()?
+    };
+    if weights.len() != expected_len {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "sample_weight length {} does not match number of rows {}",
+            weights.len(),
+            expected_len,
+        )));
+    }
+    for (i, &w) in weights.iter().enumerate() {
+        if !w.is_finite() || w < 0.0 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "sample_weight[{}] = {} is invalid; weights must be non-negative finite numbers",
+                i, w,
+            )));
+        }
+    }
+    Ok(weights)
+}
+
 fn extract_training_targets(y: &Bound<PyAny>) -> PyResult<TrainingTargets> {
     if y.hasattr("to_pylist")? {
         let as_list = y.call_method0("to_pylist")?;
@@ -2206,6 +2232,7 @@ fn train(
     categorical_strategy: Option<&str>,
     categorical_features: Option<&Bound<PyAny>>,
     target_smoothing: f64,
+    sample_weight: Option<&Bound<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let task_was_auto = task == "auto";
     let resolved_task = resolve_task(x, y, task)?;
@@ -2291,7 +2318,18 @@ fn train(
     }
 
     let (table, string_class_labels) = build_training_table(x, y, canaries, parsed_bins)?;
-    let model = train_model_detached(py, table, config)?;
+    let weights = sample_weight
+        .map(|w| extract_weights(w, table.n_rows()))
+        .transpose()?;
+    let model = if let Some(weights) = weights {
+        py.detach(move || {
+            let weighted = WeightedTable::new(&table, weights);
+            train_model(&weighted, config).map_err(|err| err.to_string())
+        })
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?
+    } else {
+        train_model_detached(py, table, config)?
+    };
     Py::new(
         py,
         PyModel {
@@ -2354,6 +2392,11 @@ impl PyModel {
     #[getter]
     fn used_feature_indices(&self) -> Vec<usize> {
         self.inner.used_feature_indices()
+    }
+
+    #[getter]
+    fn feature_importances_<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.inner.feature_importances())
     }
 
     #[pyo3(signature = (tree_index=0))]
@@ -2739,6 +2782,11 @@ impl PyOptimizedModel {
     #[getter]
     fn used_feature_indices(&self) -> Vec<usize> {
         self.inner.used_feature_indices()
+    }
+
+    #[getter]
+    fn feature_importances_<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.inner.feature_importances())
     }
 
     #[pyo3(signature = (tree_index=0))]

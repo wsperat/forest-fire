@@ -172,7 +172,7 @@ pub(crate) enum TreeStructure {
         splits: Vec<ObliviousSplit>,
         leaf_class_indices: Vec<usize>,
         leaf_sample_counts: Vec<usize>,
-        leaf_class_counts: Vec<Vec<usize>>,
+        leaf_class_counts: Vec<Vec<f64>>,
     },
 }
 
@@ -192,7 +192,7 @@ pub(crate) enum TreeNode {
     Leaf {
         class_index: usize,
         sample_count: usize,
-        class_counts: Vec<usize>,
+        class_counts: Vec<f64>,
     },
     MultiwaySplit {
         feature_index: usize,
@@ -202,7 +202,7 @@ pub(crate) enum TreeNode {
         sample_count: usize,
         impurity: f64,
         gain: f64,
-        class_counts: Vec<usize>,
+        class_counts: Vec<f64>,
     },
     BinarySplit {
         feature_index: usize,
@@ -213,7 +213,7 @@ pub(crate) enum TreeNode {
         sample_count: usize,
         impurity: f64,
         gain: f64,
-        class_counts: Vec<usize>,
+        class_counts: Vec<f64>,
     },
     ObliqueSplit {
         feature_indices: Vec<usize>,
@@ -225,7 +225,7 @@ pub(crate) enum TreeNode {
         sample_count: usize,
         impurity: f64,
         gain: f64,
-        class_counts: Vec<usize>,
+        class_counts: Vec<f64>,
     },
 }
 
@@ -1080,10 +1080,18 @@ fn build_binary_node_in_place_with_hist(
     depth: usize,
     histograms: Option<Vec<ClassificationFeatureHistogram>>,
 ) -> usize {
-    let majority_class_index =
-        majority_class(rows, context.class_indices, context.class_labels.len());
-    let current_class_counts =
-        class_counts(rows, context.class_indices, context.class_labels.len());
+    let majority_class_index = majority_class(
+        context.table,
+        rows,
+        context.class_indices,
+        context.class_labels.len(),
+    );
+    let current_class_counts = class_counts(
+        context.table,
+        rows,
+        context.class_indices,
+        context.class_labels.len(),
+    );
 
     if rows.is_empty()
         || depth >= context.options.max_depth
@@ -1169,8 +1177,9 @@ fn build_binary_node_in_place_with_hist(
 
     match best_split {
         Some(best_split) if best_split.score() > 0.0 => {
+            let total_weight: f64 = current_class_counts.iter().sum();
             let impurity =
-                classification_impurity(&current_class_counts, rows.len(), context.criterion);
+                classification_impurity(&current_class_counts, total_weight, context.criterion);
             let left_count = match &best_split {
                 StandardSplitChoice::Axis(choice) => partition_rows_for_binary_split(
                     context.table,
@@ -1266,7 +1275,7 @@ fn build_binary_node_in_place_with_hist(
 fn score_oblique_split_choices(
     context: &BuildContext<'_>,
     rows: &[usize],
-    parent_counts: &[usize],
+    parent_counts: &[f64],
     axis_candidates: &[BinarySplitChoice],
     candidate_features: &[usize],
 ) -> Vec<StandardSplitChoice> {
@@ -1320,7 +1329,7 @@ fn rank_standard_split_choices(
     context: &BuildContext<'_>,
     rows: &[usize],
     depth: usize,
-    parent_counts: &[usize],
+    parent_counts: &[f64],
     axis_candidates: &[BinarySplitChoice],
     candidate_features: &[usize],
     lookahead_depth: usize,
@@ -1465,8 +1474,12 @@ fn best_standard_split_recursive_score(
         return 0.0;
     }
 
-    let current_class_counts =
-        class_counts(rows, context.class_indices, context.class_labels.len());
+    let current_class_counts = class_counts(
+        context.table,
+        rows,
+        context.class_indices,
+        context.class_labels.len(),
+    );
     let scoring = SplitScoringContext {
         table: context.table,
         class_indices: context.class_indices,
@@ -1535,10 +1548,12 @@ fn best_standard_split_recursive_score(
 fn collect_oblique_classification_candidates(
     context: &BuildContext<'_>,
     rows: &[usize],
-    parent_counts: &[usize],
+    parent_counts: &[f64],
     feature_pairs: &[[usize; 2]],
 ) -> Vec<ObliqueSplitChoice> {
-    let parent_impurity = classification_impurity(parent_counts, rows.len(), context.criterion);
+    let parent_total: f64 = parent_counts.iter().sum();
+    let parent_impurity = classification_impurity(parent_counts, parent_total, context.criterion);
+    let min_samples_leaf = context.options.min_samples_leaf as f64;
     let mut candidates = Vec::new();
     for &feature_pair in feature_pairs {
         let observed_rows = rows
@@ -1582,12 +1597,14 @@ fn collect_oblique_classification_candidates(
             } else {
                 vec![MissingBranchDirection::Left, MissingBranchDirection::Right]
             };
-        let mut left_counts = vec![0usize; context.class_labels.len()];
-        let mut left_size = 0usize;
+        let mut left_counts = vec![0.0f64; context.class_labels.len()];
+        let mut left_size = 0.0f64;
         for split_index in 0..projected.len().saturating_sub(1) {
-            let class_index = context.class_indices[projected[split_index].row_index];
-            left_counts[class_index] += 1;
-            left_size += 1;
+            let row_index = projected[split_index].row_index;
+            let class_index = context.class_indices[row_index];
+            let w = context.table.sample_weight(row_index);
+            left_counts[class_index] += w;
+            left_size += w;
             if projected[split_index].value == projected[split_index + 1].value {
                 continue;
             }
@@ -1602,7 +1619,7 @@ fn collect_oblique_classification_candidates(
                         .zip(left_counts.iter())
                         .map(|(parent, left)| parent - left)
                         .collect::<Vec<_>>();
-                    let mut candidate_right_size = rows.len() - left_size;
+                    let mut candidate_right_size = parent_total - left_size;
                     for mask in [1u8, 2, 3] {
                         let target_rows = &missing_rows_by_mask[mask as usize];
                         if target_rows.is_empty() {
@@ -1615,26 +1632,28 @@ fn collect_oblique_classification_candidates(
                         };
                         for &row_index in target_rows {
                             let class_index = context.class_indices[row_index];
+                            let w = context.table.sample_weight(row_index);
                             if go_left {
-                                candidate_left_counts[class_index] += 1;
-                                candidate_left_size += 1;
-                                candidate_right_counts[class_index] -= 1;
-                                candidate_right_size -= 1;
+                                candidate_left_counts[class_index] += w;
+                                candidate_left_size += w;
+                                candidate_right_counts[class_index] -= w;
+                                candidate_right_size -= w;
                             }
                         }
                     }
-                    if candidate_left_size < context.options.min_samples_leaf
-                        || candidate_right_size < context.options.min_samples_leaf
+                    if candidate_left_size < min_samples_leaf
+                        || candidate_right_size < min_samples_leaf
                     {
                         continue;
                     }
-                    let weighted_impurity = (candidate_left_size as f64 / rows.len() as f64)
+                    let total = candidate_left_size + candidate_right_size;
+                    let weighted_impurity = (candidate_left_size / total)
                         * classification_impurity(
                             &candidate_left_counts,
                             candidate_left_size,
                             context.criterion,
                         )
-                        + (candidate_right_size as f64 / rows.len() as f64)
+                        + (candidate_right_size / total)
                             * classification_impurity(
                                 &candidate_right_counts,
                                 candidate_right_size,
@@ -1717,10 +1736,18 @@ fn build_multiway_node_in_place(
     rows: &mut [usize],
     depth: usize,
 ) -> usize {
-    let majority_class_index =
-        majority_class(rows, context.class_indices, context.class_labels.len());
-    let current_class_counts =
-        class_counts(rows, context.class_indices, context.class_labels.len());
+    let majority_class_index = majority_class(
+        context.table,
+        rows,
+        context.class_indices,
+        context.class_labels.len(),
+    );
+    let current_class_counts = class_counts(
+        context.table,
+        rows,
+        context.class_indices,
+        context.class_labels.len(),
+    );
 
     if rows.is_empty()
         || depth >= context.options.max_depth
@@ -1780,8 +1807,9 @@ fn build_multiway_node_in_place(
 
     match best_split {
         Some(best_split) if best_split.score > 0.0 => {
+            let total_weight: f64 = current_class_counts.iter().sum();
             let impurity =
-                classification_impurity(&current_class_counts, rows.len(), context.criterion);
+                classification_impurity(&current_class_counts, total_weight, context.criterion);
             let branch_ranges = partition_rows_for_multiway_split(
                 context.table,
                 best_split.feature_index,
@@ -2102,24 +2130,39 @@ fn encode_class_labels(
     Ok((class_labels, class_indices))
 }
 
-fn class_counts(rows: &[usize], class_indices: &[usize], num_classes: usize) -> Vec<usize> {
+fn class_counts(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    class_indices: &[usize],
+    num_classes: usize,
+) -> Vec<f64> {
     rows.iter()
-        .fold(vec![0usize; num_classes], |mut counts, row_idx| {
-            counts[class_indices[*row_idx]] += 1;
+        .fold(vec![0.0f64; num_classes], |mut counts, row_idx| {
+            counts[class_indices[*row_idx]] += table.sample_weight(*row_idx);
             counts
         })
 }
 
-fn majority_class(rows: &[usize], class_indices: &[usize], num_classes: usize) -> usize {
-    majority_class_from_counts(&class_counts(rows, class_indices, num_classes))
+fn majority_class(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    class_indices: &[usize],
+    num_classes: usize,
+) -> usize {
+    majority_class_from_counts(&class_counts(table, rows, class_indices, num_classes))
 }
 
-fn majority_class_from_counts(counts: &[usize]) -> usize {
+fn majority_class_from_counts(counts: &[f64]) -> usize {
     counts
         .iter()
         .copied()
         .enumerate()
-        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.0.cmp(&left.0))
+        })
         .map(|(class_index, _count)| class_index)
         .unwrap_or(0)
 }
@@ -2131,30 +2174,30 @@ fn is_pure(rows: &[usize], class_indices: &[usize]) -> bool {
     })
 }
 
-fn entropy(counts: &[usize], total: usize) -> f64 {
+fn entropy(counts: &[f64], total: f64) -> f64 {
     counts
         .iter()
         .copied()
-        .filter(|count| *count > 0)
+        .filter(|count| *count > 0.0)
         .map(|count| {
-            let probability = count as f64 / total as f64;
+            let probability = count / total;
             -probability * probability.log2()
         })
         .sum()
 }
 
-fn gini(counts: &[usize], total: usize) -> f64 {
+fn gini(counts: &[f64], total: f64) -> f64 {
     1.0 - counts
         .iter()
         .copied()
         .map(|count| {
-            let probability = count as f64 / total as f64;
+            let probability = count / total;
             probability * probability
         })
         .sum::<f64>()
 }
 
-fn classification_impurity(counts: &[usize], total: usize, criterion: Criterion) -> f64 {
+fn classification_impurity(counts: &[f64], total: f64, criterion: Criterion) -> f64 {
     match criterion {
         Criterion::Entropy => entropy(counts, total),
         Criterion::Gini => gini(counts, total),
@@ -2166,7 +2209,7 @@ fn push_leaf(
     nodes: &mut Vec<TreeNode>,
     class_index: usize,
     sample_count: usize,
-    class_counts: Vec<usize>,
+    class_counts: Vec<f64>,
 ) -> usize {
     push_node(
         nodes,
