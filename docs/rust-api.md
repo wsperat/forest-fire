@@ -175,4 +175,5 @@ The crates should be published in dependency order:
 
 1. `forestfire-data`
 2. `forestfire-core`
-3. `forestfire-inference`
+
+`forestfire-inference` and the example crate stay workspace-local and are not published.
