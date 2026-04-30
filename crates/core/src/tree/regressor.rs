@@ -155,11 +155,15 @@ pub(crate) enum RegressionNode {
         sample_count: usize,
         variance: Option<f64>,
     },
+    MultiTargetLeaf {
+        values: Vec<f64>,
+        sample_count: usize,
+    },
     BinarySplit {
         feature_index: usize,
         threshold_bin: u16,
         missing_direction: MissingBranchDirection,
-        missing_value: f64,
+        missing_values: Vec<f64>,
         left_child: usize,
         right_child: usize,
         sample_count: usize,
@@ -172,7 +176,7 @@ pub(crate) enum RegressionNode {
         weights: Vec<f64>,
         missing_directions: Vec<MissingBranchDirection>,
         threshold: f64,
-        missing_value: f64,
+        missing_values: Vec<f64>,
         left_child: usize,
         right_child: usize,
         sample_count: usize,
@@ -207,6 +211,7 @@ struct ObliviousLeafState {
     variance: Option<f64>,
     sum: f64,
     sum_sq: f64,
+    total_weight: f64,
 }
 
 impl ObliviousLeafState {
@@ -275,7 +280,7 @@ struct RankedStandardSplitChoice {
 
 #[derive(Debug, Clone)]
 struct RegressionHistogramBin {
-    count: usize,
+    count: f64,
     sum: f64,
     sum_sq: f64,
 }
@@ -290,7 +295,7 @@ impl HistogramBin for RegressionHistogramBin {
     }
 
     fn is_observed(&self) -> bool {
-        self.count > 0
+        self.count > 0.0
     }
 }
 
@@ -443,6 +448,29 @@ fn train_regressor(
     }
 
     let targets = finite_targets(train_set)?;
+
+    // Multi-target path: only supported for Mean criterion with Cart/Randomized.
+    if train_set.n_targets() > 1
+        && matches!(criterion, Criterion::Mean)
+        && matches!(
+            algorithm,
+            RegressionTreeAlgorithm::Cart | RegressionTreeAlgorithm::Randomized
+        )
+    {
+        let structure = train_multi_target_regressor_structure(
+            train_set, &targets, criterion, &options, algorithm,
+        );
+        return Ok(DecisionTreeRegressor {
+            algorithm,
+            criterion,
+            structure,
+            options,
+            num_features: train_set.n_features(),
+            feature_preprocessing: capture_feature_preprocessing(train_set),
+            training_canaries: train_set.canaries(),
+        });
+    }
+
     let structure = match algorithm {
         RegressionTreeAlgorithm::Cart => {
             let mut nodes = Vec::new();
@@ -519,11 +547,12 @@ impl DecisionTreeRegressor {
                 loop {
                     match &nodes[node_index] {
                         RegressionNode::Leaf { value, .. } => return *value,
+                        RegressionNode::MultiTargetLeaf { values, .. } => return values[0],
                         RegressionNode::BinarySplit {
                             feature_index,
                             threshold_bin,
                             missing_direction,
-                            missing_value,
+                            missing_values,
                             left_child,
                             right_child,
                             ..
@@ -536,7 +565,7 @@ impl DecisionTreeRegressor {
                                     MissingBranchDirection::Right => {
                                         node_index = *right_child;
                                     }
-                                    MissingBranchDirection::Node => return *missing_value,
+                                    MissingBranchDirection::Node => return missing_values[0],
                                 }
                                 continue;
                             }
@@ -552,7 +581,7 @@ impl DecisionTreeRegressor {
                             weights,
                             missing_directions,
                             threshold,
-                            missing_value,
+                            missing_values,
                             left_child,
                             right_child,
                             ..
@@ -571,7 +600,7 @@ impl DecisionTreeRegressor {
                                 continue;
                             }
                             if missing_mask != 0 {
-                                return *missing_value;
+                                return missing_values[0];
                             }
                             let projection = weights
                                 .iter()
@@ -603,6 +632,118 @@ impl DecisionTreeRegressor {
                 leaf_values[leaf_index]
             }
         }
+    }
+
+    /// Predict all target values for a single row (multi-target support).
+    pub fn predict_all_row(&self, table: &dyn TableAccess, row_idx: usize) -> Vec<f64> {
+        match &self.structure {
+            RegressionTreeStructure::Standard { nodes, root } => {
+                let mut node_index = *root;
+                loop {
+                    match &nodes[node_index] {
+                        RegressionNode::Leaf { value, .. } => return vec![*value],
+                        RegressionNode::MultiTargetLeaf { values, .. } => {
+                            return values.clone();
+                        }
+                        RegressionNode::BinarySplit {
+                            feature_index,
+                            threshold_bin,
+                            missing_direction,
+                            missing_values,
+                            left_child,
+                            right_child,
+                            ..
+                        } => {
+                            if table.is_missing(*feature_index, row_idx) {
+                                match missing_direction {
+                                    MissingBranchDirection::Left => {
+                                        node_index = *left_child;
+                                    }
+                                    MissingBranchDirection::Right => {
+                                        node_index = *right_child;
+                                    }
+                                    MissingBranchDirection::Node => return missing_values.clone(),
+                                }
+                                continue;
+                            }
+                            let bin = table.binned_value(*feature_index, row_idx);
+                            node_index = if bin <= *threshold_bin {
+                                *left_child
+                            } else {
+                                *right_child
+                            };
+                        }
+                        RegressionNode::ObliqueSplit {
+                            feature_indices,
+                            weights,
+                            missing_directions,
+                            threshold,
+                            missing_values,
+                            left_child,
+                            right_child,
+                            ..
+                        } => {
+                            let missing_mask = missing_mask_for_pair(
+                                table,
+                                [feature_indices[0], feature_indices[1]],
+                                row_idx,
+                            );
+                            if let Some(go_left) = resolve_oblique_missing_direction(
+                                missing_mask,
+                                [weights[0], weights[1]],
+                                [missing_directions[0], missing_directions[1]],
+                            ) {
+                                node_index = if go_left { *left_child } else { *right_child };
+                                continue;
+                            }
+                            if missing_mask != 0 {
+                                return missing_values.clone();
+                            }
+                            let projection = weights
+                                .iter()
+                                .zip(feature_indices.iter())
+                                .map(|(weight, feature_index)| {
+                                    *weight * table.feature_value(*feature_index, row_idx)
+                                })
+                                .sum::<f64>();
+                            node_index = if projection <= *threshold {
+                                *left_child
+                            } else {
+                                *right_child
+                            };
+                        }
+                    }
+                }
+            }
+            RegressionTreeStructure::Oblivious {
+                splits,
+                leaf_values,
+                ..
+            } => {
+                let leaf_index = splits.iter().fold(0usize, |leaf_index, split| {
+                    let go_right =
+                        table.binned_value(split.feature_index, row_idx) > split.threshold_bin;
+                    (leaf_index << 1) | usize::from(go_right)
+                });
+                vec![leaf_values[leaf_index]]
+            }
+        }
+    }
+
+    /// Returns true if any node in the tree is a MultiTargetLeaf.
+    pub fn is_multi_target(&self) -> bool {
+        match &self.structure {
+            RegressionTreeStructure::Standard { nodes, .. } => nodes
+                .iter()
+                .any(|n| matches!(n, RegressionNode::MultiTargetLeaf { .. })),
+            RegressionTreeStructure::Oblivious { .. } => false,
+        }
+    }
+
+    pub fn predict_all_table(&self, table: &dyn TableAccess) -> Vec<Vec<f64>> {
+        (0..table.n_rows())
+            .map(|row_idx| self.predict_all_row(table, row_idx))
+            .collect()
     }
 
     pub(crate) fn num_features(&self) -> usize {
@@ -672,11 +813,28 @@ impl DecisionTreeRegressor {
                                     variance: *variance,
                                 },
                             },
+                            RegressionNode::MultiTargetLeaf {
+                                values,
+                                sample_count,
+                            } => NodeTreeNode::Leaf {
+                                node_id,
+                                depth: depths[node_id],
+                                leaf: LeafPayload::MultiTargetRegressionValue {
+                                    values: values.clone(),
+                                },
+                                stats: NodeStats {
+                                    sample_count: *sample_count,
+                                    impurity: None,
+                                    gain: None,
+                                    class_counts: None,
+                                    variance: None,
+                                },
+                            },
                             RegressionNode::BinarySplit {
                                 feature_index,
                                 threshold_bin,
                                 missing_direction,
-                                missing_value: _,
+                                missing_values: _,
                                 left_child,
                                 right_child,
                                 sample_count,
@@ -834,7 +992,7 @@ fn standard_node_depths(nodes: &[RegressionNode], root: usize) -> Vec<usize> {
 fn populate_depths(nodes: &[RegressionNode], node_id: usize, depth: usize, depths: &mut [usize]) {
     depths[node_id] = depth;
     match &nodes[node_id] {
-        RegressionNode::Leaf { .. } => {}
+        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {}
         RegressionNode::BinarySplit {
             left_child,
             right_child,
@@ -928,15 +1086,16 @@ fn build_regression_node_histograms(
         table,
         rows,
         |_| RegressionHistogramBin {
-            count: 0,
+            count: 0.0,
             sum: 0.0,
             sum_sq: 0.0,
         },
         |_feature_index, payload, row_idx| {
+            let w = table.sample_weight(row_idx);
             let value = targets[row_idx];
-            payload.count += 1;
-            payload.sum += value;
-            payload.sum_sq += value * value;
+            payload.count += w;
+            payload.sum += w * value;
+            payload.sum_sq += w * value * value;
         },
     )
 }
@@ -980,8 +1139,8 @@ fn build_binary_node_in_place_with_hist(
     depth: usize,
     histograms: Option<Vec<RegressionFeatureHistogram>>,
 ) -> usize {
-    let leaf_value = regression_value(rows, context.targets, context.criterion);
-    let leaf_variance = variance(rows, context.targets);
+    let leaf_value = regression_value(context.table, rows, context.targets, context.criterion);
+    let leaf_variance = variance(context.table, rows, context.targets);
 
     if rows.is_empty()
         || depth >= context.options.max_depth
@@ -1056,7 +1215,7 @@ fn build_binary_node_in_place_with_hist(
 
     match best_split {
         Some(best_split) if best_split.score() > 0.0 => {
-            let impurity = regression_loss(rows, context.targets, context.criterion);
+            let impurity = regression_loss(context.table, rows, context.targets, context.criterion);
             let left_count = match &best_split {
                 StandardSplitChoice::Axis(choice) => partition_rows_for_binary_split(
                     context.table,
@@ -1136,7 +1295,7 @@ fn build_binary_node_in_place_with_hist(
                         feature_index: best_split.feature_index,
                         threshold_bin: best_split.threshold_bin,
                         missing_direction: best_split.missing_direction,
-                        missing_value: leaf_value,
+                        missing_values: vec![leaf_value],
                         left_child,
                         right_child,
                         sample_count: rows.len(),
@@ -1149,7 +1308,7 @@ fn build_binary_node_in_place_with_hist(
                         weights: best_split.weights,
                         missing_directions: best_split.missing_directions,
                         threshold: best_split.threshold,
-                        missing_value: leaf_value,
+                        missing_values: vec![leaf_value],
                         left_child,
                         right_child,
                         sample_count: rows.len(),
@@ -1642,7 +1801,7 @@ fn collect_oblique_regression_candidates(
     rows: &[usize],
     feature_pairs: &[[usize; 2]],
 ) -> Vec<ObliqueSplitChoice> {
-    let parent_loss = regression_loss(rows, context.targets, context.criterion);
+    let parent_loss = regression_loss(context.table, rows, context.targets, context.criterion);
     let mut candidates = Vec::new();
     for &feature_pair in feature_pairs {
         let observed_rows = rows
@@ -1727,12 +1886,17 @@ fn collect_oblique_regression_candidates(
                     let score = match context.criterion {
                         Criterion::Mean | Criterion::Median => {
                             parent_loss
-                                - (regression_loss(&left_rows, context.targets, context.criterion)
-                                    + regression_loss(
-                                        &right_rows,
-                                        context.targets,
-                                        context.criterion,
-                                    ))
+                                - (regression_loss(
+                                    context.table,
+                                    &left_rows,
+                                    context.targets,
+                                    context.criterion,
+                                ) + regression_loss(
+                                    context.table,
+                                    &right_rows,
+                                    context.targets,
+                                    context.criterion,
+                                ))
                         }
                         _ => unreachable!("regression criterion only supports mean or median"),
                     };
@@ -1784,6 +1948,239 @@ fn oblique_regression_weights(
     normalize_weights(weights)
 }
 
+fn multi_target_leaf_values(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    targets_per_col: &[Vec<f64>],
+) -> Vec<f64> {
+    targets_per_col
+        .iter()
+        .map(|targets| {
+            let (weighted_sum, _, total_w) = sum_stats(table, rows, targets);
+            if total_w == 0.0 {
+                0.0
+            } else {
+                weighted_sum / total_w
+            }
+        })
+        .collect()
+}
+
+fn train_multi_target_regressor_structure(
+    table: &dyn TableAccess,
+    targets_col0: &[f64],
+    criterion: Criterion,
+    options: &RegressionTreeOptions,
+    algorithm: RegressionTreeAlgorithm,
+) -> RegressionTreeStructure {
+    let n_targets = table.n_targets();
+    // Build per-target column vectors.
+    let targets_per_col: Vec<Vec<f64>> = (0..n_targets)
+        .map(|t| {
+            (0..table.n_rows())
+                .map(|row| table.target_value_at(row, t))
+                .collect()
+        })
+        .collect();
+
+    let parallelism = Parallelism::sequential();
+    // Use the first target column for the BuildContext (split scoring sums gains across targets).
+    let context = BuildContext {
+        table,
+        targets: targets_col0,
+        criterion,
+        parallelism,
+        options: options.clone(),
+        algorithm,
+    };
+
+    let mut nodes = Vec::new();
+    let mut all_rows: Vec<usize> = (0..table.n_rows()).collect();
+    let root =
+        build_multi_target_node_in_place(&context, &targets_per_col, &mut nodes, &mut all_rows, 0);
+    RegressionTreeStructure::Standard { nodes, root }
+}
+
+fn build_multi_target_node_in_place(
+    context: &BuildContext<'_>,
+    targets_per_col: &[Vec<f64>],
+    nodes: &mut Vec<RegressionNode>,
+    rows: &mut [usize],
+    depth: usize,
+) -> usize {
+    let leaf_values = multi_target_leaf_values(context.table, rows, targets_per_col);
+    let sample_count = rows.len();
+
+    if rows.is_empty()
+        || depth >= context.options.max_depth
+        || rows.len() < context.options.min_samples_split
+        || targets_per_col
+            .iter()
+            .all(|targets| has_constant_target(rows, targets))
+    {
+        return push_node(
+            nodes,
+            RegressionNode::MultiTargetLeaf {
+                values: leaf_values,
+                sample_count,
+            },
+        );
+    }
+
+    // Build histograms for each target column.
+    let all_hists: Vec<Vec<RegressionFeatureHistogram>> = targets_per_col
+        .iter()
+        .map(|targets| build_regression_node_histograms(context.table, targets, rows))
+        .collect();
+
+    let feature_indices = candidate_feature_indices(
+        context.table,
+        context.options.max_features,
+        node_seed(context.options.random_seed, depth, rows, 0xA11C_E5E1u64),
+    );
+
+    // Score each feature by evaluating the combined gain across all targets at
+    // each candidate threshold, so the score and applied threshold are always
+    // for the same split point.
+    let best_split = feature_indices
+        .iter()
+        .filter_map(|&feature_index| {
+            let first_hist = &all_hists[0][feature_index];
+            match first_hist {
+                RegressionFeatureHistogram::Binary {
+                    false_bin,
+                    true_bin,
+                    missing_bin,
+                } if missing_bin.count == 0.0 => {
+                    // Binary features have a single threshold, so summing each
+                    // target's gain at that threshold is already consistent.
+                    let mut total_score = 0.0;
+                    let mut any_valid = false;
+                    for hists in &all_hists {
+                        if let RegressionFeatureHistogram::Binary {
+                            false_bin,
+                            true_bin,
+                            missing_bin,
+                        } = &hists[feature_index]
+                        {
+                            if missing_bin.count != 0.0 {
+                                return None;
+                            }
+                            if let Some(c) = score_binary_split_choice_mean_from_stats(
+                                context,
+                                feature_index,
+                                false_bin.count,
+                                false_bin.sum,
+                                false_bin.sum_sq,
+                                true_bin.count,
+                                true_bin.sum,
+                                true_bin.sum_sq,
+                            ) {
+                                total_score += c.score;
+                                any_valid = true;
+                            }
+                        }
+                    }
+                    if any_valid && total_score > 0.0 {
+                        Some(BinarySplitChoice {
+                            feature_index,
+                            threshold_bin: 0,
+                            score: total_score,
+                            missing_direction: MissingBranchDirection::Node,
+                        })
+                    } else {
+                        None
+                    }
+                }
+                RegressionFeatureHistogram::Numeric {
+                    bins,
+                    observed_bins,
+                } if bins
+                    .get(context.table.numeric_bin_cap())
+                    .is_none_or(|mb| mb.count == 0.0) =>
+                {
+                    // Collect the bins slice for every target, then find the
+                    // threshold that maximises the combined gain in one pass.
+                    let target_bins: Vec<&[RegressionHistogramBin]> = all_hists
+                        .iter()
+                        .filter_map(|hists| {
+                            if let RegressionFeatureHistogram::Numeric { bins, .. } =
+                                &hists[feature_index]
+                            {
+                                Some(bins.as_slice())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if target_bins.len() != all_hists.len() {
+                        return None;
+                    }
+                    score_multi_target_numeric_split_combined(
+                        context,
+                        feature_index,
+                        &target_bins,
+                        observed_bins,
+                    )
+                }
+                _ => None,
+            }
+        })
+        .filter(|c| c.score > 0.0)
+        .max_by(|a, b| a.score.total_cmp(&b.score));
+
+    match best_split {
+        Some(split) => {
+            let left_count = partition_rows_for_binary_split(
+                context.table,
+                split.feature_index,
+                split.threshold_bin,
+                split.missing_direction,
+                rows,
+            );
+            let (left_rows, right_rows) = rows.split_at_mut(left_count);
+            let left_child = build_multi_target_node_in_place(
+                context,
+                targets_per_col,
+                nodes,
+                left_rows,
+                depth + 1,
+            );
+            let right_child = build_multi_target_node_in_place(
+                context,
+                targets_per_col,
+                nodes,
+                right_rows,
+                depth + 1,
+            );
+            // Compute impurity using first target column.
+            let impurity = regression_loss(context.table, rows, context.targets, context.criterion);
+            push_node(
+                nodes,
+                RegressionNode::BinarySplit {
+                    feature_index: split.feature_index,
+                    threshold_bin: split.threshold_bin,
+                    missing_direction: split.missing_direction,
+                    missing_values: leaf_values.clone(),
+                    left_child,
+                    right_child,
+                    sample_count,
+                    impurity,
+                    gain: split.score,
+                    variance: None,
+                },
+            )
+        }
+        None => push_node(
+            nodes,
+            RegressionNode::MultiTargetLeaf {
+                values: leaf_values,
+                sample_count,
+            },
+        ),
+    }
+}
+
 fn train_oblivious_structure(
     table: &dyn TableAccess,
     targets: &[f64],
@@ -1792,14 +2189,21 @@ fn train_oblivious_structure(
     options: RegressionTreeOptions,
 ) -> RegressionTreeStructure {
     let mut row_indices: Vec<usize> = (0..table.n_rows()).collect();
-    let (root_sum, root_sum_sq) = sum_stats(&row_indices, targets);
+    let (root_sum, root_sum_sq, root_total_weight) = sum_stats(table, &row_indices, targets);
     let mut leaves = vec![ObliviousLeafState {
         start: 0,
         end: row_indices.len(),
-        value: regression_value_from_stats(&row_indices, targets, criterion, root_sum),
-        variance: variance_from_stats(row_indices.len(), root_sum, root_sum_sq),
+        value: regression_value_from_stats(
+            &row_indices,
+            targets,
+            criterion,
+            root_sum,
+            root_total_weight,
+        ),
+        variance: variance_from_stats(root_total_weight, root_sum, root_sum_sq),
         sum: root_sum,
         sum_sq: root_sum_sq,
+        total_weight: root_total_weight,
     }];
     let mut splits = Vec::new();
 
@@ -1974,7 +2378,7 @@ fn score_split(
             min_samples_leaf,
         );
     }
-    let parent_loss = regression_loss(rows, targets, criterion);
+    let parent_loss = regression_loss(table, rows, targets, criterion);
 
     rows.iter()
         .copied()
@@ -2017,7 +2421,7 @@ fn score_randomized_split(
     let threshold_bin =
         choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
 
-    let parent_loss = regression_loss(rows, targets, criterion);
+    let parent_loss = regression_loss(table, rows, targets, criterion);
     evaluate_regression_missing_assignment(
         table,
         targets,
@@ -2097,9 +2501,9 @@ fn score_oblivious_split(
                     return score;
                 }
 
-                score + regression_loss(leaf_rows, targets, criterion)
-                    - (regression_loss(&left_rows, targets, criterion)
-                        + regression_loss(&right_rows, targets, criterion))
+                score + regression_loss(table, leaf_rows, targets, criterion)
+                    - (regression_loss(table, &left_rows, targets, criterion)
+                        + regression_loss(table, &right_rows, targets, criterion))
             });
 
             (score > 0.0).then_some(ObliviousSplitCandidate {
@@ -2133,19 +2537,26 @@ fn split_oblivious_leaves_in_place(
         let mid = leaf.start + left_count;
         let left_rows = &row_indices[leaf.start..mid];
         let right_rows = &row_indices[mid..leaf.end];
-        let (left_sum, left_sum_sq) = sum_stats(left_rows, targets);
-        let (right_sum, right_sum_sq) = sum_stats(right_rows, targets);
+        let (left_sum, left_sum_sq, left_total_weight) = sum_stats(table, left_rows, targets);
+        let (right_sum, right_sum_sq, right_total_weight) = sum_stats(table, right_rows, targets);
         next_leaves.push(ObliviousLeafState {
             start: leaf.start,
             end: mid,
             value: if left_rows.is_empty() {
                 fallback_value
             } else {
-                regression_value_from_stats(left_rows, targets, criterion, left_sum)
+                regression_value_from_stats(
+                    left_rows,
+                    targets,
+                    criterion,
+                    left_sum,
+                    left_total_weight,
+                )
             },
-            variance: variance_from_stats(left_rows.len(), left_sum, left_sum_sq),
+            variance: variance_from_stats(left_total_weight, left_sum, left_sum_sq),
             sum: left_sum,
             sum_sq: left_sum_sq,
+            total_weight: left_total_weight,
         });
         next_leaves.push(ObliviousLeafState {
             start: mid,
@@ -2153,11 +2564,18 @@ fn split_oblivious_leaves_in_place(
             value: if right_rows.is_empty() {
                 fallback_value
             } else {
-                regression_value_from_stats(right_rows, targets, criterion, right_sum)
+                regression_value_from_stats(
+                    right_rows,
+                    targets,
+                    criterion,
+                    right_sum,
+                    right_total_weight,
+                )
             },
-            variance: variance_from_stats(right_rows.len(), right_sum, right_sum_sq),
+            variance: variance_from_stats(right_total_weight, right_sum, right_sum_sq),
             sum: right_sum,
             sum_sq: right_sum_sq,
+            total_weight: right_total_weight,
         });
     }
     next_leaves
@@ -2541,17 +2959,9 @@ fn rank_shortlisted_oblivious_candidates(
         .collect()
 }
 
-fn variance(rows: &[usize], targets: &[f64]) -> Option<f64> {
-    let (sum, sum_sq) = sum_stats(rows, targets);
-    variance_from_stats(rows.len(), sum, sum_sq)
-}
-
-fn mean(rows: &[usize], targets: &[f64]) -> f64 {
-    if rows.is_empty() {
-        0.0
-    } else {
-        rows.iter().map(|row_idx| targets[*row_idx]).sum::<f64>() / rows.len() as f64
-    }
+fn variance(table: &dyn TableAccess, rows: &[usize], targets: &[f64]) -> Option<f64> {
+    let (sum, sum_sq, total_w) = sum_stats(table, rows, targets);
+    variance_from_stats(total_w, sum, sum_sq)
 }
 
 fn median(rows: &[usize], targets: &[f64]) -> f64 {
@@ -2569,16 +2979,6 @@ fn median(rows: &[usize], targets: &[f64]) -> f64 {
     }
 }
 
-fn sum_squared_error(rows: &[usize], targets: &[f64]) -> f64 {
-    let mean = mean(rows, targets);
-    rows.iter()
-        .map(|row_idx| {
-            let diff = targets[*row_idx] - mean;
-            diff * diff
-        })
-        .sum()
-}
-
 fn sum_absolute_error(rows: &[usize], targets: &[f64]) -> f64 {
     let median = median(rows, targets);
     rows.iter()
@@ -2586,23 +2986,29 @@ fn sum_absolute_error(rows: &[usize], targets: &[f64]) -> f64 {
         .sum()
 }
 
-fn regression_value(rows: &[usize], targets: &[f64], criterion: Criterion) -> f64 {
-    let (sum, _sum_sq) = sum_stats(rows, targets);
-    regression_value_from_stats(rows, targets, criterion, sum)
+fn regression_value(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    targets: &[f64],
+    criterion: Criterion,
+) -> f64 {
+    let (sum, _sum_sq, total_w) = sum_stats(table, rows, targets);
+    regression_value_from_stats(rows, targets, criterion, sum, total_w)
 }
 
 fn regression_value_from_stats(
     rows: &[usize],
     targets: &[f64],
     criterion: Criterion,
-    sum: f64,
+    weighted_sum: f64,
+    total_weight: f64,
 ) -> f64 {
     match criterion {
         Criterion::Mean => {
-            if rows.is_empty() {
+            if total_weight == 0.0 {
                 0.0
             } else {
-                sum / rows.len() as f64
+                weighted_sum / total_weight
             }
         }
         Criterion::Median => median(rows, targets),
@@ -2610,9 +3016,21 @@ fn regression_value_from_stats(
     }
 }
 
-fn regression_loss(rows: &[usize], targets: &[f64], criterion: Criterion) -> f64 {
+fn regression_loss(
+    table: &dyn TableAccess,
+    rows: &[usize],
+    targets: &[f64],
+    criterion: Criterion,
+) -> f64 {
     match criterion {
-        Criterion::Mean => sum_squared_error(rows, targets),
+        Criterion::Mean => {
+            let (sum, sum_sq, total_w) = sum_stats(table, rows, targets);
+            if total_w == 0.0 {
+                0.0
+            } else {
+                sum_sq - (sum * sum) / total_w
+            }
+        }
         Criterion::Median => sum_absolute_error(rows, targets),
         _ => unreachable!("regression criterion only supports mean or median"),
     }
@@ -2637,7 +3055,7 @@ fn score_binary_split(
             min_samples_leaf,
         );
     }
-    let parent_loss = regression_loss(rows, targets, criterion);
+    let parent_loss = regression_loss(table, rows, targets, criterion);
     evaluate_regression_missing_assignment(
         table,
         targets,
@@ -2666,7 +3084,7 @@ fn score_binary_split_heuristic(
     if observed_rows.is_empty() {
         return None;
     }
-    let parent_loss = regression_loss(&observed_rows, targets, criterion);
+    let parent_loss = regression_loss(table, &observed_rows, targets, criterion);
     let mut left_rows = Vec::new();
     let mut right_rows = Vec::new();
     for row_idx in observed_rows.iter().copied() {
@@ -2710,7 +3128,7 @@ fn score_split_heuristic_missing_assignment(
     if observed_rows.is_empty() {
         return None;
     }
-    let parent_loss = regression_loss(&observed_rows, targets, criterion);
+    let parent_loss = regression_loss(table, &observed_rows, targets, criterion);
     let threshold_bin = observed_rows
         .iter()
         .copied()
@@ -2769,8 +3187,8 @@ fn evaluate_regression_observed_split(
     }
     Some(
         parent_loss
-            - (regression_loss(&left_rows, targets, criterion)
-                + regression_loss(&right_rows, targets, criterion)),
+            - (regression_loss(table, &left_rows, targets, criterion)
+                + regression_loss(table, &right_rows, targets, criterion)),
     )
 }
 
@@ -2863,7 +3281,7 @@ fn score_binary_split_choice_from_hist(
             false_bin,
             true_bin,
             missing_bin,
-        } if missing_bin.count == 0 => score_binary_split_choice_mean_from_stats(
+        } if missing_bin.count == 0.0 => score_binary_split_choice_mean_from_stats(
             context,
             feature_index,
             false_bin.count,
@@ -2881,13 +3299,13 @@ fn score_binary_split_choice_from_hist(
             observed_bins,
         } if bins
             .get(context.table.numeric_bin_cap())
-            .is_none_or(|missing_bin| missing_bin.count == 0) =>
+            .is_none_or(|missing_bin| missing_bin.count == 0.0) =>
         {
             match context.algorithm {
                 RegressionTreeAlgorithm::Cart => score_numeric_split_choice_mean_from_hist(
                     context,
                     feature_index,
-                    rows.len(),
+                    bins.iter().map(|b| b.count).sum::<f64>(),
                     bins,
                     observed_bins,
                 ),
@@ -2913,24 +3331,24 @@ fn score_binary_split_choice_from_hist(
 fn score_binary_split_choice_mean_from_stats(
     context: &BuildContext<'_>,
     feature_index: usize,
-    left_count: usize,
+    left_count: f64,
     left_sum: f64,
     left_sum_sq: f64,
-    right_count: usize,
+    right_count: f64,
     right_sum: f64,
     right_sum_sq: f64,
 ) -> Option<BinarySplitChoice> {
-    if left_count < context.options.min_samples_leaf
-        || right_count < context.options.min_samples_leaf
+    if left_count < context.options.min_samples_leaf as f64
+        || right_count < context.options.min_samples_leaf as f64
     {
         return None;
     }
     let total_count = left_count + right_count;
     let total_sum = left_sum + right_sum;
     let total_sum_sq = left_sum_sq + right_sum_sq;
-    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_count as f64;
-    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_count;
+    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
     Some(BinarySplitChoice {
         feature_index,
         threshold_bin: 0,
@@ -2939,10 +3357,83 @@ fn score_binary_split_choice_mean_from_stats(
     })
 }
 
+/// Score a numeric feature by evaluating each candidate threshold against ALL
+/// target histograms simultaneously, so the chosen threshold and combined gain
+/// are always consistent — the split that is applied is the same one that was
+/// scored.
+fn score_multi_target_numeric_split_combined(
+    context: &BuildContext<'_>,
+    feature_index: usize,
+    target_bins: &[&[RegressionHistogramBin]],
+    observed_bins: &[usize],
+) -> Option<BinarySplitChoice> {
+    if observed_bins.len() <= 1 {
+        return None;
+    }
+    // All targets share the same row weights, so counts are identical across
+    // targets. We use target 0's counts for the min_samples_leaf check.
+    let totals: Vec<(f64, f64, f64)> = target_bins
+        .iter()
+        .map(|bins| {
+            let w = bins.iter().map(|b| b.count).sum::<f64>();
+            let s = bins.iter().map(|b| b.sum).sum::<f64>();
+            let sq = bins.iter().map(|b| b.sum_sq).sum::<f64>();
+            (w, s, sq)
+        })
+        .collect();
+
+    let mut left_counts = vec![0.0_f64; target_bins.len()];
+    let mut left_sums = vec![0.0_f64; target_bins.len()];
+    let mut left_sums_sq = vec![0.0_f64; target_bins.len()];
+    let mut best_threshold = None;
+    let mut best_score = f64::NEG_INFINITY;
+
+    for &bin in observed_bins {
+        for (t, bins) in target_bins.iter().enumerate() {
+            left_counts[t] += bins[bin].count;
+            left_sums[t] += bins[bin].sum;
+            left_sums_sq[t] += bins[bin].sum_sq;
+        }
+        let right_count = totals[0].0 - left_counts[0];
+        if left_counts[0] < context.options.min_samples_leaf as f64
+            || right_count < context.options.min_samples_leaf as f64
+        {
+            continue;
+        }
+        let mut combined_gain = 0.0;
+        for t in 0..target_bins.len() {
+            let (total_w, total_s, total_sq) = totals[t];
+            let lc = left_counts[t];
+            let ls = left_sums[t];
+            let lsq = left_sums_sq[t];
+            let rc = total_w - lc;
+            let rs = total_s - ls;
+            let rsq = total_sq - lsq;
+            let parent_loss = total_sq - (total_s * total_s) / total_w;
+            let left_loss = lsq - (ls * ls) / lc;
+            let right_loss = rsq - (rs * rs) / rc;
+            combined_gain += parent_loss - (left_loss + right_loss);
+        }
+        if combined_gain > best_score {
+            best_score = combined_gain;
+            best_threshold = Some(bin as u16);
+        }
+    }
+
+    best_threshold
+        .filter(|_| best_score > 0.0)
+        .map(|threshold_bin| BinarySplitChoice {
+            feature_index,
+            threshold_bin,
+            score: best_score,
+            missing_direction: MissingBranchDirection::Node,
+        })
+}
+
 fn score_numeric_split_choice_mean_from_hist(
     context: &BuildContext<'_>,
     feature_index: usize,
-    row_count: usize,
+    total_weight: f64,
     bins: &[RegressionHistogramBin],
     observed_bins: &[usize],
 ) -> Option<BinarySplitChoice> {
@@ -2951,8 +3442,8 @@ fn score_numeric_split_choice_mean_from_hist(
     }
     let total_sum = bins.iter().map(|bin| bin.sum).sum::<f64>();
     let total_sum_sq = bins.iter().map(|bin| bin.sum_sq).sum::<f64>();
-    let parent_loss = total_sum_sq - (total_sum * total_sum) / row_count as f64;
-    let mut left_count = 0usize;
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_weight;
+    let mut left_count = 0.0_f64;
     let mut left_sum = 0.0;
     let mut left_sum_sq = 0.0;
     let mut best_threshold = None;
@@ -2962,16 +3453,16 @@ fn score_numeric_split_choice_mean_from_hist(
         left_count += bins[bin].count;
         left_sum += bins[bin].sum;
         left_sum_sq += bins[bin].sum_sq;
-        let right_count = row_count - left_count;
-        if left_count < context.options.min_samples_leaf
-            || right_count < context.options.min_samples_leaf
+        let right_count = total_weight - left_count;
+        if left_count < context.options.min_samples_leaf as f64
+            || right_count < context.options.min_samples_leaf as f64
         {
             continue;
         }
         let right_sum = total_sum - left_sum;
         let right_sum_sq = total_sum_sq - left_sum_sq;
-        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
         let score = parent_loss - (left_loss + right_loss);
         if score > best_score {
             best_score = score;
@@ -3001,9 +3492,10 @@ fn score_randomized_split_choice_mean_from_hist(
         .collect::<Vec<_>>();
     let threshold_bin =
         choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
+    let total_weight = bins.iter().map(|bin| bin.count).sum::<f64>();
     let total_sum = bins.iter().map(|bin| bin.sum).sum::<f64>();
     let total_sum_sq = bins.iter().map(|bin| bin.sum_sq).sum::<f64>();
-    let mut left_count = 0usize;
+    let mut left_count = 0.0_f64;
     let mut left_sum = 0.0;
     let mut left_sum_sq = 0.0;
     for bin in 0..=threshold_bin as usize {
@@ -3014,17 +3506,17 @@ fn score_randomized_split_choice_mean_from_hist(
         left_sum += bins[bin].sum;
         left_sum_sq += bins[bin].sum_sq;
     }
-    let right_count = rows.len() - left_count;
-    if left_count < context.options.min_samples_leaf
-        || right_count < context.options.min_samples_leaf
+    let right_count = total_weight - left_count;
+    if left_count < context.options.min_samples_leaf as f64
+        || right_count < context.options.min_samples_leaf as f64
     {
         return None;
     }
-    let parent_loss = total_sum_sq - (total_sum * total_sum) / rows.len() as f64;
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_weight;
     let right_sum = total_sum - left_sum;
     let right_sum_sq = total_sum_sq - left_sum_sq;
-    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
     Some(BinarySplitChoice {
         feature_index,
         threshold_bin,
@@ -3038,39 +3530,42 @@ fn score_binary_split_choice_mean(
     feature_index: usize,
     rows: &[usize],
 ) -> Option<BinarySplitChoice> {
-    let mut left_count = 0usize;
+    let mut left_count = 0.0_f64;
     let mut left_sum = 0.0;
     let mut left_sum_sq = 0.0;
+    let mut total_weight = 0.0_f64;
     let mut total_sum = 0.0;
     let mut total_sum_sq = 0.0;
 
     for row_idx in rows {
+        let w = context.table.sample_weight(*row_idx);
         let target = context.targets[*row_idx];
-        total_sum += target;
-        total_sum_sq += target * target;
+        total_weight += w;
+        total_sum += w * target;
+        total_sum_sq += w * target * target;
         if !context
             .table
             .binned_boolean_value(feature_index, *row_idx)
             .expect("binary feature must expose boolean values")
         {
-            left_count += 1;
-            left_sum += target;
-            left_sum_sq += target * target;
+            left_count += w;
+            left_sum += w * target;
+            left_sum_sq += w * target * target;
         }
     }
 
-    let right_count = rows.len() - left_count;
-    if left_count < context.options.min_samples_leaf
-        || right_count < context.options.min_samples_leaf
+    let right_count = total_weight - left_count;
+    if left_count < context.options.min_samples_leaf as f64
+        || right_count < context.options.min_samples_leaf as f64
     {
         return None;
     }
 
-    let parent_loss = total_sum_sq - (total_sum * total_sum) / rows.len() as f64;
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_weight;
     let right_sum = total_sum - left_sum;
     let right_sum_sq = total_sum_sq - left_sum_sq;
-    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
 
     Some(BinarySplitChoice {
         feature_index,
@@ -3092,25 +3587,28 @@ fn score_numeric_split_mean_fast(
         return None;
     }
 
-    let mut bin_count = vec![0usize; bin_cap];
+    let mut bin_count = vec![0.0_f64; bin_cap];
     let mut bin_sum = vec![0.0; bin_cap];
     let mut bin_sum_sq = vec![0.0; bin_cap];
     let mut observed_bins = vec![false; bin_cap];
     let mut total_sum = 0.0;
     let mut total_sum_sq = 0.0;
+    let mut total_weight = 0.0_f64;
 
     for row_idx in rows {
         let bin = table.binned_value(feature_index, *row_idx) as usize;
         if bin >= bin_cap {
             return None;
         }
+        let w = table.sample_weight(*row_idx);
         let target = targets[*row_idx];
-        bin_count[bin] += 1;
-        bin_sum[bin] += target;
-        bin_sum_sq[bin] += target * target;
+        bin_count[bin] += w;
+        bin_sum[bin] += w * target;
+        bin_sum_sq[bin] += w * target * target;
         observed_bins[bin] = true;
-        total_sum += target;
-        total_sum_sq += target * target;
+        total_sum += w * target;
+        total_sum_sq += w * target * target;
+        total_weight += w;
     }
 
     let observed_bins: Vec<usize> = observed_bins
@@ -3122,8 +3620,8 @@ fn score_numeric_split_mean_fast(
         return None;
     }
 
-    let parent_loss = total_sum_sq - (total_sum * total_sum) / rows.len() as f64;
-    let mut left_count = 0usize;
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_weight;
+    let mut left_count = 0.0_f64;
     let mut left_sum = 0.0;
     let mut left_sum_sq = 0.0;
     let mut best_threshold = None;
@@ -3133,16 +3631,16 @@ fn score_numeric_split_mean_fast(
         left_count += bin_count[bin];
         left_sum += bin_sum[bin];
         left_sum_sq += bin_sum_sq[bin];
-        let right_count = rows.len() - left_count;
+        let right_count = total_weight - left_count;
 
-        if left_count < min_samples_leaf || right_count < min_samples_leaf {
+        if left_count < min_samples_leaf as f64 || right_count < min_samples_leaf as f64 {
             continue;
         }
 
         let right_sum = total_sum - left_sum;
         let right_sum_sq = total_sum_sq - left_sum_sq;
-        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
         let score = parent_loss - (left_loss + right_loss);
         if score > best_score {
             best_score = score;
@@ -3206,30 +3704,33 @@ fn score_randomized_split_mean_fast(
     let threshold_bin =
         choose_random_threshold(&candidate_thresholds, feature_index, rows, 0xA11CE551u64)?;
 
-    let mut left_count = 0usize;
+    let mut left_count = 0.0_f64;
     let mut left_sum = 0.0;
     let mut left_sum_sq = 0.0;
+    let mut total_weight = 0.0_f64;
     let mut total_sum = 0.0;
     let mut total_sum_sq = 0.0;
     for row_idx in rows {
+        let w = table.sample_weight(*row_idx);
         let target = targets[*row_idx];
-        total_sum += target;
-        total_sum_sq += target * target;
+        total_weight += w;
+        total_sum += w * target;
+        total_sum_sq += w * target * target;
         if table.binned_value(feature_index, *row_idx) <= threshold_bin {
-            left_count += 1;
-            left_sum += target;
-            left_sum_sq += target * target;
+            left_count += w;
+            left_sum += w * target;
+            left_sum_sq += w * target * target;
         }
     }
-    let right_count = rows.len() - left_count;
-    if left_count < min_samples_leaf || right_count < min_samples_leaf {
+    let right_count = total_weight - left_count;
+    if left_count < min_samples_leaf as f64 || right_count < min_samples_leaf as f64 {
         return None;
     }
-    let parent_loss = total_sum_sq - (total_sum * total_sum) / rows.len() as f64;
+    let parent_loss = total_sum_sq - (total_sum * total_sum) / total_weight;
     let right_sum = total_sum - left_sum;
     let right_sum_sq = total_sum_sq - left_sum_sq;
-    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+    let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+    let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
     let score = parent_loss - (left_loss + right_loss);
 
     Some(RegressionSplitCandidate {
@@ -3312,8 +3813,8 @@ fn evaluate_regression_missing_assignment(
         }
 
         let score = parent_loss
-            - (regression_loss(&candidate_left, targets, criterion)
-                + regression_loss(&candidate_right, targets, criterion));
+            - (regression_loss(table, &candidate_left, targets, criterion)
+                + regression_loss(table, &candidate_right, targets, criterion));
         Some(RegressionSplitCandidate {
             feature_index,
             threshold_bin,
@@ -3347,13 +3848,13 @@ fn score_numeric_oblivious_split_mean_fast(
     let mut threshold_scores = vec![0.0; bin_cap];
     let mut observed_any = false;
 
-    let mut bin_count = vec![0usize; bin_cap];
+    let mut bin_count = vec![0.0_f64; bin_cap];
     let mut bin_sum = vec![0.0; bin_cap];
     let mut bin_sum_sq = vec![0.0; bin_cap];
     let mut observed_bins = vec![false; bin_cap];
 
     for leaf in leaves {
-        bin_count.fill(0);
+        bin_count.fill(0.0);
         bin_sum.fill(0.0);
         bin_sum_sq.fill(0.0);
         observed_bins.fill(false);
@@ -3363,10 +3864,11 @@ fn score_numeric_oblivious_split_mean_fast(
             if bin >= bin_cap {
                 return None;
             }
+            let w = table.sample_weight(*row_idx);
             let target = targets[*row_idx];
-            bin_count[bin] += 1;
-            bin_sum[bin] += target;
-            bin_sum_sq[bin] += target * target;
+            bin_count[bin] += w;
+            bin_sum[bin] += w * target;
+            bin_sum_sq[bin] += w * target * target;
             observed_bins[bin] = true;
         }
 
@@ -3380,8 +3882,12 @@ fn score_numeric_oblivious_split_mean_fast(
         }
         observed_any = true;
 
-        let parent_loss = leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.len() as f64;
-        let mut left_count = 0usize;
+        let parent_loss = if leaf.total_weight == 0.0 {
+            0.0
+        } else {
+            leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.total_weight
+        };
+        let mut left_count = 0.0_f64;
         let mut left_sum = 0.0;
         let mut left_sum_sq = 0.0;
 
@@ -3389,16 +3895,16 @@ fn score_numeric_oblivious_split_mean_fast(
             left_count += bin_count[bin];
             left_sum += bin_sum[bin];
             left_sum_sq += bin_sum_sq[bin];
-            let right_count = leaf.len() - left_count;
+            let right_count = leaf.total_weight - left_count;
 
-            if left_count < min_samples_leaf || right_count < min_samples_leaf {
+            if left_count < min_samples_leaf as f64 || right_count < min_samples_leaf as f64 {
                 continue;
             }
 
             let right_sum = leaf.sum - left_sum;
             let right_sum_sq = leaf.sum_sq - left_sum_sq;
-            let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-            let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+            let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+            let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
             threshold_scores[bin] += parent_loss - (left_loss + right_loss);
         }
     }
@@ -3442,9 +3948,9 @@ fn score_binary_oblivious_split(
             continue;
         }
 
-        score += regression_loss(leaf_rows, targets, criterion)
-            - (regression_loss(&left_rows, targets, criterion)
-                + regression_loss(&right_rows, targets, criterion));
+        score += regression_loss(table, leaf_rows, targets, criterion)
+            - (regression_loss(table, &left_rows, targets, criterion)
+                + regression_loss(table, &right_rows, targets, criterion));
     }
 
     (score > 0.0).then_some(ObliviousSplitCandidate {
@@ -3466,7 +3972,7 @@ fn score_binary_oblivious_split_mean_fast(
     let mut found_valid = false;
 
     for leaf in leaves {
-        let mut left_count = 0usize;
+        let mut left_count = 0.0_f64;
         let mut left_sum = 0.0;
         let mut left_sum_sq = 0.0;
 
@@ -3475,24 +3981,29 @@ fn score_binary_oblivious_split_mean_fast(
                 .binned_boolean_value(feature_index, *row_idx)
                 .expect("binary feature must expose boolean values")
             {
+                let w = table.sample_weight(*row_idx);
                 let target = targets[*row_idx];
-                left_count += 1;
-                left_sum += target;
-                left_sum_sq += target * target;
+                left_count += w;
+                left_sum += w * target;
+                left_sum_sq += w * target * target;
             }
         }
 
-        let right_count = leaf.len() - left_count;
-        if left_count < min_samples_leaf || right_count < min_samples_leaf {
+        let right_count = leaf.total_weight - left_count;
+        if left_count < min_samples_leaf as f64 || right_count < min_samples_leaf as f64 {
             continue;
         }
 
         found_valid = true;
-        let parent_loss = leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.len() as f64;
+        let parent_loss = if leaf.total_weight == 0.0 {
+            0.0
+        } else {
+            leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.total_weight
+        };
         let right_sum = leaf.sum - left_sum;
         let right_sum_sq = leaf.sum_sq - left_sum_sq;
-        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count as f64;
-        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count as f64;
+        let left_loss = left_sum_sq - (left_sum * left_sum) / left_count;
+        let right_loss = right_sum_sq - (right_sum * right_sum) / right_count;
         score += parent_loss - (left_loss + right_loss);
     }
 
@@ -3503,18 +4014,20 @@ fn score_binary_oblivious_split_mean_fast(
     })
 }
 
-fn sum_stats(rows: &[usize], targets: &[f64]) -> (f64, f64) {
-    rows.iter().fold((0.0, 0.0), |(sum, sum_sq), row_idx| {
-        let value = targets[*row_idx];
-        (sum + value, sum_sq + value * value)
-    })
+fn sum_stats(table: &dyn TableAccess, rows: &[usize], targets: &[f64]) -> (f64, f64, f64) {
+    rows.iter()
+        .fold((0.0, 0.0, 0.0), |(sum, sum_sq, total_w), row_idx| {
+            let w = table.sample_weight(*row_idx);
+            let v = targets[*row_idx];
+            (sum + w * v, sum_sq + w * v * v, total_w + w)
+        })
 }
 
-fn variance_from_stats(count: usize, sum: f64, sum_sq: f64) -> Option<f64> {
-    if count == 0 {
+fn variance_from_stats(total_weight: f64, sum: f64, sum_sq: f64) -> Option<f64> {
+    if total_weight == 0.0 {
         None
     } else {
-        Some((sum_sq / count as f64) - (sum / count as f64).powi(2))
+        Some((sum_sq / total_weight) - (sum / total_weight).powi(2))
     }
 }
 
@@ -3525,10 +4038,14 @@ fn leaf_regression_loss(
     criterion: Criterion,
 ) -> f64 {
     match criterion {
-        Criterion::Mean => leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.len() as f64,
-        Criterion::Median => {
-            regression_loss(&row_indices[leaf.start..leaf.end], targets, criterion)
+        Criterion::Mean => {
+            if leaf.total_weight == 0.0 {
+                0.0
+            } else {
+                leaf.sum_sq - (leaf.sum * leaf.sum) / leaf.total_weight
+            }
         }
+        Criterion::Median => sum_absolute_error(&row_indices[leaf.start..leaf.end], targets),
         _ => unreachable!("regression criterion only supports mean or median"),
     }
 }
@@ -3980,7 +4497,7 @@ mod tests {
                             crate::tree::shared::MissingBranchDirection::Right,
                         ],
                         threshold: 1.5,
-                        missing_value: 0.0,
+                        missing_values: vec![0.0],
                         left_child: 0,
                         right_child: 1,
                         sample_count: 4,
@@ -4048,7 +4565,7 @@ mod tests {
                         feature_index: 0,
                         threshold_bin: 0,
                         missing_direction: crate::tree::shared::MissingBranchDirection::Node,
-                        missing_value: -1.0,
+                        missing_values: vec![-1.0],
                         left_child: 0,
                         right_child: 1,
                         sample_count: 5,
@@ -4083,7 +4600,7 @@ mod tests {
                         feature_index: 0,
                         threshold_bin: 0,
                         missing_direction: crate::tree::shared::MissingBranchDirection::Node,
-                        missing_value: -1.0,
+                        missing_values: vec![-1.0],
                         left_child: 0,
                         right_child: 1,
                         sample_count: 5,

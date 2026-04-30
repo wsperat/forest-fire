@@ -574,7 +574,7 @@ fn train_standard_structure(
                             feature_index: split.feature_index,
                             threshold_bin: split.threshold_bin,
                             missing_direction: MissingBranchDirection::Node,
-                            missing_value: evaluation.leaf_prediction,
+                            missing_values: vec![evaluation.leaf_prediction],
                             left_child,
                             right_child,
                             sample_count: evaluation.sample_count,
@@ -587,7 +587,7 @@ fn train_standard_structure(
                             weights: split.weights,
                             missing_directions: split.missing_directions,
                             threshold: split.threshold,
-                            missing_value: evaluation.leaf_prediction,
+                            missing_values: vec![evaluation.leaf_prediction],
                             left_child,
                             right_child,
                             sample_count: evaluation.sample_count,
@@ -662,12 +662,16 @@ fn train_standard_structure(
                     let left_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { left_child, .. }
                         | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { right_child, .. }
                         | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     [
                         ActiveNode {
@@ -723,12 +727,16 @@ fn train_standard_structure(
                     let left_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { left_child, .. }
                         | RegressionNode::ObliqueSplit { left_child, .. } => *left_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     let right_child = match &nodes[pending.node_index] {
                         RegressionNode::BinarySplit { right_child, .. }
                         | RegressionNode::ObliqueSplit { right_child, .. } => *right_child,
-                        RegressionNode::Leaf { .. } => unreachable!("split node must exist"),
+                        RegressionNode::Leaf { .. } | RegressionNode::MultiTargetLeaf { .. } => {
+                            unreachable!("split node must exist")
+                        }
                     };
                     [
                         ActiveNode {

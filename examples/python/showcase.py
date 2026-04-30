@@ -379,6 +379,188 @@ def show_serialization() -> None:
     print("restored pred ->", restored.predict(x[:3]).tolist())
 
 
+def show_random_forests() -> None:
+    rng = np.random.default_rng(42)
+    x = rng.normal(size=(400, 5))
+    y_reg = x[:, 0] * 2.0 - x[:, 1] + rng.normal(scale=0.3, size=400)
+    y_clf = (x[:, 0] + x[:, 1] > 0.0).astype(float)
+
+    rf_reg = train(
+        x,
+        y_reg,
+        algorithm="rf",
+        task="regression",
+        n_trees=50,
+        max_features="sqrt",
+        compute_oob=True,
+        seed=0,
+    )
+    rf_clf = train(
+        x,
+        y_clf,
+        algorithm="rf",
+        task="classification",
+        n_trees=50,
+        max_features="sqrt",
+        compute_oob=True,
+        seed=0,
+    )
+
+    print_section("Random Forests")
+    print("rf_reg oob_score  ->", round(rf_reg.oob_score, 4))
+    print("rf_reg preds[:4]  ->", np.round(rf_reg.predict(x[:4]), 4).tolist())
+    print("rf_clf oob_score  ->", round(rf_clf.oob_score, 4))
+    print("rf_clf preds[:4]  ->", rf_clf.predict(x[:4]).tolist())
+    print(
+        "rf_clf proba[:2]  ->",
+        np.round(rf_clf.predict_proba(x[:2]), 4).tolist(),
+    )
+
+
+def show_gradient_boosting() -> None:
+    rng = np.random.default_rng(7)
+    x = rng.normal(size=(600, 5))
+    y_reg = x[:, 0] * 1.5 - x[:, 2] + rng.normal(scale=0.4, size=600)
+    y_clf = (x[:, 0] - x[:, 1] > 0.2).astype(float)
+
+    gbm_reg = train(
+        x,
+        y_reg,
+        algorithm="gbm",
+        task="regression",
+        n_trees=80,
+        learning_rate=0.1,
+        canaries=0,
+        seed=0,
+    )
+    gbm_clf = train(
+        x,
+        y_clf,
+        algorithm="gbm",
+        task="classification",
+        n_trees=80,
+        learning_rate=0.1,
+        top_gradient_fraction=0.5,
+        other_gradient_fraction=0.1,
+        seed=0,
+    )
+
+    print_section("Gradient Boosting")
+    print("gbm_reg tree_count ->", gbm_reg.tree_count)
+    print("gbm_reg preds[:4]  ->", np.round(gbm_reg.predict(x[:4]), 4).tolist())
+    print("gbm_clf tree_count ->", gbm_clf.tree_count)
+    print("gbm_clf preds[:4]  ->", gbm_clf.predict(x[:4]).tolist())
+    print(
+        "gbm_clf proba[:2]  ->",
+        np.round(gbm_clf.predict_proba(x[:2]), 4).tolist(),
+    )
+
+
+def show_sample_weights() -> None:
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=(200, 3))
+    y = x[:, 0] * 2.0 + rng.normal(scale=0.5, size=200)
+    weights = rng.uniform(0.5, 2.0, size=200)
+
+    unweighted = train(x, y, task="regression", tree_type="cart", canaries=0)
+    weighted = train(
+        x, y, task="regression", tree_type="cart", canaries=0, sample_weight=weights
+    )
+    rf_weighted = train(
+        x,
+        y,
+        algorithm="rf",
+        task="regression",
+        n_trees=30,
+        seed=0,
+        sample_weight=weights,
+    )
+    gbm_weighted = train(
+        x,
+        y,
+        algorithm="gbm",
+        task="regression",
+        n_trees=30,
+        learning_rate=0.1,
+        canaries=0,
+        seed=0,
+        sample_weight=weights,
+    )
+
+    print_section("Sample Weights")
+    print(
+        "unweighted preds[:3]  ->",
+        np.round(unweighted.predict(x[:3]), 4).tolist(),
+    )
+    print(
+        "weighted preds[:3]    ->",
+        np.round(weighted.predict(x[:3]), 4).tolist(),
+    )
+    print(
+        "rf_weighted preds[:3] ->",
+        np.round(rf_weighted.predict(x[:3]), 4).tolist(),
+    )
+    print(
+        "gbm_weighted preds[:3]->",
+        np.round(gbm_weighted.predict(x[:3]), 4).tolist(),
+    )
+
+
+def show_multi_target_regression() -> None:
+    rng = np.random.default_rng(11)
+    x = rng.normal(size=(300, 4))
+    # Two target columns: one linear combination, one nonlinear proxy
+    y = np.column_stack(
+        [
+            x[:, 0] * 2.0 - x[:, 1],
+            x[:, 2] + x[:, 3] * 0.5,
+        ]
+    )
+
+    model = train(x, y, task="regression", tree_type="cart", canaries=0)
+    preds = model.predict(x[:4])
+
+    print_section("Multi-Target Regression")
+    print("y shape           ->", y.shape)
+    print("preds shape       ->", preds.shape)
+    print("preds[:4]         ->", np.round(preds, 4).tolist())
+
+    # Compatible with sample_weight
+    weights = rng.uniform(0.5, 2.0, size=300)
+    weighted_mt = train(
+        x, y, task="regression", tree_type="cart", canaries=0, sample_weight=weights
+    )
+    print(
+        "weighted preds[:2] ->",
+        np.round(weighted_mt.predict(x[:2]), 4).tolist(),
+    )
+
+
+def show_feature_importances() -> None:
+    rng = np.random.default_rng(99)
+    x = rng.normal(size=(500, 6))
+    # Only features 0, 1, 2 are informative
+    y = x[:, 0] * 3.0 - x[:, 1] * 1.5 + x[:, 2] * 0.8 + rng.normal(scale=0.5, size=500)
+
+    dt = train(x, y, task="regression", tree_type="cart", canaries=0)
+    rf = train(x, y, algorithm="rf", task="regression", n_trees=50, seed=0)
+    gbm = train(
+        x,
+        y,
+        algorithm="gbm",
+        task="regression",
+        n_trees=50,
+        learning_rate=0.1,
+        seed=0,
+    )
+
+    print_section("Feature Importances (MDI)")
+    for label, model in (("dt ", dt), ("rf ", rf), ("gbm", gbm)):
+        imp = np.round(model.feature_importances_, 4).tolist()
+        print(f"{label} importances ->", imp)
+        print("    top feature  ->", int(np.argmax(model.feature_importances_)))
+
+
 def show_optional_sparse_input() -> None:
     print_section("Optional SciPy Sparse Input")
     try:
@@ -423,6 +605,11 @@ def main() -> None:
     show_categorical_strategies()
     show_serialization()
     show_optional_sparse_input()
+    show_random_forests()
+    show_gradient_boosting()
+    show_sample_weights()
+    show_multi_target_regression()
+    show_feature_importances()
 
 
 if __name__ == "__main__":

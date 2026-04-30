@@ -46,6 +46,14 @@ pub trait TableAccess: Sync {
         1.0
     }
 
+    fn n_targets(&self) -> usize {
+        1
+    }
+
+    fn target_value_at(&self, row_index: usize, _target_index: usize) -> f64 {
+        self.target_value(row_index)
+    }
+
     fn is_canary_binned_feature(&self, index: usize) -> bool {
         matches!(
             self.binned_column_kind(index),
@@ -1347,6 +1355,94 @@ impl TableAccess for WeightedTable<'_> {
     }
     fn sample_weight(&self, row_index: usize) -> f64 {
         self.weights[row_index]
+    }
+    fn n_targets(&self) -> usize {
+        self.base.n_targets()
+    }
+    fn target_value_at(&self, row_index: usize, target_index: usize) -> f64 {
+        self.base.target_value_at(row_index, target_index)
+    }
+}
+
+/// Table wrapper that adds additional target columns for multi-output regression.
+///
+/// The wrapped base table provides all feature columns and the first target (index 0).
+/// Additional target columns are stored in `extra_targets`, so `target_value_at(row, t)`
+/// returns `base.target_value(row)` for `t == 0` and `extra_targets[t-1][row]` for `t >= 1`.
+#[derive(Clone)]
+pub struct MultiTargetDenseTable<'a> {
+    base: &'a dyn TableAccess,
+    extra_targets: Vec<Vec<f64>>, // one Vec<f64> per extra target (beyond the first)
+}
+
+impl<'a> MultiTargetDenseTable<'a> {
+    /// Create a multi-target wrapper. `all_targets` must have at least 1 column.
+    /// The first column maps to the base table's `target_value()`; remaining columns
+    /// are stored as extra targets here.
+    pub fn new(base: &'a dyn TableAccess, extra_targets: Vec<Vec<f64>>) -> Self {
+        Self {
+            base,
+            extra_targets,
+        }
+    }
+
+    pub fn n_extra_targets(&self) -> usize {
+        self.extra_targets.len()
+    }
+}
+
+impl TableAccess for MultiTargetDenseTable<'_> {
+    fn n_rows(&self) -> usize {
+        self.base.n_rows()
+    }
+    fn n_features(&self) -> usize {
+        self.base.n_features()
+    }
+    fn canaries(&self) -> usize {
+        self.base.canaries()
+    }
+    fn numeric_bin_cap(&self) -> usize {
+        self.base.numeric_bin_cap()
+    }
+    fn binned_feature_count(&self) -> usize {
+        self.base.binned_feature_count()
+    }
+    fn feature_value(&self, feature_index: usize, row_index: usize) -> f64 {
+        self.base.feature_value(feature_index, row_index)
+    }
+    fn is_missing(&self, feature_index: usize, row_index: usize) -> bool {
+        self.base.is_missing(feature_index, row_index)
+    }
+    fn is_binary_feature(&self, index: usize) -> bool {
+        self.base.is_binary_feature(index)
+    }
+    fn binned_value(&self, feature_index: usize, row_index: usize) -> u16 {
+        self.base.binned_value(feature_index, row_index)
+    }
+    fn binned_boolean_value(&self, feature_index: usize, row_index: usize) -> Option<bool> {
+        self.base.binned_boolean_value(feature_index, row_index)
+    }
+    fn binned_column_kind(&self, index: usize) -> BinnedColumnKind {
+        self.base.binned_column_kind(index)
+    }
+    fn is_binary_binned_feature(&self, index: usize) -> bool {
+        self.base.is_binary_binned_feature(index)
+    }
+    fn target_value(&self, row_index: usize) -> f64 {
+        self.base.target_value(row_index)
+    }
+    fn sample_weight(&self, row_index: usize) -> f64 {
+        self.base.sample_weight(row_index)
+    }
+    fn n_targets(&self) -> usize {
+        1 + self.extra_targets.len()
+    }
+    fn target_value_at(&self, row_index: usize, target_index: usize) -> f64 {
+        if target_index == 0 {
+            self.base.target_value(row_index)
+        } else {
+            self.extra_targets[target_index - 1][row_index]
+        }
     }
 }
 

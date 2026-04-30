@@ -73,6 +73,9 @@ bounded by the normal tree limits plus canary filtering.
 
 - unified training dispatch
 - decision trees, random forests, and gradient boosting
+- per-row sample weights for all algorithms and tasks
+- multi-target regression (2-D `y` with `n_targets > 1` columns, `dt` only)
+- MDI feature importances on `Model` and `OptimizedModel`
 - optimized inference runtimes
 - JSON IR serialization and deserialization
 - tree introspection metadata
@@ -153,6 +156,22 @@ other columns will never be missing.
 ## Data crate
 
 The `forestfire-data` crate provides the training-table abstractions and preprocessing/binned storage used by the learners.
+
+Key types:
+
+- `Table` — primary training container (dense or sparse)
+- `WeightedTable<'a>` — wraps any `&dyn TableAccess` and overrides `sample_weight` with per-row weights; compose with any other table adapter
+- `MultiTargetDenseTable<'a>` — wraps a base table and attaches extra target columns; overrides `n_targets()` and `target_value_at()` so the regressor produces multi-target leaves
+
+Example:
+
+```rust
+use forestfire_data::{Table, WeightedTable, MultiTargetDenseTable};
+
+let base = Table::new(x_rows, first_target_col)?;
+let weighted = WeightedTable::new(&base, weights);
+let mt = MultiTargetDenseTable::new(&base, extra_targets);
+```
 
 Important point:
 

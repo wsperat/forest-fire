@@ -240,12 +240,14 @@ impl GradientBoostedTrees {
             // structure that earlier trees did not explain.
             let (gradients, hessians) = match config.task {
                 Task::Regression => squared_error_gradients_and_hessians(
+                    train_set,
                     raw_predictions.as_slice(),
                     regression_targets
                         .as_ref()
                         .expect("regression targets exist for regression boosting"),
                 ),
                 Task::Classification => logistic_gradients_and_hessians(
+                    train_set,
                     raw_predictions.as_slice(),
                     classification_targets
                         .as_ref()
@@ -538,6 +540,19 @@ impl TableAccess for SampledTable<'_> {
     fn target_value(&self, row_index: usize) -> f64 {
         self.base.target_value(self.resolve_row(row_index))
     }
+
+    fn sample_weight(&self, row_index: usize) -> f64 {
+        self.base.sample_weight(self.resolve_row(row_index))
+    }
+
+    fn n_targets(&self) -> usize {
+        self.base.n_targets()
+    }
+
+    fn target_value_at(&self, row_index: usize, target_index: usize) -> f64 {
+        self.base
+            .target_value_at(self.resolve_row(row_index), target_index)
+    }
 }
 
 fn validate_boosting_parameters(
@@ -617,29 +632,29 @@ fn binary_classification_targets(
 }
 
 fn squared_error_gradients_and_hessians(
+    table: &dyn TableAccess,
     raw_predictions: &[f64],
     targets: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
-    (
-        raw_predictions
-            .iter()
-            .zip(targets.iter())
-            .map(|(prediction, target)| prediction - target)
-            .collect(),
-        vec![1.0; targets.len()],
-    )
+    let gradients = (0..targets.len())
+        .map(|i| table.sample_weight(i) * (raw_predictions[i] - targets[i]))
+        .collect();
+    let hessians = (0..targets.len()).map(|i| table.sample_weight(i)).collect();
+    (gradients, hessians)
 }
 
 fn logistic_gradients_and_hessians(
+    table: &dyn TableAccess,
     raw_predictions: &[f64],
     targets: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
     let mut gradients = Vec::with_capacity(targets.len());
     let mut hessians = Vec::with_capacity(targets.len());
-    for (raw_prediction, target) in raw_predictions.iter().zip(targets.iter()) {
+    for (i, (raw_prediction, target)) in raw_predictions.iter().zip(targets.iter()).enumerate() {
+        let w = table.sample_weight(i);
         let probability = sigmoid(*raw_prediction);
-        gradients.push(probability - target);
-        hessians.push((probability * (1.0 - probability)).max(1e-12));
+        gradients.push(w * (probability - target));
+        hessians.push((w * probability * (1.0 - probability)).max(1e-12));
     }
     (gradients, hessians)
 }

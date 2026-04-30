@@ -113,6 +113,27 @@ impl TableAccess for TrainingTableRef<'_> {
             Self::Rebinned(table) => table.target_value(row_index),
         }
     }
+
+    fn sample_weight(&self, row_index: usize) -> f64 {
+        match self {
+            Self::Borrowed(table) => table.sample_weight(row_index),
+            Self::Rebinned(table) => table.sample_weight(row_index),
+        }
+    }
+
+    fn n_targets(&self) -> usize {
+        match self {
+            Self::Borrowed(table) => table.n_targets(),
+            Self::Rebinned(table) => table.n_targets(),
+        }
+    }
+
+    fn target_value_at(&self, row_index: usize, target_index: usize) -> f64 {
+        match self {
+            Self::Borrowed(table) => table.target_value_at(row_index, target_index),
+            Self::Rebinned(table) => table.target_value_at(row_index, target_index),
+        }
+    }
 }
 
 struct HistogramBinnedTable<'a> {
@@ -219,6 +240,18 @@ impl TableAccess for HistogramBinnedTable<'_> {
 
     fn target_value(&self, row_index: usize) -> f64 {
         self.base.target_value(row_index)
+    }
+
+    fn sample_weight(&self, row_index: usize) -> f64 {
+        self.base.sample_weight(row_index)
+    }
+
+    fn n_targets(&self) -> usize {
+        self.base.n_targets()
+    }
+
+    fn target_value_at(&self, row_index: usize, target_index: usize) -> f64 {
+        self.base.target_value_at(row_index, target_index)
     }
 }
 

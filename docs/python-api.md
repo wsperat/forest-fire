@@ -44,6 +44,7 @@ train(
     categorical_features=None,
     target_smoothing=20.0,
     filter=None,
+    sample_weight=None,
 )
 ```
 
@@ -316,6 +317,48 @@ Current implementation note:
 - the second-order boosting path uses the same learned missing-routing semantics,
   but it does not expose a separate heuristic-vs-optimal toggle
 
+#### `sample_weight`
+
+Per-row training weights. Accepted forms:
+
+- `None` (default): all rows have equal weight `1.0`
+- 1-D array-like of length `n_rows`: explicit per-row weights
+
+Semantics:
+
+- weights scale how much each row contributes to split scoring and leaf values
+- weighted MSE is used for regression: `Σ w_i (y_i - ȳ)²`
+- for gradient boosting, weights scale the per-row gradient and Hessian
+- weights propagate through bootstrap and gradient-focus sampling in `rf` and `gbm`
+
+Supported for `dt`, `rf`, and `gbm` across all supported tree types and tasks.
+
+## Multi-target regression
+
+When `y` is a 2-D array of shape `(n_rows, n_targets)` and `task="regression"`,
+ForestFire trains a single tree that predicts all targets jointly.
+
+```python
+import numpy as np
+import forestfire
+
+X = np.random.randn(200, 4)
+y = np.column_stack([X[:, 0] + X[:, 1], X[:, 2] - X[:, 3]])  # 2 targets
+
+model = forestfire.train(X, y, task="regression")
+preds = model.predict(X)  # shape (200, 2)
+```
+
+Behavior:
+
+- `predict(...)` returns a 2-D NumPy array of shape `(n_rows, n_targets)`
+- split scoring maximizes the sum of MSE gain across all targets at each candidate threshold, evaluated at the same threshold for all targets so score and applied split are consistent
+- each leaf stores one predicted value per target
+- `sample_weight` is compatible with multi-target regression
+
+Supported for `algorithm="dt"` and `task="regression"`. Multi-target is not
+currently supported for `rf` or `gbm`.
+
 ## Supported input types
 
 - NumPy arrays
@@ -399,7 +442,7 @@ Sklearn wrapper semantics:
 - classifiers expose `classes_`
 - fitted estimators expose `n_features_in_` when the input shape is available
 - `get_params(...)` and `set_params(...)` are supported
-- `sample_weight` is currently rejected
+- `sample_weight` is forwarded to the underlying `train(...)` call when provided
 
 Wrapper defaults intentionally differ from raw `train(...)` in one place:
 
@@ -610,6 +653,20 @@ This is useful when you want:
 - one deployment artifact for repeated scoring
 
 The semantic JSON serialization and the compiled optimized artifact solve different problems. The JSON form is the canonical model meaning; the compiled artifact is the cached execution form.
+
+## Feature importances
+
+Both `Model` and `OptimizedModel` expose a `feature_importances_` attribute:
+
+```python
+importances = model.feature_importances_  # NDArray[float64], shape (n_features,)
+```
+
+This is Mean Decrease Impurity (MDI):
+
+- for each split node, the gain is weighted by the fraction of training rows that passed through it
+- for ensembles, the per-tree importances are averaged across all trees
+- values are non-negative and sum to `1.0`
 
 ## Introspection
 

@@ -259,6 +259,33 @@ Categorical models now preserve that transform contract in:
 So restored categorical models still accept raw categorical inputs rather than
 requiring callers to reproduce the transform manually.
 
+## Sample weights
+
+ForestFire accepts per-row training weights via `sample_weight`.
+
+- `None` (default): all rows contribute equally
+- 1-D numeric array of length `n_rows`: rows are weighted by those values
+
+For regression, split scoring uses weighted MSE: `Σ w_i (y_i - ȳ)²`.
+
+For gradient boosting, weights scale the per-row gradient and Hessian so high-weight rows drive larger update steps.
+
+Weights are propagated through bootstrap sampling in `rf` and through gradient-focus row sampling in `gbm`, so ensemble methods respect weights correctly.
+
+## Multi-target regression
+
+When `y` is a 2-D array of shape `(n_rows, n_targets)` with `n_targets > 1`
+and `task="regression"`, a single tree is trained to predict all targets
+jointly.
+
+- splits are chosen by maximising the sum of MSE gain across all targets, evaluated at a shared threshold per feature so score and applied split are always consistent
+- each leaf stores one predicted value per target
+- `predict(...)` returns a 2-D array of shape `(n_rows, n_targets)`
+- compatible with `sample_weight`
+
+Multi-target training uses `algorithm="dt"`. Multi-target support for `rf` and
+`gbm` is not currently available.
+
 ## Stopping and control parameters
 
 - `max_depth`
