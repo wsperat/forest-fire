@@ -6,6 +6,27 @@ Some next steps are about training, some about runtime work, some about docs,
 and some about benchmarking. The goal is to keep forward-looking notes in one
 place instead of scattering them across otherwise stable reference pages.
 
+The priorities below are ordered from highest to lowest expected value for the
+project's near-term usefulness and technical leverage.
+
+## Priority order
+
+1. **Gradient boosting parallelism**
+2. **Keep investing in runtime parity tests**
+3. **Revisit canary policy for boosting**
+4. **Extend categorical-feature support**
+5. **Experimental tree-building strategies**
+6. **Random-forest training on wide data**
+7. **Constraint-aware modeling**
+8. **Oblique and hybrid split families**
+9. **Calibration and distributional outputs**
+10. **Richer leaf models and soft trees**
+11. **Document semantic edge-case invariants**
+12. **Experimental alternatives to second-order leaf optimization**
+
+The detailed sections below remain grouped by topic, but this list is the
+intended execution order.
+
 ## Gradient boosting parallelism
 
 Random forests parallelize naturally across trees, but boosting does not. Each
