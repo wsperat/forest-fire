@@ -205,6 +205,9 @@ A few practical details matter:
 - the exact candidate count can vary by algorithm and by node because `max_features`, tree type, and node-local feasibility all affect how many candidates are actually scorable
 - for oblivious trees, the competition happens at the next shared level-split
 - for `gbm`, the same logic is applied at the root of the next stage, and if no real split survives inside the allowed window, that whole stage is discarded and boosting stops
+- `gbm` also accepts `boosting_first_stage_retry_filter`, which uses the same value shape as `filter`
+- if omitted, its effective default is still top-1, so the retry does not relax anything unless you widen it explicitly
+- pass a larger integer, such as `2`, or a float like `0.95` to widen the first-stage retry window; pass `False` to disable the retry entirely
 
 #### `bins`
 

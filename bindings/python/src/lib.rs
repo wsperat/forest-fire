@@ -2126,6 +2126,28 @@ fn parse_canary_filter(value: Option<&Bound<PyAny>>) -> PyResult<CanaryFilter> {
     ))
 }
 
+fn parse_boosting_first_stage_retry_filter(
+    value: Option<&Bound<PyAny>>,
+) -> PyResult<Option<CanaryFilter>> {
+    let Some(value) = value else {
+        return Ok(Some(CanaryFilter::TopN(1)));
+    };
+
+    if value.is_none() {
+        return Ok(Some(CanaryFilter::TopN(1)));
+    }
+
+    if let Ok(enabled) = value.extract::<bool>() {
+        return Ok(if enabled {
+            Some(CanaryFilter::TopN(1))
+        } else {
+            None
+        });
+    }
+
+    parse_canary_filter(Some(value)).map(Some)
+}
+
 fn parse_categorical_strategy(value: Option<&str>) -> PyResult<Option<CategoricalStrategy>> {
     match value {
         None => Ok(None),
@@ -2225,7 +2247,7 @@ fn tree_type_name(tree_type: TreeType) -> &'static str {
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", split_strategy="axis_aligned", builder="greedy", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, lookahead_depth=1, lookahead_top_k=8, lookahead_weight=1.0, beam_width=4, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0, sample_weight=None))]
+#[pyo3(signature = (x, y=None, algorithm="dt", task="auto", tree_type="cart", split_strategy="axis_aligned", builder="greedy", criterion="auto", canaries=2, bins=None, histogram_bins=None, physical_cores=None, max_depth=None, min_samples_split=None, min_samples_leaf=None, lookahead_depth=1, lookahead_top_k=8, lookahead_weight=1.0, beam_width=4, n_trees=None, max_features=None, seed=None, compute_oob=false, learning_rate=None, bootstrap=false, top_gradient_fraction=None, other_gradient_fraction=None, missing_value_strategy=None, filter=None, boosting_first_stage_retry_filter=None, categorical_strategy=None, categorical_features=None, target_smoothing=20.0, sample_weight=None))]
 #[allow(clippy::too_many_arguments)]
 fn train(
     py: Python<'_>,
@@ -2258,6 +2280,7 @@ fn train(
     other_gradient_fraction: Option<f64>,
     missing_value_strategy: Option<&Bound<PyAny>>,
     filter: Option<&Bound<PyAny>>,
+    boosting_first_stage_retry_filter: Option<&Bound<PyAny>>,
     categorical_strategy: Option<&str>,
     categorical_features: Option<&Bound<PyAny>>,
     target_smoothing: f64,
@@ -2286,6 +2309,9 @@ fn train(
         max_features: parse_max_features(max_features)?,
         seed,
         canary_filter: parse_canary_filter(filter)?,
+        boosting_first_stage_retry_filter: parse_boosting_first_stage_retry_filter(
+            boosting_first_stage_retry_filter,
+        )?,
         compute_oob,
         learning_rate: parse_optional_positive_f64(learning_rate, "learning_rate")?,
         bootstrap,

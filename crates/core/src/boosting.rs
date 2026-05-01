@@ -17,8 +17,8 @@ use crate::tree::second_order::{
 };
 use crate::tree::shared::mix_seed;
 use crate::{
-    CanaryFilter, Criterion, FeaturePreprocessing, Model, Parallelism, PredictError, Task,
-    TrainConfig, TreeType, capture_feature_preprocessing,
+    Criterion, FeaturePreprocessing, Model, Parallelism, PredictError, Task, TrainConfig, TreeType,
+    capture_feature_preprocessing,
 };
 use forestfire_data::TableAccess;
 use rand::SeedableRng;
@@ -330,9 +330,13 @@ impl GradientBoostedTrees {
             )
             .map_err(BoostingError::SecondOrderTree)?;
 
-            if stage_result.root_canary_selected && trees.is_empty() {
+            if stage_result.root_canary_selected
+                && trees.is_empty()
+                && let Some(retry_filter) = config.boosting_first_stage_retry_filter
+                && retry_filter != stage_tree_options.tree_options.canary_filter
+            {
                 let mut retry_options = stage_tree_options;
-                retry_options.tree_options.canary_filter = CanaryFilter::TopN(usize::MAX);
+                retry_options.tree_options.canary_filter = retry_filter;
                 let retry_result = train_boosting_stage(
                     config.tree_type,
                     &sampled_table,
@@ -1073,7 +1077,33 @@ mod tests {
     }
 
     #[test]
-    fn boosting_retries_first_stage_when_default_canary_filter_blocks_real_split() {
+    fn boosting_retries_first_stage_when_configured_filter_blocks_real_split() {
+        let table = FilteredRootCanaryTable;
+
+        let model = GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(10),
+                max_features: MaxFeatures::All,
+                learning_rate: Some(0.1),
+                top_gradient_fraction: Some(1.0),
+                other_gradient_fraction: Some(0.0),
+                boosting_first_stage_retry_filter: Some(CanaryFilter::TopN(2)),
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap();
+
+        assert!(!model.trees().is_empty());
+    }
+
+    #[test]
+    fn boosting_default_top_one_retry_filter_keeps_strict_stop_behavior() {
         let table = FilteredRootCanaryTable;
 
         let model = GradientBoostedTrees::train(
@@ -1094,6 +1124,32 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!model.trees().is_empty());
+        assert!(model.trees().is_empty());
+    }
+
+    #[test]
+    fn boosting_none_retry_filter_disables_first_stage_retry() {
+        let table = FilteredRootCanaryTable;
+
+        let model = GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(10),
+                max_features: MaxFeatures::All,
+                learning_rate: Some(0.1),
+                top_gradient_fraction: Some(1.0),
+                other_gradient_fraction: Some(0.0),
+                boosting_first_stage_retry_filter: None,
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap();
+
+        assert!(model.trees().is_empty());
     }
 }

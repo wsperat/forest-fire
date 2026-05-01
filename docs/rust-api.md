@@ -67,6 +67,12 @@ Related `TrainConfig` fields:
 Those control `lookahead` and `beam`. `optimal` ignores them and is instead
 bounded by the normal tree limits plus canary filtering.
 
+For gradient boosting specifically:
+
+- `TrainConfig::canary_filter` controls the ordinary root-stage canary window
+- `TrainConfig::boosting_first_stage_retry_filter` controls an optional retry window for stage 0
+- its default is `Some(CanaryFilter::TopN(1))`, which preserves strict top-1 behavior unless you widen it explicitly
+
 ## Core capabilities
 
 `forestfire-core` currently provides:
