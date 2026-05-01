@@ -458,6 +458,13 @@ In ForestFire’s gradient boosting implementation, training stops when:
 1. `n_trees` stages have been trained, or
 2. the allowed root-level `filter` window contains no real split and only canaries survive there
 
+There is one configurable escape hatch for the very first stage:
+
+- `boosting_first_stage_retry_filter` can retry stage 0 with a wider canary window
+- the default is still `TopN(1)`, so nothing is relaxed unless you opt into a wider retry window
+- in Python, setting it to `False` disables that retry path entirely
+- in Rust, setting it to `None` disables that retry path entirely
+
 That second rule is important.
 
 It means:

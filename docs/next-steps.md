@@ -598,8 +598,6 @@ The most promising directions are:
 
 - compare the best real split against canaries using *margin reduction* or
   stage-loss reduction instead of a more generic tree-training signal
-- require more evidence before stopping the first few boosting stages, where a
-  weak but real root split may still unlock a useful ensemble trajectory
 - distinguish "no signal at all" from "signal is weak but consistently better
   than the current ensemble baseline"
 - allow boosting to continue when the best real split beats the unsplit leaf by

@@ -78,6 +78,8 @@ fn unified_train_dispatches_regression_cart() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -196,6 +198,8 @@ fn unified_train_rejects_unsupported_task_tree_pair() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -328,6 +332,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -361,6 +367,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -394,6 +402,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -427,6 +437,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -460,6 +472,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -493,6 +507,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -526,6 +542,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -559,6 +577,8 @@ fn unified_train_resolves_auto_criterion_across_supported_matrix() {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -628,6 +648,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -657,6 +679,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -686,6 +710,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -737,6 +763,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -766,6 +794,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -795,6 +825,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -824,6 +856,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -853,6 +887,8 @@ fn unified_train_parallel_matches_single_core_across_supported_tree_types() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -943,6 +979,8 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -976,6 +1014,8 @@ fn unified_train_caps_physical_cores_to_available_hardware() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1030,6 +1070,8 @@ fn ir_exports_regression_tree_with_training_binning() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1103,6 +1145,8 @@ fn ir_exports_classifier_with_multiway_postprocessing() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1170,6 +1214,8 @@ fn ir_exports_oblivious_regressor_with_msb_leaf_indexing() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1239,6 +1285,8 @@ fn serialized_model_round_trips_through_deserialize() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1296,6 +1344,8 @@ fn optimized_model_matches_base_model_and_ir_for_standard_classifier() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1362,6 +1412,8 @@ fn optimized_model_matches_base_model_and_ir_for_oblivious_regressor() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1424,6 +1476,8 @@ fn optimized_oblivious_model_matches_base_on_large_batch() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1477,6 +1531,8 @@ fn optimized_cart_model_batch_and_single_row_predictions_match() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1533,6 +1589,8 @@ fn optimized_oblivious_model_batch_and_single_row_predictions_match() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1592,6 +1650,8 @@ fn compiled_artifact_round_trips_for_binary_classifier_runtime() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1708,6 +1768,8 @@ fn compiled_artifact_round_trips_for_oblivious_regressor_runtime() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1842,6 +1904,8 @@ fn optimized_model_rejects_zero_physical_cores() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1897,6 +1961,8 @@ fn model_predicts_from_raw_rows_without_building_a_training_table() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -1956,6 +2022,8 @@ fn model_predicts_from_named_columns() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2013,6 +2081,8 @@ fn model_rejects_missing_named_feature() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2067,6 +2137,8 @@ fn optimized_classifier_preserves_missing_routing() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2122,6 +2194,8 @@ fn optimized_regressor_preserves_missing_routing() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2170,6 +2244,8 @@ fn optimized_missing_feature_configuration_can_skip_missing_checks() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2232,6 +2308,8 @@ fn model_rejects_unexpected_named_feature() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2290,6 +2368,8 @@ fn model_rejects_invalid_binary_value_during_inference() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2349,6 +2429,8 @@ fn model_predicts_from_sparse_binary_columns() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2404,6 +2486,8 @@ fn model_predicts_from_polars_dataframe() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2462,6 +2546,8 @@ fn model_predicts_from_polars_lazyframe() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2520,6 +2606,8 @@ fn model_and_optimized_model_predict_large_polars_lazyframes_in_batches() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2600,6 +2688,8 @@ fn model_rejects_polars_nulls() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2659,6 +2749,8 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2716,6 +2808,8 @@ fn ir_serializes_node_stats_for_standard_and_oblivious_trees() {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -2868,6 +2962,8 @@ fn non_greedy_builders_train_across_tree_families() {
                     max_features: MaxFeatures::Auto,
                     seed: Some(7),
                     canary_filter: CanaryFilter::default(),
+                    boosting_first_stage_retry_filter: TrainConfig::default()
+                        .boosting_first_stage_retry_filter,
                     compute_oob: false,
                     learning_rate: Some(0.1),
                     bootstrap: false,
@@ -2914,6 +3010,7 @@ fn optimal_builder_ignores_lookahead_knobs() {
         max_features: MaxFeatures::All,
         seed: Some(7),
         canary_filter: CanaryFilter::default(),
+        boosting_first_stage_retry_filter: TrainConfig::default().boosting_first_stage_retry_filter,
         compute_oob: false,
         learning_rate: None,
         bootstrap: false,

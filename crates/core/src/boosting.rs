@@ -7,8 +7,10 @@
 
 use crate::bootstrap::BootstrapSampler;
 use crate::ir::TrainingMetadata;
+use crate::tree::regressor::{RegressionNode, RegressionTreeStructure};
 use crate::tree::second_order::{
     SecondOrderRegressionTreeError, SecondOrderRegressionTreeOptions,
+    SecondOrderRegressionTreeTrainingResult,
     train_cart_regressor_from_gradients_and_hessians_with_status,
     train_oblivious_regressor_from_gradients_and_hessians_with_status,
     train_randomized_regressor_from_gradients_and_hessians_with_status,
@@ -94,6 +96,50 @@ impl std::error::Error for BoostingError {}
 struct SampledTable<'a> {
     base: &'a dyn TableAccess,
     row_indices: Vec<usize>,
+}
+
+fn train_boosting_stage(
+    tree_type: TreeType,
+    sampled_table: &dyn TableAccess,
+    gradients: &[f64],
+    hessians: &[f64],
+    parallelism: Parallelism,
+    options: SecondOrderRegressionTreeOptions,
+) -> Result<SecondOrderRegressionTreeTrainingResult, SecondOrderRegressionTreeError> {
+    match tree_type {
+        TreeType::Cart => train_cart_regressor_from_gradients_and_hessians_with_status(
+            sampled_table,
+            gradients,
+            hessians,
+            parallelism,
+            options,
+        ),
+        TreeType::Randomized => train_randomized_regressor_from_gradients_and_hessians_with_status(
+            sampled_table,
+            gradients,
+            hessians,
+            parallelism,
+            options,
+        ),
+        TreeType::Oblivious => train_oblivious_regressor_from_gradients_and_hessians_with_status(
+            sampled_table,
+            gradients,
+            hessians,
+            parallelism,
+            options,
+        ),
+        _ => unreachable!("boosting tree type validated by training dispatch"),
+    }
+}
+
+fn tree_has_real_root_split(tree: &crate::DecisionTreeRegressor) -> bool {
+    match tree.structure() {
+        RegressionTreeStructure::Standard { nodes, root } => matches!(
+            nodes[*root],
+            RegressionNode::BinarySplit { .. } | RegressionNode::ObliqueSplit { .. }
+        ),
+        RegressionTreeStructure::Oblivious { splits, .. } => !splits.is_empty(),
+    }
 }
 
 impl GradientBoostedTrees {
@@ -274,35 +320,36 @@ impl GradientBoostedTrees {
             let sampled_table = SampledTable::new(train_set, sampled_rows.row_indices);
             let mut stage_tree_options = tree_options.clone();
             stage_tree_options.tree_options.random_seed = stage_seed;
-            let stage_result = match config.tree_type {
-                TreeType::Cart => train_cart_regressor_from_gradients_and_hessians_with_status(
+            let mut stage_result = train_boosting_stage(
+                config.tree_type,
+                &sampled_table,
+                &sampled_rows.gradients,
+                &sampled_rows.hessians,
+                parallelism,
+                stage_tree_options.clone(),
+            )
+            .map_err(BoostingError::SecondOrderTree)?;
+
+            if stage_result.root_canary_selected
+                && trees.is_empty()
+                && let Some(retry_filter) = config.boosting_first_stage_retry_filter
+                && retry_filter != stage_tree_options.tree_options.canary_filter
+            {
+                let mut retry_options = stage_tree_options;
+                retry_options.tree_options.canary_filter = retry_filter;
+                let retry_result = train_boosting_stage(
+                    config.tree_type,
                     &sampled_table,
                     &sampled_rows.gradients,
                     &sampled_rows.hessians,
                     parallelism,
-                    stage_tree_options,
-                ),
-                TreeType::Randomized => {
-                    train_randomized_regressor_from_gradients_and_hessians_with_status(
-                        &sampled_table,
-                        &sampled_rows.gradients,
-                        &sampled_rows.hessians,
-                        parallelism,
-                        stage_tree_options,
-                    )
+                    retry_options,
+                )
+                .map_err(BoostingError::SecondOrderTree)?;
+                if tree_has_real_root_split(&retry_result.model) {
+                    stage_result = retry_result;
                 }
-                TreeType::Oblivious => {
-                    train_oblivious_regressor_from_gradients_and_hessians_with_status(
-                        &sampled_table,
-                        &sampled_rows.gradients,
-                        &sampled_rows.hessians,
-                        parallelism,
-                        stage_tree_options,
-                    )
-                }
-                _ => unreachable!("boosting tree type validated by training dispatch"),
             }
-            .map_err(BoostingError::SecondOrderTree)?;
 
             // A canary root win means the stage could not find a real feature
             // stronger than shuffled noise, so boosting stops early.
@@ -1027,5 +1074,82 @@ mod tests {
         .unwrap();
 
         assert!(!model.trees().is_empty());
+    }
+
+    #[test]
+    fn boosting_retries_first_stage_when_configured_filter_blocks_real_split() {
+        let table = FilteredRootCanaryTable;
+
+        let model = GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(10),
+                max_features: MaxFeatures::All,
+                learning_rate: Some(0.1),
+                top_gradient_fraction: Some(1.0),
+                other_gradient_fraction: Some(0.0),
+                boosting_first_stage_retry_filter: Some(CanaryFilter::TopN(2)),
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap();
+
+        assert!(!model.trees().is_empty());
+    }
+
+    #[test]
+    fn boosting_default_top_one_retry_filter_keeps_strict_stop_behavior() {
+        let table = FilteredRootCanaryTable;
+
+        let model = GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(10),
+                max_features: MaxFeatures::All,
+                learning_rate: Some(0.1),
+                top_gradient_fraction: Some(1.0),
+                other_gradient_fraction: Some(0.0),
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap();
+
+        assert!(model.trees().is_empty());
+    }
+
+    #[test]
+    fn boosting_none_retry_filter_disables_first_stage_retry() {
+        let table = FilteredRootCanaryTable;
+
+        let model = GradientBoostedTrees::train(
+            &table,
+            TrainConfig {
+                algorithm: TrainAlgorithm::Gbm,
+                task: Task::Regression,
+                tree_type: TreeType::Cart,
+                criterion: Criterion::SecondOrder,
+                n_trees: Some(10),
+                max_features: MaxFeatures::All,
+                learning_rate: Some(0.1),
+                top_gradient_fraction: Some(1.0),
+                other_gradient_fraction: Some(0.0),
+                boosting_first_stage_retry_filter: None,
+                ..TrainConfig::default()
+            },
+            Parallelism::sequential(),
+        )
+        .unwrap();
+
+        assert!(model.trees().is_empty());
     }
 }

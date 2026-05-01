@@ -66,6 +66,8 @@ fn show_regression_models() -> Result<(), Box<dyn Error>> {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -117,6 +119,8 @@ fn show_classification_models() -> Result<(), Box<dyn Error>> {
                 max_features: MaxFeatures::Auto,
                 seed: None,
                 canary_filter: CanaryFilter::default(),
+                boosting_first_stage_retry_filter: TrainConfig::default()
+                    .boosting_first_stage_retry_filter,
                 compute_oob: false,
                 learning_rate: None,
                 bootstrap: false,
@@ -173,6 +177,8 @@ fn show_inference_and_optimized_runtime() -> Result<(), Box<dyn Error>> {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
@@ -455,6 +461,8 @@ fn show_serialization() -> Result<(), Box<dyn Error>> {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: TrainConfig::default()
+                .boosting_first_stage_retry_filter,
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,

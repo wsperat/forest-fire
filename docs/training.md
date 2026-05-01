@@ -396,6 +396,8 @@ But it keeps a ForestFire-specific stopping rule:
 
 - canaries still participate in split selection
 - if no real root split survives inside the allowed canary `filter` window, that stage is discarded and boosting stops
+- the first boosting stage can optionally retry with `boosting_first_stage_retry_filter`
+- that retry filter defaults to `TopN(1)`, so it preserves the strict stop unless you widen it explicitly
 
 That choice reflects the project’s general design preference: use explicit training-time noise competition as a stopping signal instead of bolting on a separate pruning or early-stopping layer later.
 

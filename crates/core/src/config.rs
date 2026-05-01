@@ -215,6 +215,11 @@ pub struct TrainConfig {
     pub seed: Option<u64>,
     /// Window used when skipping canaries during split selection.
     pub canary_filter: CanaryFilter,
+    /// Optional retry window for the first boosting stage when the default
+    /// canary filter blocks the root.
+    ///
+    /// `Some(CanaryFilter::TopN(1))` preserves the strict default behavior.
+    pub boosting_first_stage_retry_filter: Option<CanaryFilter>,
     /// Whether random forests should compute out-of-bag metrics.
     pub compute_oob: bool,
     /// Gradient boosting shrinkage factor.
@@ -264,6 +269,7 @@ impl Default for TrainConfig {
             max_features: MaxFeatures::Auto,
             seed: None,
             canary_filter: CanaryFilter::default(),
+            boosting_first_stage_retry_filter: Some(CanaryFilter::TopN(1)),
             compute_oob: false,
             learning_rate: None,
             bootstrap: false,
