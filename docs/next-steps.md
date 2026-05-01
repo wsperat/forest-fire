@@ -6,38 +6,31 @@ Some next steps are about training, some about runtime work, some about docs,
 and some about benchmarking. The goal is to keep forward-looking notes in one
 place instead of scattering them across otherwise stable reference pages.
 
+The priorities below are ordered from highest to lowest expected value for the
+project's near-term usefulness and technical leverage.
+
+## Priority order
+
+1. **Revisit canary policy for boosting**
+2. **Extend categorical-feature support**
+3. **Experimental tree-building strategies**
+4. **Random-forest training on wide data**
+5. **Keep investing in runtime parity tests**
+6. **Gradient boosting parallelism**
+7. **Constraint-aware modeling**
+8. **Oblique and hybrid split families**
+9. **Calibration and distributional outputs**
+10. **Richer leaf models and soft trees**
+11. **Document semantic edge-case invariants**
+12. **Experimental alternatives to second-order leaf optimization**
+
+The detailed sections below remain grouped by topic, but this list is the
+intended execution order.
+
 ## Gradient boosting parallelism
 
-Random forests parallelize naturally across trees, but boosting does not. Each
-stage depends on the current ensemble state, so the outer training loop is
-inherently sequential. The strategy is to keep the stage loop serial while
-making the work inside each stage aggressively parallel — the same approach
-used by XGBoost, LightGBM, and CatBoost.
-
-### What is in place
-
-The two-level rayon work-stealing approach is implemented across all binary tree
-families (second-order, regression, and classification CART/randomized):
-
-- **Active-node frontier**: a whole depth is evaluated before any node
-  partitions the shared row-index buffer, so node evaluation is pure read-only
-  and can run in parallel without coordination.
-- **Two-level parallelism**: frontier evaluation runs node-parallel across all
-  nodes at a given depth while, simultaneously, each node's split scoring runs
-  feature-parallel within the same rayon pool via work-stealing. All threads
-  stay busy even at shallow depths where the frontier is small.
-- **Parallel row partitioning**: once split choices are fixed, disjoint
-  row-buffer slices are partitioned in parallel across all splitting nodes.
-- **Histogram subtraction**: the smaller child is built fresh; the larger child
-  is derived by subtracting the smaller from the parent, halving histogram
-  construction work.
-- **Parallel histogram building**: thread-local accumulators with a reduction
-  step, usable both at the node level and feature level.
-
-Measured regression RF speedup on 12 CPUs is 6–8× depending on dataset width
-and tree count (see the RF section below for the full table).
-
-### Remaining work
+The remaining GBM parallelism work is now mostly hot-path tuning rather than
+structural scheduler changes.
 
 - SIMD-friendly accumulation in the histogram hot path
 - Profile whether gradient / hessian recomputation and prediction-update steps
@@ -238,68 +231,29 @@ trainer.
 ## Experimental tree-building strategies
 
 Another useful training track is experimenting with stronger tree-construction
-strategies than the current greedy builder.
+strategies.
 
 This is distinct from leaf optimization. Higher-order or alternative leaf
 optimizers change how a fixed tree assigns leaf values. The work here changes
 how the tree structure itself is chosen.
 
-The baseline should remain explicit:
+### 15.1 Lookahead and beam follow-up
 
-- `GreedyBuilder` stays the default and the main speed baseline
-- stronger builders should begin as clearly experimental alternatives
+- profile deeper horizons vs real quality gain
+- tune better defaults by algorithm and tree family
+- add stronger tracing and diagnostics for why a non-greedy candidate wins
+- move beam search from local continuation scoring toward a fuller beam over
+  partial-tree states
+- define a stronger partial-tree score from:
+  - current leaf objective
+  - a heuristic estimate of future value
+- deduplicate equivalent partial trees
+- add beam budget controls:
+  - maximum expansions
+  - maximum memory
+  - early stopping
 
-### 15. Tree-construction interface
-
-The tree-construction interface is pluggable. The current builders are:
-
-- `GreedyBuilder` — default; single-pass split selection by immediate gain
-- `LookaheadBuilder` — re-scores the top-K axis candidates with bounded future
-  expansion; see 15.1
-- `BeamSearchBuilder` — width-limited continuation search; see 15.2
-- `OptimalBuilder` — exhaustive search to max depth; see 15.4
-
-Next builder families worth exploring:
-
-- `RefinementBuilder` — post-build node-by-node re-optimization; see 15.3
-
-### 15.1 Lookahead
-
-- implemented:
-  - shortlist the top `K` splits by immediate gain
-  - re-score the shortlisted splits with bounded future expansion
-  - expose configuration:
-    - `lookahead_depth`
-    - `lookahead_top_k`
-    - `lookahead_weight`
-- next work:
-  - profile deeper horizons vs real quality gain
-  - tune better defaults by algorithm and tree family
-  - add stronger tracing and diagnostics for why a lookahead candidate wins
-
-### 15.2 Beam search
-
-- implemented:
-  - a public `beam` builder with width `beam_width`
-  - width-limited continuation search layered onto local split rescoring
-  - the same public configuration family used by lookahead:
-    - `lookahead_depth`
-    - `lookahead_top_k`
-    - `lookahead_weight`
-    - `beam_width`
-- next work:
-  - move from local continuation search toward a fuller beam over partial-tree
-    states
-  - define a stronger partial-tree score from:
-    - current leaf objective
-    - a heuristic estimate of future value
-  - deduplicate equivalent partial trees
-  - add budget controls:
-    - maximum expansions
-    - maximum memory
-    - early stopping
-
-### 15.3 Post-build non-greedy refinement
+### 15.2 Post-build non-greedy refinement
 
 - build the tree greedily first
 - revisit internal nodes one at a time while keeping topology fixed
@@ -307,21 +261,14 @@ Next builder families worth exploring:
 - recompute leaf weights after each accepted change
 - stop after a fixed number of passes or when no more improvement is found
 
-### 15.4 Optimal builder
-
-`OptimalBuilder` is implemented: it scores all feature candidates and
-recursively re-scores to `max_depth`, selecting the globally best subtree
-at each node. It is correct but expensive — cost grows exponentially with
-depth, so it is most useful for shallow trees or small feature sets.
-
-Next work:
+### 15.3 Optimal-search follow-up
 
 - add a time-budgeted anytime mode that stops early if a wall-clock limit
   is hit and falls back to the best candidate found so far
 - benchmark quality vs wall-clock tradeoff against lookahead and beam search
   at matched depth limits
 
-### 15.5 Evaluation
+### 15.4 Evaluation
 
 - benchmark tree builders on:
   - training objective
@@ -329,9 +276,8 @@ Next work:
   - wall-clock time
   - tree size and realized depth
   - number of accepted refinements
-- measure whether stronger implemented builders such as lookahead and beam
-  reduce the number of boosting rounds required to hit the same validation
-  quality
+- measure whether stronger non-greedy builders reduce the number of boosting
+  rounds required to hit the same validation quality
 
 ## Constraint-aware modeling
 
@@ -411,22 +357,6 @@ This can improve model quality substantially when:
 
 ### Sparse oblique splits
 
-The first sparse oblique implementation now exists.
-
-Current state:
-
-- the library supports an experimental pairwise oblique split type of the form:
-  - `w_1 x_i + w_2 x_j <= t`
-- oblique is available for:
-  - `dt`
-  - `rf`
-  - `gbm`
-  with `cart` and `randomized` tree types
-- semantic IR and optimized-runtime support are in place
-- missing-value handling is implemented per participating feature
-
-The next oblique steps are now about extending and tuning that baseline:
-
 - move beyond strictly pairwise splits when the added search cost is justified
 - add stronger regularization and budgeting around when oblique nodes are
   allowed to appear
@@ -446,11 +376,6 @@ The next oblique steps are now about extending and tuning that baseline:
   runtime simplicity
 
 ### Runtime and export implications
-
-The semantic and optimized-runtime groundwork now exists, but runtime work is
-still open.
-
-The next runtime/export implications are:
 
 - decide whether oblique optimized inference should stay row-wise or gain a
   batched projected-dot-product path
@@ -496,6 +421,20 @@ fit a richer local model in the leaf.
 - log when richer leaves overfit tiny support regions
 - add fallback to constant leaves when local conditioning is poor or the leaf
   support is too small
+
+### Soft trees
+
+- add experimental soft-routing trees with probabilistic internal-node gates
+- start with binary soft trees before considering multiway variants
+- compare:
+  - end-to-end differentiable training
+  - structure-first training followed by soft re-optimization
+- evaluate whether temperature or entropy regularization is needed to stop
+  routing from collapsing too early
+- decide whether inference should always evaluate the full weighted traversal or
+  whether very small path probabilities can be pruned safely
+- define export and runtime contracts explicitly, because soft routing is not
+  compatible with the ordinary hard-branch semantics
 
 ## Calibration and distributional outputs
 
@@ -550,24 +489,16 @@ natural place to push beyond ordinary point-estimate trees.
 Another clear next step is reducing RF training cost once feature counts become
 moderate or large.
 
-The current implementation parallelizes well across trees, but that is not the
-same thing as making each tree cheap. In practice, the slowdown on wider tables
-usually means the cost per node still scales too directly with the number of
-features.
-
 The most likely causes are:
 
 - histogram construction is still too expensive in the hottest paths
 - feature access is not cache-friendly enough on wide binned tables
-- histogram subtraction and reuse are still incomplete in some important paths
 - too much per-node scratch rebuilding or temporary allocation remains
 - feature subsampling does not cut off enough work early enough
 
 The main improvements to target are:
 
 - make histogram construction the dominant optimization focus
-- push histogram reuse further so one child can be built and the sibling derived
-  by subtraction
 - keep the training representation strongly feature-major so repeated scans over
   candidate columns stay cache-friendly
 - batch active nodes by level where that improves locality and feature-parallel
@@ -589,33 +520,14 @@ per-feature work is still too expensive once the width of the table grows.
 
 ## Extend categorical-feature support
 
-ForestFire now implements three transform-based categorical strategies through
-the unified `train(...)` interface: `dummy`, `target`, and `fisher`. Those
-strategies are documented on the [Categorical Strategies](categorical-strategies.md)
-page.
-
-The current implementation uses explicit table-layer transforms rather than
-native categorical split predicates. That is a practical tradeoff:
-
-- it makes categorical support available through the existing numeric and binary
-  split machinery
-- but it means the learned trees operate on transformed feature space rather
-  than on native category-membership tests
-
-The remaining forward-looking work in this area is:
-
 ### Native categorical subset splits
 
-The transform-based strategies do not support grouped category tests like:
+Support grouped category tests like:
 
 ```text
 x in {"red", "green"} -> left
 x in {"blue"} -> right
 ```
-
-A single node can express that rule natively. The transform-based strategies
-approximate it with either multiple binary columns (`dummy`) or a one-dimensional
-ordered surrogate (`target`, `fisher`).
 
 Native subset split support for CART-style learners would require:
 
@@ -627,30 +539,23 @@ Native subset split support for CART-style learners would require:
 - IR support for categorical split predicates and category vocabularies
 
 That is likely the strongest long-term end state for medium-cardinality
-categoricals, but it is a larger architectural change than the transform-based
-strategies.
+categoricals.
 
 ### Leakage controls for target-style strategies
 
-The current `target` and `fisher` strategies use smoothed training-set
-statistics. That is a practical first implementation, but it does not fully
-prevent target leakage.
-
-A more rigorous approach would use out-of-fold or CatBoost-style prefix
-statistics, so each row is encoded only from earlier rows rather than from the
-full training set. That matters most for gradient boosting, where stage-wise
-residual fitting is especially sensitive to weak spurious signal.
+- add out-of-fold or CatBoost-style prefix statistics for target-informed
+  categorical encoders
+- ensure each row is encoded without leaking its own target contribution
+- treat boosting as the highest-priority beneficiary, because stage-wise
+  residual fitting is especially sensitive to weak spurious signal
 
 ### Canary-informed smoothing
 
-Canaries currently influence encoding strength for `target` and `fisher` by
-increasing effective smoothing when shuffled-category signal looks too
-competitive. See [Canary Strategy: Categorical variables](canaries.md#categorical-variables)
-for how that works.
+- replace heuristic canary-informed categorical smoothing with stronger and
+  more principled shrinkage rules
+- focus especially on rare categories and high-cardinality columns in boosting
+  settings
 
-That mechanism is still heuristic. Stronger and more principled shrinkage rules,
-especially for rare categories and high-cardinality columns in a boosting
-setting, remain open work.
 ## Document semantic edge-case invariants
 
 There are several API and semantics choices that appear intentional but are
@@ -670,12 +575,8 @@ also make regression testing easier.
 
 ## Revisit canary policy for boosting
 
-The current canary mechanism is useful because it gives ForestFire an explicit
-"stop when the best real split is indistinguishable from shuffled noise"
-criterion.
-
-That is a good fit for some settings, but boosting is a special case. In
-boosting, later trees are not trying to explain the full target from scratch.
+Boosting is a special case. In boosting, later trees are not trying to explain
+the full target from scratch.
 They are trying to explain the *residual margin* left behind by the existing
 ensemble. That means a stage can be locally weak in an absolute sense while
 still being globally useful once shrinkage and many stages are taken into
@@ -735,12 +636,10 @@ There are multiple representations of the same underlying model semantics:
 - introspection parity requirements
 
 That means there are multiple places where the same truth must remain aligned.
-The existing tests already help a great deal, but this is exactly the area
-where round-trip and parity tests are worth continuing to expand.
 
 High-value coverage here includes:
 
-- semantic model vs optimized runtime prediction parity
-- optimized runtime vs compiled artifact parity
-- serialization and reload round-trips
 - introspection parity across semantic and optimized forms
+- broader parity coverage for newer surfaces such as categorical preprocessing
+  once those contracts stabilize
+- continued regression coverage whenever runtime-specialized features are added
