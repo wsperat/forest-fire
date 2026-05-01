@@ -11,12 +11,12 @@ project's near-term usefulness and technical leverage.
 
 ## Priority order
 
-1. **Gradient boosting parallelism**
-2. **Keep investing in runtime parity tests**
-3. **Revisit canary policy for boosting**
-4. **Extend categorical-feature support**
-5. **Experimental tree-building strategies**
-6. **Random-forest training on wide data**
+1. **Revisit canary policy for boosting**
+2. **Extend categorical-feature support**
+3. **Experimental tree-building strategies**
+4. **Random-forest training on wide data**
+5. **Keep investing in runtime parity tests**
+6. **Gradient boosting parallelism**
 7. **Constraint-aware modeling**
 8. **Oblique and hybrid split families**
 9. **Calibration and distributional outputs**
@@ -34,6 +34,9 @@ stage depends on the current ensemble state, so the outer training loop is
 inherently sequential. The strategy is to keep the stage loop serial while
 making the work inside each stage aggressively parallel — the same approach
 used by XGBoost, LightGBM, and CatBoost.
+
+This is no longer a greenfield item. The main structural parallelism work is in
+place; the remaining work is now hot-path tuning and profiling.
 
 ### What is in place
 
@@ -55,8 +58,10 @@ families (second-order, regression, and classification CART/randomized):
 - **Parallel histogram building**: thread-local accumulators with a reduction
   step, usable both at the node level and feature level.
 
-Measured regression RF speedup on 12 CPUs is 6–8× depending on dataset width
-and tree count (see the RF section below for the full table).
+The same structural pattern is now shared across the second-order GBM tree path
+and the ordinary binary CART/randomized trainers, so remaining work here should
+focus on common hot paths rather than on inventing another parallel execution
+model.
 
 ### Remaining work
 
@@ -571,24 +576,22 @@ natural place to push beyond ordinary point-estimate trees.
 Another clear next step is reducing RF training cost once feature counts become
 moderate or large.
 
-The current implementation parallelizes well across trees, but that is not the
-same thing as making each tree cheap. In practice, the slowdown on wider tables
-usually means the cost per node still scales too directly with the number of
-features.
+The structural parallelism work is now much better than it used to be. Binary
+RF paths already benefit from active-node frontiers, same-depth parallel
+evaluation, parallel row partitioning, and histogram reuse/subtraction inside
+each tree. The remaining problem is not "RF is only parallel across trees"; it
+is that wide-table per-node work is still too expensive.
 
 The most likely causes are:
 
 - histogram construction is still too expensive in the hottest paths
 - feature access is not cache-friendly enough on wide binned tables
-- histogram subtraction and reuse are still incomplete in some important paths
 - too much per-node scratch rebuilding or temporary allocation remains
 - feature subsampling does not cut off enough work early enough
 
 The main improvements to target are:
 
 - make histogram construction the dominant optimization focus
-- push histogram reuse further so one child can be built and the sibling derived
-  by subtraction
 - keep the training representation strongly feature-major so repeated scans over
   candidate columns stay cache-friendly
 - batch active nodes by level where that improves locality and feature-parallel
@@ -614,6 +617,14 @@ ForestFire now implements three transform-based categorical strategies through
 the unified `train(...)` interface: `dummy`, `target`, and `fisher`. Those
 strategies are documented on the [Categorical Strategies](categorical-strategies.md)
 page.
+
+Current state:
+
+- categorical training is already available through the unified public training
+  API rather than through a separate experimental entry point
+- the Python bindings expose the same strategy family
+- categorical transforms are implemented as explicit preprocessing rather than
+  native categorical branch predicates
 
 The current implementation uses explicit table-layer transforms rather than
 native categorical split predicates. That is a practical tradeoff:
@@ -695,6 +706,17 @@ The current canary mechanism is useful because it gives ForestFire an explicit
 "stop when the best real split is indistinguishable from shuffled noise"
 criterion.
 
+Current state:
+
+- second-order boosting already records whether the stage root was blocked by a
+  canary winner
+- there is already focused test coverage for:
+  - stopping when a canary wins at the root
+  - allowing a real split to proceed when it survives the configured filtered
+    competition window
+
+What remains is not basic wiring; it is improving the policy itself.
+
 That is a good fit for some settings, but boosting is a special case. In
 boosting, later trees are not trying to explain the full target from scratch.
 They are trying to explain the *residual margin* left behind by the existing
@@ -759,9 +781,18 @@ That means there are multiple places where the same truth must remain aligned.
 The existing tests already help a great deal, but this is exactly the area
 where round-trip and parity tests are worth continuing to expand.
 
+Current state:
+
+- semantic model vs optimized runtime prediction parity is already covered
+- optimized runtime vs compiled artifact parity is already covered for multiple
+  model families, including boosted binary classification
+- serialization and reload round-trips are already covered
+- named-column and raw-row inference paths already have parity coverage
+- oblique models already round-trip through IR and optimized runtime tests
+
 High-value coverage here includes:
 
-- semantic model vs optimized runtime prediction parity
-- optimized runtime vs compiled artifact parity
-- serialization and reload round-trips
 - introspection parity across semantic and optimized forms
+- broader parity coverage for newer surfaces such as categorical preprocessing
+  once those contracts stabilize
+- continued regression coverage whenever runtime-specialized features are added
