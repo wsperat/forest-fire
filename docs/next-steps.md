@@ -588,11 +588,11 @@ The `make_moons` benchmark exposed exactly that failure mode:
 - the model therefore stayed at the base score
 - the resulting probability surface was flat at `0.5`
 
-That outcome strongly suggests the current root-canary policy is too eager in
-at least some second-order boosting settings.
+That outcome still suggests the current root-canary policy is too eager in
+some second-order boosting settings.
 
 The next step should not be to remove canaries from boosting entirely. It
-should be to make the policy stage-aware and objective-aware.
+should be to make the policy more objective-aware.
 
 The most promising directions are:
 

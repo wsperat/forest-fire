@@ -20,6 +20,10 @@ during fitting. Leave it as `None` to reuse the incoming table bins, or set
 `Some(NumericBins::Auto)` / `Some(NumericBins::Fixed(...))` to rebin the
 training view before split search.
 
+When constructing `TrainConfig` explicitly, prefer starting from
+`..TrainConfig::default()` unless you really need to spell out every field.
+That keeps examples resilient as new configuration fields are added.
+
 The intended Rust lifecycle is:
 
 1. build a training table through `forestfire-data`
