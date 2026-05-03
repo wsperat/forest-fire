@@ -25,13 +25,19 @@ Upload to PyPI:
 task python-package-publish
 ```
 
-## Trusted publishing
+## Automated publishing
 
-This repository also includes GitHub Actions trusted publishing for PyPI in:
+This repository includes GitHub Actions trusted publishing for PyPI in:
 
 - `.github/workflows/publish-python.yaml`
 
-That workflow builds wheels and an sdist, then publishes them through PyPI trusted publishing.
+That workflow runs after every push to `main`, including merged pull requests.
+It calculates the next patch version from the existing `v*` release tags, builds
+wheels and an sdist with that version, publishes them through PyPI trusted
+publishing, then tags the released commit as `vX.Y.Z`.
+
+If a workflow is re-run for a commit that already has a `vX.Y.Z` tag, the
+publish job is skipped so the same commit is not released twice.
 
 The docs site is deployed separately through `.github/workflows/docs.yaml` to GitHub Pages.
 
@@ -51,6 +57,7 @@ Make sure you:
 - confirm that the `forestfire-ml` project name is the intended PyPI target
 - run the package check task before tagging
 - ensure the GitHub trusted publisher is configured for the correct project name
+- ensure the workflow has `contents: write` permission so it can create tags
 
 ## Local tasks
 
