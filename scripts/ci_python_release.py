@@ -23,7 +23,8 @@ def parse_version(value: str) -> Version | None:
     match = VERSION_RE.match(value)
     if not match:
         return None
-    return tuple(int(part) for part in match.groups())
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch)
 
 
 def format_version(version: Version) -> str:
